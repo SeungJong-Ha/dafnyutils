@@ -10,6 +10,7 @@ import stat
 import tarfile
 import tempfile
 import zlib
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -35,6 +36,215 @@ class ReceivedSubmission:
     archive_bytes: int
     workspace: Path
     files: tuple[str, ...]
+
+
+def package_workspace(workspace: Path, manifest: TaskReleaseManifest, archive: Path) -> Path:
+    """Atomically collect declared task roots without following filesystem links."""
+    if not stat.S_ISDIR(workspace.lstat().st_mode):
+        raise ValueError("submission workspace must be a real directory")
+    workspace = Path(os.path.abspath(workspace))
+    if archive.absolute().is_relative_to(workspace) or archive.resolve().is_relative_to(workspace):
+        raise ValueError("submission archive must be outside the workspace")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{archive.name}.", suffix=".tmp", dir=archive.parent
+    )
+    temporary = Path(temporary_name)
+    try:
+        with ExitStack() as resources, os.fdopen(descriptor, "wb") as stream:
+            workspace_fd = _open_package_directory(workspace, resources)
+            roots = tuple(
+                _package_root_directory(workspace_fd, root, resources)
+                for root in manifest.task_roots
+            )
+            with tarfile.open(fileobj=stream, mode="w:gz", dereference=False) as output:
+                count = 0
+                total_bytes = 0
+                for root, root_fd in zip(manifest.task_roots, roots, strict=True):
+                    root_count, root_bytes = _package_tree(output, root_fd, root, manifest)
+                    count += root_count
+                    total_bytes += root_bytes
+                    if count > manifest.limits.entries:
+                        raise SubmissionError("archive entry count limit exceeded")
+                    if total_bytes > manifest.limits.expanded_bytes:
+                        raise SubmissionError("archive payload size limit exceeded")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if temporary.stat().st_size > manifest.limits.compressed_bytes:
+            raise SubmissionError("compressed archive size limit exceeded")
+        os.replace(temporary, archive)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return archive
+
+
+def _open_package_directory(workspace: Path, resources: ExitStack) -> int:
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    resources.callback(os.close, descriptor)
+    for part in workspace.parts[1:]:
+        descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+        resources.callback(os.close, descriptor)
+    return descriptor
+
+
+def _package_root_directory(workspace_fd: int, relative_root: str, resources: ExitStack) -> int:
+    descriptor = workspace_fd
+    for part in Path(relative_root).parts:
+        metadata = os.stat(part, dir_fd=descriptor, follow_symlinks=False)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"submission root must contain only real directories: {relative_root}")
+        descriptor = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+        resources.callback(os.close, descriptor)
+    return descriptor
+
+
+def _package_excluded(relative_path: str, manifest: TaskReleaseManifest) -> bool:
+    path = PurePosixPath(relative_path)
+    return any(part in manifest.excluded_names for part in path.parts) or any(
+        path.is_relative_to(PurePosixPath(excluded)) for excluded in manifest.excluded_paths
+    )
+
+
+@dataclass
+class _PackageFrame:
+    path: str
+    components: tuple[str, ...]
+    names: list[str]
+    identity: tuple[int, int]
+    index: int = 0
+
+
+def _package_tree(
+    archive: tarfile.TarFile,
+    root_fd: int,
+    root: str,
+    manifest: TaskReleaseManifest,
+) -> tuple[int, int]:
+    """Walk from a pinned root with bounded open descriptors and no recursion."""
+    archive.addfile(_package_tar_info(root, os.fstat(root_fd)))
+    stack = [_package_frame(root_fd, root, ())]
+    count = 1
+    total_bytes = 0
+    while stack:
+        frame = stack[-1]
+        if frame.index == len(frame.names):
+            stack.pop()
+            continue
+        name = frame.names[frame.index]
+        frame.index += 1
+        path = f"{frame.path}/{name}"
+        validate_relative_path(path, label="submission entry")
+        _validate_archive_name(path)
+        if _package_excluded(path, manifest):
+            continue
+        parent_fd = _open_package_relative(root_fd, frame.components)
+        try:
+            _package_check_frame_identity(frame, os.fstat(parent_fd))
+            metadata = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if stat.S_ISDIR(metadata.st_mode):
+                child_fd = _package_open_child_directory(parent_fd, name, metadata, path)
+                try:
+                    archive.addfile(_package_tar_info(path, os.fstat(child_fd)))
+                    stack.append(_package_frame(child_fd, path, (*frame.components, name)))
+                finally:
+                    os.close(child_fd)
+            else:
+                total_bytes += _package_file(archive, parent_fd, name, path, metadata, manifest)
+            count += 1
+            if count > manifest.limits.entries:
+                raise SubmissionError("archive entry count limit exceeded")
+            if total_bytes > manifest.limits.expanded_bytes:
+                raise SubmissionError("archive payload size limit exceeded")
+        finally:
+            if parent_fd != root_fd:
+                os.close(parent_fd)
+    return count, total_bytes
+
+
+def _package_frame(descriptor: int, path: str, components: tuple[str, ...]) -> _PackageFrame:
+    metadata = os.fstat(descriptor)
+    return _PackageFrame(
+        path=path,
+        components=components,
+        names=sorted(os.listdir(descriptor)),
+        identity=(metadata.st_dev, metadata.st_ino),
+    )
+
+
+def _package_check_frame_identity(frame: _PackageFrame, metadata: os.stat_result) -> None:
+    if frame.identity != (metadata.st_dev, metadata.st_ino):
+        raise ValueError(f"submission entry changed while packaging: {frame.path}")
+
+
+def _open_package_relative(root_fd: int, components: tuple[str, ...]) -> int:
+    descriptor = root_fd
+    try:
+        for part in components:
+            next_descriptor = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
+            )
+            if descriptor != root_fd:
+                os.close(descriptor)
+            descriptor = next_descriptor
+    except OSError:
+        if descriptor != root_fd:
+            os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _package_open_child_directory(
+    parent_fd: int, name: str, metadata: os.stat_result, path: str
+) -> int:
+    descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        _package_check_identity(metadata, os.fstat(descriptor), path)
+    except ValueError:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _package_file(
+    archive: tarfile.TarFile,
+    parent_fd: int,
+    name: str,
+    path: str,
+    metadata: os.stat_result,
+    manifest: TaskReleaseManifest,
+) -> int:
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        raise ValueError(f"unsupported submission filesystem entry: {path}")
+    if metadata.st_size > manifest.limits.file_bytes:
+        raise SubmissionError(f"archive file size limit exceeded: {path}")
+    descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    with os.fdopen(descriptor, "rb") as source:
+        opened = os.fstat(source.fileno())
+        _package_check_identity(metadata, opened, path)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1:
+            raise ValueError(f"submission file changed while packaging: {path}")
+        archive.addfile(_package_tar_info(path, opened), source)
+    return metadata.st_size
+
+
+def _package_check_identity(
+    expected: os.stat_result, actual: os.stat_result, relative_path: str
+) -> None:
+    if (expected.st_dev, expected.st_ino) != (actual.st_dev, actual.st_ino):
+        raise ValueError(f"submission entry changed while packaging: {relative_path}")
+
+
+def _package_tar_info(relative_path: str, metadata: os.stat_result) -> tarfile.TarInfo:
+    info = tarfile.TarInfo(relative_path)
+    info.mode = stat.S_IMODE(metadata.st_mode)
+    info.mtime = metadata.st_mtime
+    info.uid = metadata.st_uid
+    info.gid = metadata.st_gid
+    if stat.S_ISDIR(metadata.st_mode):
+        info.type = tarfile.DIRTYPE
+    else:
+        info.size = metadata.st_size
+    return info
 
 
 def receive_submission(

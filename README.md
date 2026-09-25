@@ -14,6 +14,7 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process and require
 | Understand shared contracts and what the proof assumes | [Use the core API](docs/core-api.md) |
 | Run generated cases and reproduce mismatches | [Use the fuzzer](docs/fuzzing.md) |
 | Port upstream GNU scenarios into utility Python tests | [Add test cases](docs/adding-test-cases.md) |
+| Integrate an agent with the public task and result wire | [Use the agent protocol](docs/agent-protocol.md) |
 
 Follow [repository instructions](AGENTS.md), [bench rules](bench/AGENTS.md) and [Dafny style](DAFNYSTYLE.md).
 
