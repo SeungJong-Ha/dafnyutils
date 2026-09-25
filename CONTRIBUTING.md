@@ -143,7 +143,7 @@ Complete these generated files:
 | `Base32Proof.dfy` | Lemmas connecting the implementation summary to the specification |
 | `Base32.dfy` | Shared runner hooks; `RunCore` directly ensures the main `Spec(...)` |
 | `Base32Cli.dfy` | Process entry using `BenchIO.Process()`, the shared runner and `BenchIO.Exit` |
-| `Tests.py`, `Tests.dfy` | Evaluator-owned differential cases and executable Dafny cases |
+| `Tests.py` | Evaluator-owned observable behavior and differential cases |
 | `dfyconfig.toml`, `Makefile` | Existing project/build conventions from the scaffold |
 
 The scaffold already connects the CLI to a class extending
@@ -175,7 +175,7 @@ The shared runner calls `RunCore` only for a run plan. Help, version and parse e
 
 #### Add differential cases and a generator
 
-Follow [Add test cases](docs/adding-test-cases.md) to port upstream scenarios into `bench/utils/<utility>/Tests.py`, reusing its fixtures and runner helpers. Compare the pinned GNU binary with the built Dafny binary. Include normal, malformed-input and partial-effect cases; reject plausible wrong outputs as part of specification review.
+Follow [Add test cases](docs/adding-test-cases.md) to port named scenarios from the upstream GNU test suite into `bench/utils/<utility>/Tests.py`, reusing its fixtures and runner helpers. Each runtime behavior case must run equivalent arguments, input and setup against the pinned executable built from the upstream C implementation and the built Dafny executable. Compare their stdout, stderr, exit status and, for mutating commands, filesystem effects. Record the upstream test path and case name. Include normal, malformed-input and partial-effect cases; reject plausible wrong outputs as part of specification review. The `@pytest.mark.dafny_verify` cases in the same file are separate proof checks.
 
 For a new utility, start with [the generated test adapter](docs/adding-test-cases.md#start-a-new-utility-test-file).
 It includes the build fixture, strict comparison helper, and three

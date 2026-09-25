@@ -292,7 +292,7 @@ def test_refresh_preserves_candidate_run_core_body(tmp_path: Path) -> None:
     assert build_script.read_text(encoding="utf-8") != "# stale support\n"
 
 
-# The evaluator restores its own Dafny tests after overlaying candidate source files.
+# The evaluator overlays candidate source while keeping tests outside its workspace.
 def test_evaluator_target_is_fresh_workspace_with_only_candidate_outputs(
     tmp_path: Path,
 ) -> None:
@@ -330,9 +330,7 @@ def test_evaluator_target_is_fresh_workspace_with_only_candidate_outputs(
     ) == candidate_text
     assert not (evaluator_target / "tests" / "bench" / "test_bench_cat.py").exists()
     assert (evaluator_target / "bench" / "utils" / "cat" / "CatSchema.dfy").exists()
-    assert (evaluator_target / "bench/utils/cat/Tests.dfy").read_bytes() == (
-        REPO_ROOT / "bench/utils/cat/Tests.dfy"
-    ).read_bytes()
+    assert not (evaluator_target / "bench/utils/cat/Tests.dfy").exists()
     assert not (evaluator_target / "bench/utils/cat/Tests.py").exists()
 
 

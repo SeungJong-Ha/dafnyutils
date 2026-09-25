@@ -75,7 +75,7 @@ def test_scaffold_is_incomplete_for_both_families(
     assert (result.directory / "Makefile").is_file()
     if kind is BenchmarkKind.COREUTILS:
         assert (result.directory / "Tests.py").is_file()
-        assert (result.directory / "Tests.dfy").is_file()
+        assert not (result.directory / "Tests.dfy").exists()
     assert any(
         "source details are incomplete" in issue.message
         for issue in validate_benchmark(repository, task_id)

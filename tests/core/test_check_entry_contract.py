@@ -97,7 +97,7 @@ module Runner {
     return tmp_path, utility_root, execution, (runtime,)
 
 
-# Evaluator-owned Dafny tests cannot become candidate specification or implementation inputs.
+# The reserved evaluator path cannot become a candidate source even without a test file.
 def test_utility_source_enumeration_excludes_evaluator_tests(tmp_path: Path) -> None:
     _, utility_root, _, _ = _workspace(tmp_path)
     _write(utility_root / "Tests.dfy", "module EvaluatorTests { method Probe() {} }\n")

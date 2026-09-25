@@ -105,26 +105,6 @@ def _test(root: Path, definition: BenchmarkDefinition | None) -> int:
             env=env,
         )
 
-    target_root = (root / (os.environ.get("EVAL_TARGET_ROOT") or ".")).resolve()
-    test_build_dir = target_root / "_build" / "dafny-tests" / definition.task_id
-    test_build_dir.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ)
-    env["TMPDIR"] = "/tmp"
-    status = _run(
-        [
-            _dafny(),
-            "test",
-            "--no-verify",
-            "--output",
-            str(test_build_dir / "Tests.dll"),
-            "Tests.dfy",
-            str(target_root / "bench/core/IOExtern.cs"),
-        ],
-        cwd=target_root / definition.item_directory,
-        env=env,
-    )
-    if status:
-        return status
     return _run(
         [
             _python(),

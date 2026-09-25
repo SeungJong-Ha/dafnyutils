@@ -265,7 +265,7 @@ def enumerate_dafny_sources(workspace_root: Path, utility_root: Path) -> tuple[P
     for path in utility_root.rglob("*.dfy"):
         if path.is_symlink():
             raise EntryValidationFailure(f"utility Dafny source must not be a symlink: {path}")
-        # Evaluator-owned runtime tests are not candidate task sources.
+        # Reserve the former evaluator test entrypoint outside candidate task sources.
         if path == utility_root / "Tests.dfy":
             continue
         resolved = path.resolve()

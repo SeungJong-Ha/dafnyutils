@@ -5,7 +5,6 @@ import shutil
 from dataclasses import replace
 from pathlib import Path
 
-from benchmarks.paths import REPO_ROOT
 from evaluation.enums import CandidateOutputEntryType
 from evaluation.models import (
     CandidateOutputCaptureResultModel,
@@ -23,7 +22,6 @@ from evaluation.task.workspace import (
     _materialize_workspace_roots,
     workspace_roots,
 )
-from runtime.filesystem import copy_entry, remove_entry
 
 
 def prepare_submission_workspace(
@@ -65,7 +63,6 @@ def prepare_submission_workspace(
                     bytes=len(payload),
                 )
             )
-    restore_evaluator_owned_test(target, task.workspace_spec.utility_dir)
     capture = CandidateOutputCaptureResultModel(
         attempted=received is not None,
         copied=received is not None,
@@ -124,16 +121,4 @@ def prepare_evaluator_target(
         evaluator_checkout_root=target_root,
         records=candidate_output_records,
     )
-    restore_evaluator_owned_test(target_root, task_spec.utility_dir)
     return target_root
-
-
-def restore_evaluator_owned_test(target_root: Path, utility_dir: Path) -> None:
-    """Restore a trusted utility test only in the evaluator's private target."""
-    # Tests are evaluator-owned even though the candidate may edit the utility directory.
-    test_source = REPO_ROOT / utility_dir / "Tests.dfy"
-    if test_source.is_file():
-        trusted_test = target_root / utility_dir / "Tests.dfy"
-        trusted_test.parent.mkdir(parents=True, exist_ok=True)
-        remove_entry(trusted_test)
-        copy_entry(test_source, trusted_test)

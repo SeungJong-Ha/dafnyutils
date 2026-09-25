@@ -1,6 +1,6 @@
 # Port GNU tests into a utility's Tests.py
 
-Add a test by translating one upstream GNU scenario into a Python test in `bench/utils/<utility>/Tests.py`. Reuse that file's fixture and runner helpers, execute the pinned GNU binary and the Dafny binary, and compare stdout, stderr and exit status.
+For each new runtime behavior test in `bench/utils/<utility>/Tests.py`, translate a named scenario from an upstream GNU test case. Reuse that file's fixture and runner helpers to run equivalent arguments, input and setup against both the pinned executable built from the upstream C implementation and the built Dafny executable. Compare their stdout, stderr and exit status; also compare filesystem effects for commands that change files. The `@pytest.mark.dafny_verify` cases in the same file check proofs separately.
 
 This guide uses `bench/utils/comm/Tests.py`. Its upstream source is `coreutils/tests/misc/comm.pl`, a Perl test table. The same process applies to shell tests and other utilities. Start with a scenario, preserve its behavior, and express its setup and assertions in Python.
 
@@ -89,8 +89,9 @@ are missing, pytest instead exits 5:
 
 An unchanged scaffold is expected to fail verification. A completed utility must
 pass both this selection and `make -C bench/utils/base32 verify`; selecting no
-marked tests exits 5 and is not a pass. Replace the separate placeholder in
-`Tests.dfy` with an executable Core behavior case too.
+marked tests exits 5 and is not a pass. Add executable behavior cases to
+`Tests.py` through the supported CLI and observable output, without requiring
+reference implementation helper names.
 
 ## Translate one upstream scenario
 
@@ -190,7 +191,7 @@ Map the parts of any other upstream test in the same way:
 | Locale, timezone, user or filesystem prerequisites | Check the shared runner environment and supported scope; document any required setup |
 | A named upstream case or shell block | Put the source path inside the test and name the scenario separately |
 
-GNU's `ooo*` sortedness cases and `--check-order`/`--nocheck-order` are deferred in this `comm` slice. Repeated stdin also has a benchmark-specific diagnostic. Do not label those diagnostics as GNU parity or silently rewrite the upstream expected result. Record the gap for maintainer review; a skipped or out-of-scope case is not passing coverage. Use `# upstream: none - <specific reason>` only for a genuinely repository-specific case.
+GNU's `ooo*` sortedness cases and `--check-order`/`--nocheck-order` are deferred in this `comm` slice. Repeated stdin also has a benchmark-specific diagnostic. Do not label those diagnostics as GNU parity or silently rewrite the upstream expected result. Record the gap for maintainer review; a skipped or out-of-scope case is not passing coverage. Existing repository-specific cases marked `# upstream: none - <specific reason>` are outside this upstream-port workflow. For a newly ported runtime case, identify its upstream source and case instead.
 
 ## Run the port and inspect its result
 
@@ -199,7 +200,7 @@ GNU's `ooo*` sortedness cases and `--check-order`/`--nocheck-order` are deferred
 After adding the success function to `Tests.py`, use the local Make target with a pytest filter:
 
 ```sh
-# Expected duration: Unknown; may compile Dafny test support and rebuild stale binaries.
+# Expected duration: Unknown; may rebuild stale utility and GNU binaries.
 # Success criteria: Exit 0; the named Python case runs and passes, with a fresh XML report.
 make -C bench/utils/comm test \
   PYTEST_ARGS='-k test_zero_terminated_suppress_second_column_matches_coreutils --junitxml=/tmp/comm-zopt2.xml'
@@ -213,7 +214,7 @@ Expected Python-stage summary after adding the case, exit 0:
 make: Leaving directory '/workspace/dafnyutils/bench/utils/comm'
 ```
 
-The target runs executable `Tests.dfy` cases first, then `Tests.py`. `PYTEST_ARGS` filters the Python stage only. Build and helper errors must be resolved before interpreting parity. The XML path is supplied explicitly; choose a fresh path for each run to avoid confusing old and new evidence.
+The target runs executable behavior cases from `Tests.py`. `PYTEST_ARGS` selects cases in that suite. Build errors must be resolved before interpreting parity. The XML path is supplied explicitly; choose a fresh path for each run to avoid confusing old and new evidence.
 
 For a direct Python-only diagnostic after setup, select the exact pytest node:
 
@@ -230,14 +231,14 @@ Expected summary after adding the case, exit 0:
 1 passed in <seconds>s
 ```
 
-This reuses the module's build fixture and runners. It does not execute `Tests.dfy`. The lowercase `test_` function name makes it discoverable once the explicit `Tests.py` path is selected. Root `make test` targets source tests; use the utility target or explicit adapter path for utility cases.
+This reuses the module's build fixture and runners. The lowercase `test_` function name makes it discoverable once the explicit `Tests.py` path is selected. Root `make test` targets source tests; use the utility target or explicit adapter path for utility cases.
 
 The example node exists only after you add the function. Record your own result.
 
 ### Run the utility suite and record evidence
 
 ```sh
-# Expected duration: Unknown; includes executable Dafny cases and all comm runtime tests.
+# Expected duration: Unknown; includes all comm runtime tests and any required builds.
 # Success criteria: Exit 0, real runtime tests pass, and any skips are explained.
 make -C bench/utils/comm test
 ```

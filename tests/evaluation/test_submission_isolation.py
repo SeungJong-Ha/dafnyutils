@@ -95,29 +95,6 @@ def test_archive_fuzzer_failure_cleans_up_its_owned_container(
     assert cleanup[0].startswith("dafnyutils-fuzzer-")
 
 
-# Hidden utility tests return only in the evaluator target after a public archive is accepted.
-def test_archive_evaluator_restores_trusted_utility_test(tmp_path: Path) -> None:
-    release = tmp_path / "release"
-    manifest = publish_release(("cat",), release)
-    test_path = Path("bench/utils/cat/Tests.dfy")
-    assert test_path.as_posix() not in manifest.files
-    archive = tmp_path / "submission.tar.gz"
-    with tarfile.open(archive, "w:gz") as output:
-        for task_root in manifest.task_roots:
-            output.add(release / "workspace" / task_root, arcname=task_root)
-
-    result = evaluate_submission(
-        archive,
-        release_directory=release,
-        run_directory=tmp_path / "evaluation",
-        options=CandidateEvaluationOptions(blocked_reason="materialization-only check"),
-    )
-
-    target = Path(result.tasks["cat"].evaluator_target_directory)
-    assert (target / test_path).is_file()
-    assert not (release / "workspace" / test_path).exists()
-
-
 # An interrupted host fuzzer still releases the one container owned by its run.
 def test_archive_fuzzer_interruption_cleans_up_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
