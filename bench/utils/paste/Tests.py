@@ -223,12 +223,60 @@ def test_parallel_open_failure_preempts_directory_read_error() -> None:
         assert_paste_parity(["left.txt", "dir", "missing.txt"], cwd)
 
 
-# Diagnostic paths containing shell-sensitive assignment characters must be quoted.
-def test_missing_assignment_like_path_is_quoted_like_coreutils() -> None:
+# Ordinary and existing quote-trigger paths must retain exact diagnostic bytes.
+@pytest.mark.parametrize("name", ["missing.txt", "a b", "a=rw", "a:b"])
+def test_missing_path_diagnostic_matches_coreutils(name: str) -> None:
     # Coreutils quotef diagnostic behavior.
     # upstream: coreutils/gnulib-tests/test-quotearg-simple
     with tempfile.TemporaryDirectory() as tmp_dir:
-        assert_paste_parity(["a=rw"], Path(tmp_dir))
+        cwd = Path(tmp_dir)
+        ref = run_system_paste([name], cwd)
+        bench = run_bench_paste([name], cwd)
+
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# A missing backslash-containing path must be quoted in parallel and serial diagnostics.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+def test_missing_backslash_path_diagnostic_matches_coreutils(options: list[str]) -> None:
+    # upstream: coreutils/gnulib-tests/test-quotearg-simple
+    # Adapt the a\\b quoting case to the reported missing filename.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = [*options, r"cypzqrx0f/0b5p\-406"]
+        ref = run_system_paste(args, cwd)
+        bench = run_bench_paste(args, cwd)
+
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# A backslash-containing directory must preserve output and quote its read-error diagnostic.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+def test_backslash_directory_diagnostic_matches_coreutils(options: list[str]) -> None:
+    # upstream: coreutils/tests/misc/read-errors.sh
+    # Adapt the directory read failure to a shell-quoted filename.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / r"a\-dir").mkdir()
+        _ = (cwd / "present.txt").write_bytes(b"ok\n")
+        args = [*options, "present.txt", r"a\-dir"]
+        ref = run_system_paste(args, cwd)
+        bench = run_bench_paste(args, cwd)
+
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# A readable backslash-containing filename must remain a literal filename in both modes.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+def test_backslash_filename_reads_normally(options: list[str]) -> None:
+    # upstream: coreutils/tests/paste/paste.pl
+    # Adapt ordinary file operand processing to a literal backslash name.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "cypzqrx0f").mkdir()
+        _ = (cwd / r"cypzqrx0f/0b5p\-406").write_bytes(b"ok\nagain\n")
+
+        assert_paste_parity([*options, r"cypzqrx0f/0b5p\-406"], cwd)
 
 
 # Serial directory operands must still emit an empty record before the diagnostic.

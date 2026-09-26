@@ -66,12 +66,9 @@ module PasteSpec {
   }
 
   function NeedsErrorQuoting(path: string): bool
-    decreases |path|
   {
-    if |path| == 0 then
-      false
-    else
-      path[0] == ' ' || path[0] == '=' || path[0] == ':' || NeedsErrorQuoting(path[1..])
+    // GNU quotef preserves backslashes inside the required outer shell quotes.
+    exists i :: 0 <= i < |path| && path[i] in {' ', '=', ':', '\\'}
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
