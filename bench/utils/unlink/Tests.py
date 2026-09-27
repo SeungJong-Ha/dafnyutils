@@ -1,9 +1,5 @@
 """GNU parity cases for unlink."""
 
-import fcntl
-import os
-import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -53,12 +49,14 @@ def assert_parity(
 def test_missing_operand_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     assert_parity(executables, [], tmp_path)
 
 # Extra operands are rejected without deleting either file.
 def test_extra_operand_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -81,6 +79,7 @@ def test_extra_operand_matches_coreutils(
 def test_regular_file_deletion_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -100,6 +99,7 @@ def test_regular_file_deletion_matches_coreutils(
 def test_symlink_deletion_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -125,6 +125,7 @@ def test_symlink_deletion_matches_coreutils(
 def test_dangling_symlink_deletion_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -151,6 +152,7 @@ def test_dangling_symlink_deletion_matches_coreutils(
 def test_hard_link_deletion_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -177,6 +179,7 @@ def test_hard_link_deletion_matches_coreutils(
 def test_missing_path_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -194,6 +197,7 @@ def test_missing_path_matches_coreutils(
 def test_empty_path_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -211,6 +215,7 @@ def test_empty_path_matches_coreutils(
 def test_directory_operand_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -234,24 +239,28 @@ def test_directory_operand_matches_coreutils(
 def test_help_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     assert_parity(executables, ["--help"], tmp_path)
 
 # Version displays the requested message without deleting files.
 def test_version_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     assert_parity(executables, ["--version"], tmp_path)
 
 # An invalid option produces the GNU diagnostic.
 def test_invalid_option_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     assert_parity(executables, ["--bad"], tmp_path)
 
 # Help and version respect GNU option precedence.
 def test_option_precedence_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     for args in [
         ["--help", "--version"],
         ["--version", "--help"],
@@ -264,6 +273,7 @@ def test_option_precedence_matches_coreutils(
 def test_option_like_path_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -285,6 +295,7 @@ def test_option_like_path_matches_coreutils(
 def test_no_permission_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path 
 ) -> None:
+    # upstream: coreutils/src/unlink.c
     ref_dir = tmp_path / "reference"
     bench_dir = tmp_path / "candidate"
     ref_dir.mkdir()
@@ -300,7 +311,6 @@ def test_no_permission_matches_coreutils(
         assert_result_matches_reference(
             ref, bench, ignore_stderr_when_exit_nonzero=False
         )
-        assert ref[2] == bench[2] == 1
         assert ref[2] == bench[2] == 1
         for dir in (ref_dir, bench_dir):
             assert (dir / "target").read_bytes() == b"hello"

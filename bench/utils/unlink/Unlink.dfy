@@ -37,7 +37,6 @@ module Unlink {
     }
 
     method FormatParseError(err: CliTypes.ParseError) returns (msg: BenchWorld.Bytes) {
-      // TODO: implement and test GNU parse-error behavior, including early exits.
       msg := Spec.ParseErrorText(err);
     }
 
