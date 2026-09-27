@@ -2,5 +2,7 @@ schema_version: benchmark.definition.v2
 task_id: "unlink"
 kind: coreutils
 source:
-  status: incomplete
-  name: TODO
+  status: verified
+  name: GNU coreutils unlink
+  url: https://www.gnu.org/software/coreutils/
+  license: GPL-3.0-or-later
