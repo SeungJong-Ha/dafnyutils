@@ -165,6 +165,7 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
     },
     capability!("tr", tr),
     capability!("true", r#true),
+    capability!("unlink", unlink),
     UtilityCapability {
         path_operand_policy: PathOperandPolicy::First,
         stdin_policy: StdinPolicy::Uniq,
@@ -293,7 +294,7 @@ mod tests {
             patterned,
             BTreeSet::from([
                 "cat", "chmod", "comm", "csplit", "cut", "du", "expand", "head", "ln", "ls", "mv",
-                "nl", "paste", "readlink", "stat", "tac", "tail", "touch", "uniq", "wc",
+                "nl", "paste", "readlink", "stat", "tac", "tail", "touch", "uniq", "unlink", "wc",
             ])
         );
     }

@@ -49,14 +49,6 @@ def assert_parity(
     actual = run_bench_utility(candidate, args, cwd, input_data=input_data)
     assert_result_matches_reference(expected, actual, ignore_stderr_when_exit_nonzero=False)
 
-
-# Replace this failure with one agreed GNU scenario using executables and assert_parity.
-# def test_gnu_parity() -> None:
-#     # TODO: add the upstream source path inside the completed test body.
-#     pytest.fail("TODO: add a representative unlink GNU parity case")
-
-# TODO: These empty test bodies provide no validation until implemented.
-
 # Missing operands report a failure and usage guidance.
 def test_missing_operand_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
@@ -67,7 +59,23 @@ def test_missing_operand_matches_coreutils(
 def test_extra_operand_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
-    assert_parity(executables, ['a', 'b'], tmp_path)
+    ref_dir = tmp_path / "reference"
+    bench_dir = tmp_path / "candidate"
+    ref_dir.mkdir()
+    bench_dir.mkdir()
+    (ref_dir / "a").write_bytes(b"hello a")
+    (bench_dir / "a").write_bytes(b"hello a")
+    (ref_dir / "b").write_bytes(b"hello b")
+    (bench_dir / "b").write_bytes(b"hello b")
+
+    reference, candidate = executables
+    ref = run_coreutils_utility(reference, UTILITY, ["a", "b"], ref_dir)
+    bench = run_bench_utility(candidate, ["a", "b"], bench_dir)
+    assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+    for dir in (ref_dir, bench_dir):
+        assert (dir / "a").read_bytes() == b"hello a"
+        assert (dir / "b").read_bytes() == b"hello b"
 
 # Deleting a regular file preserves unrelated files.
 def test_regular_file_deletion_matches_coreutils(
@@ -84,6 +92,9 @@ def test_regular_file_deletion_matches_coreutils(
     ref = run_coreutils_utility(reference, UTILITY, ["target"], ref_dir)
     bench = run_bench_utility(candidate, ["target"], bench_dir)
     assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+    assert not (ref_dir / "target").exists()
+    assert not (bench_dir / "target").exists()
 
 # Deleting a symbolic link preserves its target.
 def test_symlink_deletion_matches_coreutils(
@@ -215,6 +226,9 @@ def test_directory_operand_matches_coreutils(
         ref, bench, ignore_stderr_when_exit_nonzero=False
     )
     assert ref[2] == bench[2] == 1
+    for dir in (ref_dir, bench_dir):
+        assert (dir / "folder").is_dir()
+        assert (dir / "folder" / "target").read_bytes() == b"hello"
 
 # Help displays the requested message without deleting files.
 def test_help_matches_coreutils(
@@ -242,6 +256,7 @@ def test_option_precedence_matches_coreutils(
         ["--help", "--version"],
         ["--version", "--help"],
         ["--help", "--bad"],
+        ["--bad", "--help"]
     ]:
         assert_parity(executables, args, tmp_path)
 
@@ -249,7 +264,50 @@ def test_option_precedence_matches_coreutils(
 def test_option_like_path_matches_coreutils(
     executables: tuple[Path, Path], tmp_path: Path
 ) -> None:
-    assert_parity(executables, ["--", "--help"], tmp_path)
+    ref_dir = tmp_path / "reference"
+    bench_dir = tmp_path / "candidate"
+    ref_dir.mkdir()
+    bench_dir.mkdir()
+    reference, candidate = executables
+    (ref_dir / "--help").write_bytes(b"hello")
+    (bench_dir / "--help").write_bytes(b"hello")
+
+    ref = run_coreutils_utility(reference, UTILITY, ["--", "--help"], ref_dir)
+    bench = run_bench_utility(candidate, ["--", "--help"], bench_dir)
+    assert_result_matches_reference(
+        ref, bench, ignore_stderr_when_exit_nonzero=False
+    )
+    assert ref[2] == bench[2] == 0
+    for dir in (ref_dir, bench_dir):
+        assert not (dir / "--help").exists()
+
+# A non-writable parent directory prevents deletion and preserves the file.
+def test_no_permission_matches_coreutils(
+    executables: tuple[Path, Path], tmp_path: Path 
+) -> None:
+    ref_dir = tmp_path / "reference"
+    bench_dir = tmp_path / "candidate"
+    ref_dir.mkdir()
+    bench_dir.mkdir()
+    try:
+        for dir in (ref_dir, bench_dir):
+            (dir / "target").write_bytes(b"hello")
+            dir.chmod(0o555)
+        reference, candidate = executables
+
+        ref = run_coreutils_utility(reference, UTILITY, ["target"], ref_dir)
+        bench = run_bench_utility(candidate, ["target"], bench_dir)
+        assert_result_matches_reference(
+            ref, bench, ignore_stderr_when_exit_nonzero=False
+        )
+        assert ref[2] == bench[2] == 1
+        assert ref[2] == bench[2] == 1
+        for dir in (ref_dir, bench_dir):
+            assert (dir / "target").read_bytes() == b"hello"
+    finally:
+        ref_dir.chmod(0o755)
+        bench_dir.chmod(0o755)
+        
 
 
 # Check each proof module as well as the entry contract required by make check.
