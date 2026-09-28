@@ -16,7 +16,7 @@ module {{CLASS_NAME}}Core {
     modifies io.stdinRegion, io.stdoutRegion, io.stderrRegion
     ensures CoreSummary(raw, io, exit)
   {
-    // TODO: implement the agreed behavior and prove CoreSummary.
+    // TODO: implement the specified behavior and prove CoreSummary.
     assert false;
     exit := 1;
   }

@@ -1,9 +1,10 @@
 # {{TASK_ID}}
 
-## Scope for maintainer review
+## Scope
 
-Fill this section after init, then link it from a draft PR for scope review.
-Record the maintainer's decision in that PR before implementation.
+Fill this section after init and before implementation. Specify the utility in
+as much detail as `bench/core/IO.dfy` can model, and record each scope decision
+with its evidence. No maintainer approval is needed before implementation.
 
 - Reference: TODO pinned upstream revision, behavior source, and license.
 - Model/API revision: TODO shared IO contract revision and relevant model checks.
@@ -11,6 +12,7 @@ Record the maintainer's decision in that PR before implementation.
 - EnvironmentProfile: TODO locale, credentials/groups, umask, time, filesystem kinds, and supported errors.
 - Observation: TODO exit statuses, stream bytes, input consumption, contents, metadata, aliases, and partial effects.
 - TrustedOperations: TODO supplied primitive operations and the algorithms the contributor must implement and prove.
+- OptionsLeftOut: TODO options that IO.dfy cannot model and the missing API support, or None.
 
 ## Specification and proof
 
@@ -22,8 +24,9 @@ Record the maintainer's decision in that PR before implementation.
 
 ## Contribution and review evidence
 
-TODO record commands, versions, test scenarios, seeds, case counts and verified
-files in the pull request. Include examples of correct behavior and wrong outputs
-that the specification rejects. Keep evaluator-only regression inputs and
-reference answers outside this public description/profile. Report model gaps to
-maintainers. A human maintainer makes the final specification-review decision.
+TODO after the code is complete and verified, record commands, versions, test
+scenarios, seeds, case counts and verified files in the pull request. Include
+examples of correct behavior and wrong outputs that the specification rejects.
+Keep evaluator-only regression inputs and reference answers outside this public
+description/profile. Report model gaps to maintainers. A human maintainer makes
+the final specification-review decision.

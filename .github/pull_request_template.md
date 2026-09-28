@@ -7,17 +7,21 @@ Describe the problem and resulting behavior. Give a small before/after example w
 - Working directory, OS/container image and tool versions:
 - Changed specification / implementation / proof / evaluator / dataset boundaries:
 - GNU source revision, URL/license and upstream test scenarios:
-- Accepted input/environment/observation scope and trusted model/API revision:
+- Specified input/environment/observation scope and trusted model/API revision:
 
 Keep the evidence sections below in **tests → fuzzing → verification** order. Copy and paste actual stdout into each fenced `text` block. Include the command and exit code outside the block. Keep stderr separately if it contains warnings or failures; do not omit failed or skipped work. Use `not run` or `not applicable` with a reason instead of fabricated output.
+
+For a utility contribution, open this PR only after the code is complete and
+verified: `make check TASK='<utility_name>'` passes and, for coreutils, every
+fuzzing campaign in section 2 completes without errors on the tested commit.
 
 ## Options left out due to IO.dfy
 
 Leave out options that cannot be implemented with the current API in
 `bench/core/IO.dfy`. List each option and explain what API support is missing.
-Keep this list in the utility's scope document too. If an option is already
-required by an agreed task, ask a maintainer to review the scope or API change
-before implementation. Write `None` if no options were left out for this reason.
+Keep this list in the utility's scope document too. Do not change shared IO
+contracts yourself; describe the missing operation here. Write `None` if no
+options were left out for this reason.
 
 | Utility | Option left out | Missing API support |
 | --- | --- | --- |

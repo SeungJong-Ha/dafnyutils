@@ -1,8 +1,7 @@
 # Utility implementation notes
 
 Use these notes when writing a utility specification, implementation, proof and
-GNU comparison tests. The examples show common mistakes; the utility entries
-list required behavior, errors and current limits.
+GNU comparison tests. The examples show common mistakes.
 
 For the contribution workflow, see [Extending benchmark](../CONTRIBUTING.md#extending-benchmark).
 
@@ -12,45 +11,6 @@ For the contribution workflow, see [Extending benchmark](../CONTRIBUTING.md#exte
 - [Handle stream errors and partial output](#handle-stream-errors-and-partial-output)
 - [Check filesystem effects](#check-filesystem-effects)
 - [Prove the utility contract](#prove-the-utility-contract)
-- [Requirements by utility](#requirements-by-utility)
-- [b2sum](#b2sum)
-- [base32](#base32)
-- [basenc](#basenc)
-- [cksum](#cksum)
-- [date](#date)
-- [dd](#dd)
-- [dir](#dir)
-- [dircolors](#dircolors)
-- [fmt](#fmt)
-- [join](#join)
-- [link](#link)
-- [md5sum](#md5sum)
-- [mkdir](#mkdir)
-- [mkfifo](#mkfifo)
-- [mknod](#mknod)
-- [od](#od)
-- [pathchk](#pathchk)
-- [pr](#pr)
-- [ptx](#ptx)
-- [realpath](#realpath)
-- [rm](#rm)
-- [rmdir](#rmdir)
-- [sha1sum](#sha1sum)
-- [sha224sum](#sha224sum)
-- [sha256sum](#sha256sum)
-- [sha384sum](#sha384sum)
-- [sha512sum](#sha512sum)
-- [sort](#sort)
-- [split](#split)
-- [sum](#sum)
-- [sync](#sync)
-- [test](#test)
-- [truncate](#truncate)
-- [tsort](#tsort)
-- [unexpand](#unexpand)
-- [unlink](#unlink)
-- [vdir](#vdir)
-- [Candidates awaiting model work](#candidates-awaiting-model-work)
 
 ## Common implementation rules
 
@@ -130,9 +90,9 @@ trusted IO observation, as [CopySpec.dfy](../example/copy/CopySpec.dfy) does.
   Claim only the evaluator's declared observations. New observations return the
   task to `model_preparation` until maintainer review and approval.
 - An excluded option may still be valid GNU behavior. Do not label it invalid.
-  Keep the agreed scope in the description, formal specification, generated
-  profile and case generator. Changes need maintainer review and must not narrow
-  released benchmarks.
+  Keep the same scope in the description, formal specification, generated
+  profile and case generator. Changes to a released benchmark's scope need
+  maintainer review and must not narrow it.
 
 ### Check filesystem effects
 
@@ -206,8 +166,9 @@ exact diagnostics and final exit status.
 - Keep parent/child timestamp effects in the returned state. Compare timestamps
   under the evaluator's policy, not by requiring exact wall-clock equality
   between runs. Stronger checks need maintainer observation work first.
-- Include the GNU comparison cases listed for each utility below. Shared-model
-  tests cover only their recorded native success/error cases, not a whole utility.
+- Include GNU comparison cases for every behavior in the utility's scope.
+  Shared-model tests cover only their recorded native success/error cases, not a
+  whole utility.
 
 ### Prove the utility contract
 
@@ -245,7 +206,8 @@ Changing its exit assignment to `exit := 0` makes verification fail.
   scope, based on source review and representative contract/native checks.
   It does not mean the utility specification or proof is complete.
 - Each contribution must rule out the counterexamples listed in its scope.
-- A whole-read API is not an incremental stdin API. Follow the restrictions for
-  `od` and `sort` below. Logical input consumption is modeled; matching GNU's
-  kernel read-ahead or a shared descriptor's final offset is not established by
-  this API or the current stdout/stderr/filesystem comparator.
+- A whole-read API is not an incremental stdin API. It cannot leave an unread
+  stdin suffix, so stdin behavior that stops reading early is outside the
+  current model. Logical input consumption is modeled; matching GNU's kernel
+  read-ahead or a shared descriptor's final offset is not established by this
+  API or the current stdout/stderr/filesystem comparator.

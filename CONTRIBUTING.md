@@ -9,7 +9,7 @@ Submit a focused change with reproducible code verification and fuzzing results.
   - [Find the right files](#find-the-right-files)
   - [Build one contribution](#build-one-contribution)
     - [Create the files](#create-the-files)
-    - [Agree on the observable behavior](#agree-on-the-observable-behavior)
+    - [Define the observable behavior](#define-the-observable-behavior)
     - [Complete the generated files](#complete-the-generated-files)
     - [Specify first, then implement and prove](#specify-first-then-implement-and-prove)
     - [Add differential cases and a generator](#add-differential-cases-and-a-generator)
@@ -29,7 +29,7 @@ Submit a focused change with reproducible code verification and fuzzing results.
 
 ## Extending benchmark
 
-Contribute a utility by writing its behavior contract, implementing it, proving the entry point, and comparing the executable with the pinned GNU binary. Submit all four kinds of evidence for human review.
+Contribute a utility by writing its behavior contract, implementing it, proving the entry point, and comparing the executable with the pinned GNU binary. Do this on your own: define the scope within the system that `bench/core/IO.dfy` models, and submit all four kinds of evidence for human review once the code is complete and verified.
 
 This guide follows `base32`, an open utility with byte-stream input. The scaffold is a starting point, not a working implementation. Use the existing `base64` and `cat` projects to learn the structure; do not copy their specifications as the meaning of `base32`.
 
@@ -56,16 +56,16 @@ inside that container, with `.venv/bin` on `PATH`.
 | `_build/` | Generated binaries and reports, created by build/check commands |
 
 Read [bench rules](bench/AGENTS.md) and [Dafny style](DAFNYSTYLE.md) before editing Dafny.
-Keep the scope in the utility's Markdown file and implementation/validation notes
-in the draft PR, as described in [Prepare the change](#prepare-the-change).
+Keep the scope in the utility's Markdown file, as described in
+[Prepare the change](#prepare-the-change).
 
 ### Build one contribution
 
 #### Create the files
 
 Choose an `open_for_contribution` row in [TODOLIST.csv](TODOLIST.csv), then
-read the [implementation notes](docs/implementation-notes.md) and its
-[utility requirements](docs/implementation-notes.md#requirements-by-utility). This walkthrough uses `base32`.
+read the [implementation notes](docs/implementation-notes.md) and the
+[core API guide](docs/core-api.md). This walkthrough uses `base32`.
 Create the scaffold **before** creating its directory or scope document:
 
 ```sh
@@ -82,22 +82,47 @@ scaffold is incomplete; replace TODO content and source status before validation
 If the directory already exists, inspect it and continue that contribution; init will
 not overwrite it. Do not delete someone else's work to rerun this command.
 
-#### Agree on the observable behavior
+#### Define the observable behavior
 
-The `base32` opening covers encoding, `-d`, `-i`, `-w`, and zero or one file
-operand. It does not cover other encodings.
+Specify the utility in as much detail as the system modeled by
+`bench/core/IO.dfy` can express. The row's `scope` column in
+[TODOLIST.csv](TODOLIST.csv) is the minimum. For `base32` it lists the default
+encoding, `-d`, `-i`, `-w` (including zero) and zero or one file operand. Also
+cover every other option, operand form and error path of the GNU utility whose
+observable behavior the model can express, such as `--help`, `--version` and
+invalid options.
+
+Settle open questions from the pinned GNU source, the upstream GNU tests, the
+exact `IO.dfy` declarations and `IOContract.dfy` predicates, and
+[Trust limits and API changes](docs/core-api.md#trust-limits-and-api-changes).
+Record each scope decision and its evidence in the scope document.
 
 Fill the generated `bench/utils/base32/base32.md` before implementation:
 
 | Question | Example answer for base32 |
 | --- | --- |
 | What is the source? | Pinned `coreutils/src/basenc.c`, built with `BASE_TYPE=32`; record the submodule commit |
-| What is accepted? | Finite raw bytes from stdin or one regular file; the options in the agreed task scope |
+| What is accepted? | Finite raw bytes from stdin or one regular file; every GNU `base32` option that `IO.dfy` can model |
 | What is observed? | Exact output and error bytes, exit behavior, and modeled input consumption |
 | Which environment? | Linux, C locale and UTC0; the filename and IO limits in the [stream handling rules](docs/implementation-notes.md#handle-stream-errors-and-partial-output) |
 | Which errors matter? | Invalid alphabet/padding/options; missing or inaccessible file; partial progress followed by failure |
 | What is trusted? | Named `bench/core` IO and diagnostic contracts, with their recorded revision |
 | What remains to prove? | Bit-block relation, padding, wrapping, decoding prefix, diagnostics and exit policy |
+
+For each accepted input, make the specification determine every observation
+that the [model exposes](docs/core-api.md#values-and-observations) and the GNU
+utility defines:
+
+- exact stdout and stderr bytes, including diagnostic text, quoting and order;
+- the exact exit status, not only success or failure;
+- the consumed input prefix and the output committed before a read or write error;
+- each modeled error outcome that the utility reports differently;
+- for a utility that changes files, the resulting filesystem, including the
+  effects left after a failure.
+
+Leave a result open only where GNU or the IO contract permits more than one, such
+as the order of environment enumeration. Do not replace an exact value with "an
+error occurred" or "the exit status is nonzero".
 
 Check the current API in `bench/core/IO.dfy` before choosing the options to implement.
 If an option cannot be implemented with this API, leave it out of the contribution.
@@ -105,15 +130,10 @@ List each such option in the utility's scope document and in the PR's
 **Options left out due to IO.dfy** section. Explain what API support is missing.
 Write `None` in that PR section if no options were left out for this reason.
 
-If the option is already required by an agreed task, ask a maintainer to review
-the scope or API change before implementation. Do not silently narrow the task,
-assume successful IO, or add an unchecked native call to make a proof pass.
-
-Open a draft PR with this scope table and ask a repository maintainer to review it
-before implementation. Link a related issue if one exists; an issue is not required.
-An open row identifies an available starting scope, not approval of your completed
-specification. State explicitly when you use that scope without changes. Record
-the maintainer's decision in the draft PR, including any requested model work.
+Do not extend shared IO contracts or runtime adapters to add a left-out option;
+maintainers own them. Report the missing operation in the PR instead. Do not
+narrow the scope without recording it, assume successful IO, or add an
+unchecked native call to make a proof pass.
 
 #### Complete the generated files
 
@@ -136,7 +156,7 @@ Complete these generated files:
 
 | File | What to put there |
 | --- | --- |
-| `base32.md` | Agreed input, option, environment, output and error scope, with examples, source revision, and license |
+| `base32.md` | The scope you defined: input, option, environment, output and error behavior; scope decisions with evidence; options left out due to IO.dfy; examples, source revision, and license |
 | `Base32Schema.dfy` | CLI schema/configuration, raw command types and decode behavior |
 | `Base32Spec.dfy` | Declarative observable relation and fixed help/version/error text |
 | `Base32Core.dfy` | Executable algorithms and the values they construct to satisfy the specification |
@@ -154,7 +174,7 @@ Use only the IO regions it reads or changes; the supplied stream regions are a
 starting point, not permission to widen an existing task's frame.
 
 The false Spec/CoreSummary relations and failing assertions deliberately block
-verification. Replace them with reviewed behavior and proofs, not `true`, `assume`,
+verification. Replace them with the specified behavior and its proofs, not `true`, `assume`,
 or verification skips. `Main` uses `decreases *` because the shared runner permits
 nontermination; this does not prove CLI termination. The generated Core method
 still has to terminate. Review help/version/parse-error plans separately.
@@ -322,13 +342,19 @@ the untouched scaffold is not a passing example.
 Follow [the contribution guidelines below](#prepare-the-change) and use the
 [pull request template](.github/pull_request_template.md).
 
+Submit the pull request only when the code is complete and verified: every
+required stage of `make check TASK=base32` passes and, for a coreutils utility,
+each fuzzing campaign below completes without errors on the same revision.
+A failed, skipped or unrun required check means the utility is not ready to
+submit; fix it and rerun the affected checks first.
+
 - Paste actual stdout in **tests → fuzzing → verification** order, with commands,
-  exit codes. Explain failed, unrun and inapplicable checks.
+  exit codes. Explain inapplicable checks and any failures fixed along the way.
 - For each affected coreutils utility, run the command in the PR template with
   seeds `1,7,19` and 1,000 iterations per seed. Paste its actual output. Each seed
   must complete 1,000 matches with no errors and full comparison settings. The
   20-case automatic gate does not replace these runs.
-- Include the source revision/license, accepted scope, trusted APIs, main
+- Include the source revision/license, specified scope, trusted APIs, main
   specification, and any proof or termination limits.
 - Identify the seeds, case counts and built artifacts. Preserve original mismatch
   bundles and report fixed-case regression results separately.
@@ -339,12 +365,9 @@ The maintainer reviews whether the specification describes GNU behavior, rejects
 
 Explain the problem, the intended behavior and the files affected. Keep specification, implementation, proof and evaluator changes distinct. Reuse shared helpers and keep the approved inputs and library assumptions unchanged.
 
-Use a draft PR for the work plan and maintainer discussion. Put the accepted
-utility scope in `bench/utils/<utility>/<utility>.md`. Keep progress notes in the
-draft PR using these fields: **completed work, remaining work, blockers, commands
-and results, artifact links, next action**. Before a PR exists, local notes may
-live under `_build/contribution-notes/`; copy relevant evidence into the PR so
-reviewers can access it. No separate wiki or plan directory is required.
+Put the utility scope you defined in `bench/utils/<utility>/<utility>.md`. Local
+notes may live under `_build/contribution-notes/`; copy relevant evidence into
+the PR so reviewers can access it. No separate wiki or plan directory is required.
 
 These are contributor-maintenance records. Evaluated benchmark runs must follow
 their own permitted-input and artifact rules; do not feed these notes into a run
@@ -439,8 +462,8 @@ Existing shared API names such as `io.stdout()` are intentional exceptions to a 
 ## Commit messages
 
 Keep each commit focused on one logical change, including related scope and
-documentation updates. Keep the work record in the draft PR as described above.
-If an agent is helping, it must create commits only when you explicitly request them.
+documentation updates. If an agent is helping, it must create commits only when
+you explicitly request them.
 
 Write the entire message in English. Use this subject format:
 
@@ -489,7 +512,11 @@ Algorithm tasks do not require the coreutils fuzzer; report their case tests ins
 
 ## Open the pull request
 
-Use a short title and explain the resulting behavior first. Complete the template's scope and evidence fields, paste the command output, and list remaining failures or limitations. Rerun affected checks after code changes and identify the revision each result covers.
+Open the pull request only after the code is complete and verified, as described
+in [Open a pull request](#open-a-pull-request). Use a short title and explain the
+resulting behavior first. Complete the template's scope and evidence fields,
+paste the command output, and list known limitations. Rerun affected checks
+after code changes and identify the revision each result covers.
 
 Maintainers check whether the specification describes the required behavior and
 uses only approved library contracts, separately from automated checks. Leave

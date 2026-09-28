@@ -46,7 +46,8 @@ def assert_parity(
     assert_result_matches_reference(expected, actual, ignore_stderr_when_exit_nonzero=False)
 
 
-# Replace this failure with one agreed GNU scenario using executables and assert_parity.
+# Replace this failure with one GNU scenario from the specified scope using
+# executables and assert_parity.
 def test_gnu_parity() -> None:
     # TODO: add the upstream source path inside the completed test body.
     pytest.fail("TODO: add a representative {{TASK_ID}} GNU parity case")
