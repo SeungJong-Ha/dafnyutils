@@ -3,7 +3,7 @@ include "../../core/CliTypes.dfy"
 module UnlinkSchema {
   import CliTypes
 
-  datatype UnlinkMode = ModeRun | ModeHelp | ModeVersion
+  datatype UnlinkMode = ModeRun | ModeHelp | ModeVersion | ModeExtraOperand(operand: string)
 
   datatype UnlinkCmdRaw = UnlinkCmdRaw(
     mode: UnlinkMode,
@@ -54,6 +54,8 @@ module UnlinkSchema {
         ModeHelp
       else if seenVersion then
         ModeVersion
+      else if |parsed.positionals| > 1 then
+        ModeExtraOperand(parsed.positionals[1])
       else
         ModeRun;
 

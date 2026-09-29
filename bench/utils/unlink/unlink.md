@@ -1,74 +1,58 @@
-# unlink
+# unlink NL Specification
 
-## Scope for maintainer review
+Source:
+- `coreutils/doc/coreutils.texi`
+- `@node unlink invocation`
+- Source line range: 11114-11139
+- Implementation: `coreutils/src/unlink.c` at submodule commit
+  `2cf491412c199e2211880ec3f4ba387026638a33`
+- License: GPL-3.0-or-later
 
-- Reference: `coreutils/src/unlink.c` and `coreutils/doc/coreutils.texi`
-  (`unlink invocation`). 
-  - Commit: `2cf491412c199e2211880ec3f4ba387026638a33`.
-  - License: GPL-3.0-or-later.
-- Model/API revision: `bench/core` at
-  `8bc3d29a3c4161526d42b35b4d14449fe74e3719`.
-- AllowedInput:
-  - Finite argument lists.
-  - Options: `--help`, `--version`, and unambiguous long-option abbreviations.
-  - `--` ends option parsing.
-  - Deletion requires exactly one pathname.
-  - Missing/extra operands and invalid options are errors.
-- EnvironmentProfile: Linux, C locale, current user permissions. No stdin use
-  or changes to credentials or umask.
-- Observation: stdout, stderr, exit status, and filesystem effects. Unlinking
-  a symlink preserves its target. Unlinking a hard-link name preserves other
-  names. Dangling links are accepted; directories and missing paths fail.
-- TrustedOperations: shared parser, `UnlinkPath`, `QuoteArgument`, `QuoteafPath`,
-  `GetCLocaleErrnoText`, and stream writes. No options omitted due to IO API limits.
+This file summarizes the upstream GNU `unlink` behavior relevant to the benchmark.
 
-## Specification and proof
+## `unlink`: Remove a file name
 
-- SpecificationEntry: `UnlinkSpec.Spec(raw, io, exit)`. Help/version output,
-  operand errors, deletion outcome, and exit status. Success: 0. Errors: 1.
-- Frame: modifies `fsRegion`, `stdoutRegion`, and `stderrRegion`. Reads these
-  regions plus the required clock and trusted filesystem/stream regions.
-- TerminationPolicy: finite Core branches and Decode traversal. CLI uses
-  `decreases *`; whole-process termination is not proved.
-- CLI boundary: first help/version option wins. Parse failures honor earlier
-  help/version requests by reparsing the prefix. Entry `RunCore` ensures Spec.
-- Normal, boundary, and error behavior: deletion returns 0; operand, option,
-  or deletion errors report diagnostics and return 1. Symlink targets and other
-  hard-link names are preserved. Empty paths and directories fail.
+`unlink` removes one specified file name using the system's `unlink` operation.
+It is a smaller interface than `rm`: it takes a single file name and does not
+offer recursive or interactive removal.
 
-Filesystem and parser correctness are trusted. Help/version and missing-operand
-output use whole-append APIs; other diagnostics use partial-write contracts.
-Closed-stream and `/dev/full` parity is unproved.
+```text
+unlink filename
+```
 
-## Contribution and review evidence
+Removing a symbolic link removes the link itself, leaving its target in place.
+If a file has other hard-link names, those names remain usable. GNU `unlink`
+does not remove directories.
 
-Examples assume `FILE` and the file named `--help` are removable regular files.
+The command accepts `--help` and `--version`. To remove a name beginning with
+`-`, prefix it with `./`; for example, `unlink ./--help` removes the file named
+`--help` instead of displaying help.
 
-| Command | Result | Exit |
-| --- | --- | --- |
-| `unlink FILE` | Remove the named entry | 0 |
-| `unlink` | Missing operand diagnostic | 1 |
-| `unlink FIRST SECOND` | Extra operand diagnostic; no deletion | 1 |
-| `unlink --help --bad` | Display help | 0 |
-| `unlink --bad --help` | Invalid option diagnostic | 1 |
-| `unlink -- --help` | Remove the file named `--help` | 0 |
+### Benchmark-Supported Behavior
 
-Deleting a symlink target or accepting extra operands violates the stated behavior.
+The benchmark handles one pathname, including regular files and symbolic links,
+plus `--help`, `--version`, `--`, and operand, option, and deletion errors.
+No options are excluded by `IO.dfy`.
 
-- Runtime: 2 Dafny Decode cases and 15 GNU comparison cases passed, including
-  permission-denied diagnostics and file preservation.
-- Last proof run: 172 verified, 0 errors. Core proof does not cover all CLI exits.
-- Fuzzer: 16 fixed scenarios plus generated inputs. Seed 1: 20/20 matches;
-  no mismatches, timeouts, or incomplete observations. Finite tests are not
-  proof of full parity.
-- Final contribution gate: `make check TASK=unlink` reported
-  `unlink: checks passed`. Proof tests: 3 passed, 15 deselected. Runtime report:
-  `_build/contribution_checks/unlink/implementation-tests.xml` (15 passed,
-  no failures, errors, or skipped cases). Final gate output was supplied by
-  the contributor; the runtime report was inspected locally.
-- Remaining review: upstream test comments and public profile review.
+### Scope and model
 
-Maintainer scope/specification approval is pending. Report commands, versions,
-final results, and actual AI assistance in the PR. Keep evaluator-only cases
-and reference answers outside the public description/profile. Report model
-gaps to maintainers; final specification approval requires human review.
+- **Input and environment:** Finite arguments, long-option abbreviations, Linux
+  filesystem, current user permissions, and C-locale diagnostics; stdin is unused.
+- **Observation:** Output streams, exit status, and modeled filesystem. Help,
+  version, and operand errors leave files unchanged. A failed `UnlinkPathSpec`
+  does not guarantee filesystem preservation; maintainer review is pending.
+- **Trusted API:** Shared parser, `UnlinkPathSpec`, errno text, and stream append
+  contracts in `bench/core` revision `4ac0d9b34816c54c822bd9870794aafae1df3c13`.
+- **Proof:** `Unlink.RunCore` ensures `UnlinkSpec.Spec` through `UnlinkProof`.
+  `Decode` terminates; whole-process termination is not proved.
+
+### Exit Status
+
+The supported command exits with status 0 after a successful removal or a help
+or version request. Operand, option, and deletion errors exit with status 1.
+
+### Known Limitation
+
+The extra-operand and deletion-error diagnostics insert path text literally.
+An operand containing a quote or control byte can therefore differ from GNU's
+quoted diagnostic.

@@ -1,22 +1,50 @@
 include "../../core/IO.dfy"
-include "../../core/Utf8.dfy"
 include "UnlinkSchema.dfy"
 include "UnlinkSpec.dfy"
 
 module UnlinkCore {
   import BenchIO
-  import BenchWorld
   import Schema = UnlinkSchema
   import Spec = UnlinkSpec
-  import Utf8 = Utf8Semantics
   import C = IOContract
 
   twostate predicate CoreSummary(raw: Schema.UnlinkCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.stdoutRegion, io.stderrRegion,
-      io.trustedStreamsRegion, io.fsRegion, io.nowRegion,
-      io.trustedFilesystemRegion
+    reads io.Footprint()
   {
-    Spec.Spec(raw, io, exit)
+    if raw.mode == Schema.ModeHelp then
+      io.fs() == old(io.fs()) &&
+      io.stdout() == old(io.stdout()) + Spec.HelpTextSpec() &&
+      io.stderr() == old(io.stderr()) &&
+      exit == 0
+    else if raw.mode == Schema.ModeVersion then
+      io.fs() == old(io.fs()) &&
+      io.stdout() == old(io.stdout()) + Spec.VersionTextSpec() &&
+      io.stderr() == old(io.stderr()) &&
+      exit == 0
+    else if raw.mode != Schema.ModeRun then
+      match raw.mode
+      case ModeExtraOperand(operand) =>
+        io.fs() == old(io.fs()) &&
+        io.stdout() == old(io.stdout()) &&
+        io.stderr() == old(io.stderr()) +
+          Spec.ExtraOperandText(operand) &&
+        exit == 1
+      case _ => false
+    else if |raw.operands| == 0 then
+      io.fs() == old(io.fs()) &&
+      io.stdout() == old(io.stdout()) &&
+      io.stderr() == old(io.stderr()) + Spec.MissingOperandText() &&
+      exit == 1
+    else
+      exists ok: bool, err: int ::
+        Spec.UnlinkResult(io, raw.operands[0], ok, err) &&
+        io.stdout() == old(io.stdout()) &&
+        (if ok then
+          io.stderr() == old(io.stderr()) && exit == 0
+        else
+          io.stderr() == old(io.stderr()) +
+            Spec.CannotUnlinkText(raw.operands[0], C.CLocaleErrnoTextResult(err)) &&
+          exit == 1)
   }
 
   method RunCore(raw: Schema.UnlinkCmdRaw, io: BenchIO.IO) returns (exit: int)
@@ -26,50 +54,29 @@ module UnlinkCore {
     if raw.mode == Schema.ModeHelp {
       io.AppendStdout(Spec.HelpTextSpec());
       exit := 0;
-      assert io.stdout() == old(io.stdout()) + Spec.HelpTextSpec();
-      assert io.stderr() == old(io.stderr());
     } else if raw.mode == Schema.ModeVersion {
       io.AppendStdout(Spec.VersionTextSpec());
       exit := 0;
-      assert io.stdout() == old(io.stdout()) + Spec.VersionTextSpec();
-      assert io.stderr() == old(io.stderr());
+    } else if raw.mode.ModeExtraOperand? {
+      io.AppendStderr(Spec.ExtraOperandText(raw.mode.operand));
+      exit := 1;
     } else if |raw.operands| == 0 {
       io.AppendStderr(Spec.MissingOperandText());
       exit := 1;
-      assert io.stderr() == old(io.stderr()) + Spec.MissingOperandText();
-    } else if |raw.operands| > 1 {
-      var quoted := io.QuoteArgument(Utf8.Encode(raw.operands[1]));
-      var committed, writeErr := io.WriteStderrWithOutcome(Spec.ExtraOperandText(quoted));
-      exit := 1;
-      
-      assert C.QuoteArgumentSpec(Utf8.Encode(raw.operands[1]), quoted);
-      assert Spec.StderrResult(io, Spec.ExtraOperandText(quoted), writeErr);
     } else {
       var ok, err := io.UnlinkPath(raw.operands[0]);
       assert Spec.UnlinkResult(io, raw.operands[0], ok, err);
 
       if ok {
         exit := 0;
-        assert io.stderr() == old(io.stderr());
       } else {
-        var quoted := io.QuoteafPath(raw.operands[0]);
         var reason := io.GetCLocaleErrnoText(err);
-        var committed, writeErr := io.WriteStderrWithOutcome(Spec.CannotUnlinkText(quoted, reason));
+        io.AppendStderr(Spec.CannotUnlinkText(raw.operands[0], reason));
         exit := 1;
 
-        assert C.QuoteafPathSpec(raw.operands[0], quoted);
         assert C.GetCLocaleErrnoTextSpec(err, reason);
-        assert Spec.StderrResult(io, Spec.CannotUnlinkText(quoted, reason), writeErr);
-
-        assert exists q: BenchWorld.Bytes, r: string, w: int ::
-          C.QuoteafPathSpec(raw.operands[0], q) &&
-          C.GetCLocaleErrnoTextSpec(err, r) &&
-          Spec.StderrResult(io, Spec.CannotUnlinkText(q, r), w);
-          
         assert Spec.UnlinkResult(io, raw.operands[0], ok, err);
-        assert Spec.Spec(raw, io, exit);
       }
     }
-    assert Spec.Spec(raw, io, exit);
   }
 }
