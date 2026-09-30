@@ -32,8 +32,8 @@ pub enum CliCommand {
     Capabilities(CapabilitiesArgs),
     Replay(ReplayArgs),
     Regression(RegressionArgs),
-    #[command(name = "__chmod-exec-helper", hide = true)]
-    ChmodExecHelper(ChmodExecHelperArgs),
+    #[command(name = "__exec-helper", alias = "__chmod-exec-helper", hide = true)]
+    ExecHelper(ExecHelperArgs),
     #[command(name = "__startup-run", hide = true)]
     StartupRun(StartupRunArgs),
     #[command(name = "__container-run-case", hide = true)]
@@ -153,8 +153,9 @@ pub(crate) fn run_capabilities(args: CapabilitiesArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Private READY/GO request that executes a target after its optional identity transition.
 #[derive(Debug, Clone, Args, PartialEq, Eq)]
-pub struct ChmodExecHelperArgs {
+pub struct ExecHelperArgs {
     #[arg(long, value_enum)]
     pub(crate) exec_kind: ExecKind,
 
@@ -253,13 +254,17 @@ pub struct FuzzArgs {
     pub(crate) ignore_stderr: bool,
 
     #[arg(skip)]
-    pub(crate) read_only_time_anchor_seconds: Option<i64>,
-
-    #[arg(skip)]
     pub(crate) process_umask: Option<u32>,
 
     #[arg(skip)]
+    pub(crate) replay_fixture_times:
+        Option<std::collections::BTreeMap<String, crate::fuzz::FsTimes>>,
+
+    #[arg(skip)]
     pub(crate) container_image_id: Option<String>,
+
+    #[arg(skip)]
+    pub(crate) compose_provenance: Option<Box<crate::fuzz::container::ComposeProvenance>>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -292,6 +297,40 @@ mod tests {
     use super::{Cli, CliCommand};
     use crate::utils::startup_protocol::StartupProfile;
     use clap::Parser;
+
+    // The legacy hidden helper command preserves the same structured exec request.
+    #[test]
+    fn legacy_exec_helper_alias_preserves_request() {
+        let parse = |name| {
+            Cli::try_parse_from([
+                "coreutils_fuzzer",
+                name,
+                "--exec-kind",
+                "native",
+                "--target",
+                "/bin/cat",
+                "--native-argv0",
+                "cat",
+                "--ready-fd",
+                "3",
+                "--go-fd",
+                "4",
+                "--status-fd",
+                "5",
+                "--",
+                "--version",
+            ])
+            .unwrap()
+        };
+        let current = parse("__exec-helper");
+        let legacy = parse("__chmod-exec-helper");
+        assert_eq!(current, legacy);
+        let CliCommand::ExecHelper(args) = legacy.command else {
+            unreachable!()
+        };
+        assert_eq!(args.argv, ["--version"]);
+        assert_eq!(args.native_argv0, "cat");
+    }
 
     // Fuzz exposes the selected image while choosing the numeric target identity internally.
     #[test]

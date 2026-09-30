@@ -1,36 +1,34 @@
 use super::case_source::{CaseGenerationLimits, CaseSource};
-use super::compare::report_mismatch;
+use super::comparison::compare::report_mismatch;
+use super::comparison::evaluation::CaseVerdict;
 use super::container::CommandCaseExecutor;
 use super::corpus::InterestingCorpus;
 use super::coverage::OptionCoverage;
-use super::fixture::current_read_only_time_anchor;
 use super::metrics::{
-    case_fingerprint, duration_ns, error_outcome, CampaignMode, CaseMetricsV1, CoverageMetricsV1,
-    MetricsRecorder, StageDurations,
+    case_fingerprint, duration_ns, error_outcome, CampaignMode, CaseMetricsV1, CommonMetricsConfig,
+    CoverageMetricsV1, MetricsRecorder, StageDurations,
 };
-use super::repro::save_case_evaluation;
+use super::repro::{save_case_evaluation, save_failure_input, save_failure_input_at};
 use super::runtime::resolve_fuzz_paths;
 use super::semantic::SemanticCoverage;
 use super::shrink::{evaluate_case_with_executor, shrink_mismatch_with_executor, CaseExecutor};
-use super::time_coverage::CaseVerdict;
 use crate::utils::capabilities::require_fuzz_capability;
-use crate::utils::chmod_campaign::{current_process_umask, selected_chmod_umask};
 use crate::utils::cli::{parse_option_pool, FuzzArgs};
-use crate::{fuzzer_outcome_marker, INCOMPLETE_COVERAGE, SEMANTIC_MISMATCH};
+use crate::utils::execution_context::selected_process_umask;
+use crate::{fuzzer_outcome_marker, SEMANTIC_MISMATCH};
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use std::path::Path;
 use std::time::Instant;
 
 pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
     require_fuzz_capability(&args.common.util)?;
-    args.process_umask = Some(current_process_umask()?);
-    if matches!(args.common.util.as_str(), "ls" | "stat") {
-        args.read_only_time_anchor_seconds = Some(current_read_only_time_anchor()?);
-    }
+    args.process_umask = None;
     let seed = args.common.seed.unwrap_or_else(rand::random);
     let mut rng = StdRng::seed_from_u64(seed);
     let paths = resolve_fuzz_paths(&args)?;
     print_campaign_configuration(&args, &paths, seed);
+    args.compose_provenance = Some(Box::new(super::container::compose_provenance()?));
     let mut executor = CommandCaseExecutor::create(&args, &paths)?;
     args.container_image_id = Some(executor.image_id().unwrap_or("local-test").to_string());
     let option_pool = match args.common.opts.as_deref() {
@@ -78,6 +76,11 @@ pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
     args.common.work_root = Some(executor.work_root_base().to_path_buf());
     metrics.set_configuration("execution_backend", executor.backend_name());
     metrics.set_configuration("container_image", &args.common.container_image);
+    if let Some(compose) = &args.compose_provenance {
+        metrics.set_configuration("compose_path", compose.path.display());
+        metrics.set_configuration("compose_artifact_fingerprint", &compose.fingerprint);
+        metrics.set_configuration("compose_size_bytes", compose.size_bytes);
+    }
     metrics.set_configuration(
         "container_image_id",
         executor.image_id().unwrap_or("local-test"),
@@ -104,6 +107,7 @@ pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
             &mut rng,
             &case_source,
             &mut metrics,
+            None,
         );
         if let Err(error) = result {
             return finish_campaign(metrics, &option_coverage, &semantic_coverage, Err(error));
@@ -214,6 +218,7 @@ fn run_single_iteration(
     rng: &mut StdRng,
     case_source: &CaseSource,
     metrics: &mut MetricsRecorder,
+    failure_input_root: Option<&Path>,
 ) -> Result<(), String> {
     let source_started = Instant::now();
     let sourced = case_source.select_fuzz_case(
@@ -239,6 +244,15 @@ fn run_single_iteration(
         match evaluate_case_with_executor(args, executor, seed, iteration, iteration, &case) {
             Ok(evaluation) => evaluation,
             Err(error) => {
+                let persist_started = Instant::now();
+                let saved = match failure_input_root {
+                    Some(root) => save_failure_input_at(
+                        root, args, seed, iteration, paths, &case_id, &case, &error,
+                    ),
+                    None => {
+                        save_failure_input(args, seed, iteration, paths, &case_id, &case, &error)
+                    }
+                };
                 metrics.complete(CaseMetricsV1 {
                     comparison: None,
                     id: case_id,
@@ -249,10 +263,16 @@ fn run_single_iteration(
                     durations: StageDurations {
                         source_ns,
                         evaluation_ns: duration_ns(evaluation_started.elapsed()),
+                        persist_ns: duration_ns(persist_started.elapsed()),
                         ..StageDurations::default()
                     },
                 });
-                return Err(error);
+                return Err(match saved {
+                    Ok(path) => format!("{error}\nfailure input repro saved to {}", path.display()),
+                    Err(save_error) => {
+                        format!("{error}\nfailed to save failure input repro: {save_error}")
+                    }
+                });
             }
         };
     let evaluation_ns = duration_ns(evaluation_started.elapsed());
@@ -286,35 +306,6 @@ fn run_single_iteration(
             });
             Ok(())
         }
-        CaseVerdict::IncompleteCoverage => {
-            let persist_started = Instant::now();
-            let saved = save_case_evaluation(args, seed, iteration, paths, &evaluation);
-            metrics.complete(CaseMetricsV1 {
-                comparison: Some(evaluation.comparison.clone()),
-                id: case_id,
-                origin: case_origin,
-                transformed_from,
-                case_fingerprint: fingerprint,
-                outcome: INCOMPLETE_COVERAGE.to_string(),
-                durations: StageDurations {
-                    source_ns,
-                    evaluation_ns,
-                    coverage_ns,
-                    persist_ns: duration_ns(persist_started.elapsed()),
-                    ..StageDurations::default()
-                },
-            });
-            let evidence = match saved {
-                Ok(path) => format!("raw observation bundle: {}", path.display()),
-                Err(error) => format!("failed to save raw observation bundle: {error}"),
-            };
-            Err(format!(
-                "{}\ntime coverage is incomplete for util={}: {:?}\n{evidence}",
-                fuzzer_outcome_marker(INCOMPLETE_COVERAGE),
-                args.common.util,
-                evaluation.comparison.time_coverage
-            ))
-        }
         CaseVerdict::Mismatch => {
             let shrink_started = Instant::now();
             let shrunk = match shrink_mismatch_with_executor(
@@ -347,15 +338,25 @@ fn run_single_iteration(
             };
             let shrink_ns = duration_ns(shrink_started.elapsed());
             option_coverage.observe_case(&shrunk.case.argv);
-            report_mismatch(
-                seed,
-                iteration,
-                &args.common.util,
-                &shrunk.case.argv,
-                &shrunk.reference,
-                &shrunk.dut,
-                &shrunk.comparison.observable,
-            );
+            if shrunk.mismatch_signature.is_some() {
+                report_mismatch(
+                    seed,
+                    iteration,
+                    &args.common.util,
+                    &shrunk.case.argv,
+                    &shrunk.reference,
+                    &shrunk.dut,
+                    &shrunk.comparison.observable,
+                );
+            } else {
+                eprintln!("{}", fuzzer_outcome_marker(SEMANTIC_MISMATCH));
+                eprintln!("Observable mismatch detected");
+                eprintln!(
+                    "  util={} seed={seed} iteration={iteration}",
+                    args.common.util
+                );
+                eprintln!("  argv={:?}", shrunk.case.argv);
+            }
             let persist_started = Instant::now();
             if let Err(error) = save_case_evaluation(args, seed, iteration, paths, &shrunk)
                 .map_err(|e| format!("failed to save repro bundle: {e}"))
@@ -413,13 +414,6 @@ fn configure_metrics(
     if !metrics.is_enabled() {
         return Ok(());
     }
-    metrics.set_target_configuration("reference", &paths.reference)?;
-    metrics.set_target_configuration("dut", &paths.dut)?;
-    metrics.set_artifact_configuration(
-        "fuzzer_executable",
-        &std::env::current_exe()
-            .map_err(|error| format!("failed to resolve current fuzzer executable: {error}"))?,
-    )?;
     if let Some(case_set) = args.common.case_set.as_deref() {
         metrics.set_input_file_configuration("case_set", case_set)?;
     } else {
@@ -432,31 +426,15 @@ fn configure_metrics(
     );
     metrics.set_configuration("ignore_stderr", args.ignore_stderr);
     metrics.set_configuration("shrink_attempts", args.shrink_attempts);
-    if args.common.util == "chmod" {
-        let schedule: Vec<String> = (0..args.common.iterations)
-            .map(|iteration| format!("{:#05o}", selected_chmod_umask(seed, iteration)))
-            .collect();
-        metrics.set_configuration(
-            "process_umask_schedule",
-            serde_json::to_string(&schedule).map_err(|error| {
-                format!("failed to serialize chmod umask schedule for metrics: {error}")
-            })?,
-        );
-    } else {
-        metrics.set_configuration(
-            "process_umask",
-            args.process_umask
-                .map(|value| format!("{value:#05o}"))
-                .unwrap_or_else(|| "unavailable".to_string()),
-        );
-    }
-    metrics.set_configuration(
-        "read_only_time_anchor_seconds",
-        args.read_only_time_anchor_seconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-    );
-    Ok(())
+    let umask_schedule: Vec<String> = (0..args.common.iterations)
+        .map(|iteration| format!("{:#05o}", selected_process_umask(seed, iteration)))
+        .collect();
+    metrics.configure_common(CommonMetricsConfig {
+        reference: &paths.reference,
+        dut: &paths.dut,
+
+        umask_schedule: &umask_schedule,
+    })
 }
 
 fn coverage_metrics(
@@ -478,13 +456,190 @@ fn coverage_metrics(
 
 #[cfg(test)]
 mod tests {
-    use super::run_fuzzer;
-    use crate::fuzz::case_source::{CaseSetV1, ExplicitCaseV1, CASE_SET_SCHEMA_V1};
-    use crate::fuzz::{FixtureBlueprint, GeneratedCase};
+    use super::{run_fuzzer, run_single_iteration, CampaignMode, MetricsRecorder};
+    use crate::fuzz::case_source::{
+        load_case_set, CaseSetV1, CaseSource, ExplicitCaseV1, CASE_SET_SCHEMA_V1,
+    };
+    use crate::fuzz::shrink::{CaseExecutor, RawCaseObservation};
+    use crate::fuzz::{FileSpec, FixtureBlueprint, GeneratedCase, ResolvedPaths, ResolvedTarget};
+    use crate::utils::cli::ExecKind;
     use crate::utils::cli::{Cli, CliCommand};
     use clap::Parser;
+    use rand::SeedableRng;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
+
+    const EXECUTION_ERROR: &str =
+        "FUZZER_OUTCOME=fuzzer_timeout\ncontainer case runner exceeded outer deadline";
+
+    struct FailingExecutor {
+        seen: Option<GeneratedCase>,
+    }
+
+    impl CaseExecutor for FailingExecutor {
+        fn execute(
+            &mut self,
+            _args: &crate::utils::cli::FuzzArgs,
+            seed: u64,
+            child_iteration: usize,
+            work_iteration: usize,
+            case: &GeneratedCase,
+        ) -> Result<RawCaseObservation, String> {
+            assert_eq!((seed, child_iteration, work_iteration), (41, 1, 1));
+            self.seen = Some(case.clone());
+            Err(EXECUTION_ERROR.to_string())
+        }
+    }
+
+    fn failed_explicit_iteration(
+        root: &Path,
+        repro_root: &Path,
+    ) -> (GeneratedCase, String, serde_json::Value) {
+        let case = GeneratedCase {
+            argv: vec!["fixture.bin".to_string()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: vec![FileSpec {
+                    relative_path: PathBuf::from("fixture.bin"),
+                    bytes: vec![0, 255, 10],
+                    mode: 0o640,
+                }],
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: vec![255, 0, 10],
+            cwd: PathBuf::from("."),
+        };
+        let set = CaseSetV1 {
+            schema_version: CASE_SET_SCHEMA_V1.to_string(),
+            util: "cat".to_string(),
+            cases: vec![
+                ExplicitCaseV1 {
+                    id: "earlier".to_string(),
+                    case: case.clone(),
+                },
+                ExplicitCaseV1 {
+                    id: "failed-input".to_string(),
+                    case: case.clone(),
+                },
+            ],
+        };
+        let case_set_path = root.join("cases.json");
+        fs::write(&case_set_path, serde_json::to_vec(&set).unwrap()).unwrap();
+        let cli = Cli::try_parse_from([
+            "coreutils_fuzzer",
+            "fuzz",
+            "--util",
+            "cat",
+            "--ref-bin",
+            "/bin/cat",
+            "--dut-bin",
+            "/bin/cat",
+            "--dut-kind",
+            "native",
+            "--iterations",
+            "2",
+            "--seed",
+            "41",
+            "--case-set",
+            case_set_path.to_str().unwrap(),
+        ])
+        .unwrap();
+        let CliCommand::Fuzz(mut args) = cli.command else {
+            unreachable!()
+        };
+        args.common.work_root = Some(root.join("work"));
+        args.process_umask = None;
+        args.container_image_id = Some("sha256:test-image".to_string());
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: PathBuf::from("/bin/cat"),
+                label: "ref",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: PathBuf::from("/bin/cat"),
+                label: "dut",
+            },
+        };
+        let source = CaseSource::load(Some(&case_set_path), "cat", 2).unwrap();
+        let mut executor = FailingExecutor { seen: None };
+        let metrics_path = root.join("metrics.json");
+        let mut metrics =
+            MetricsRecorder::new(Some(metrics_path.clone()), CampaignMode::Fuzz, "cat", 41, 2);
+        let error = run_single_iteration(
+            &args,
+            41,
+            1,
+            &paths,
+            &[],
+            &mut Default::default(),
+            &mut Default::default(),
+            &mut Default::default(),
+            &mut executor,
+            &mut rand::rngs::StdRng::seed_from_u64(41),
+            &source,
+            &mut metrics,
+            Some(repro_root),
+        )
+        .unwrap_err();
+        assert_eq!(executor.seen, Some(case.clone()));
+        metrics.finish().unwrap();
+        let metrics: serde_json::Value =
+            serde_json::from_slice(&fs::read(metrics_path).unwrap()).unwrap();
+        (case, error, metrics)
+    }
+
+    // An executor failure saves the exact selected input and retains its timeout outcome.
+    #[test]
+    fn execution_error_saves_one_case_replay_input() {
+        let root = tempfile::tempdir().unwrap();
+        let repro_root = root.path().join("repros");
+        let (case, error, metrics) = failed_explicit_iteration(root.path(), &repro_root);
+        let bundle = repro_root.join("cat-seed41-iter1-failure-input");
+        let saved_set = load_case_set(&bundle.join("case-set.json"), "cat", 1).unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+
+        assert!(error.starts_with(EXECUTION_ERROR));
+        assert!(error.contains(&bundle.display().to_string()));
+        assert_eq!(saved_set.cases[0].id, "failed-input");
+        assert_eq!(saved_set.cases[0].case, case);
+        assert_eq!(
+            manifest["schema_version"],
+            "coreutils-fuzzer.failure-input.v2"
+        );
+        assert_eq!(manifest["seed"], 41);
+        assert_eq!(manifest["iteration"], 1);
+        assert_eq!(manifest["error"], EXECUTION_ERROR);
+        assert_eq!(manifest["execution_context"]["umask"], 0o022);
+        assert_eq!(
+            manifest["execution_context"]["container_image_id"],
+            "sha256:test-image"
+        );
+        assert!(manifest["reproduce_one_liner"]
+            .as_str()
+            .unwrap()
+            .contains("--case-set"));
+        assert_eq!(metrics["cases"][0]["outcome"], "fuzzer_timeout");
+        assert_eq!(metrics["cases"][0]["id"], "failed-input");
+    }
+
+    // A failed artifact write reports its cause without replacing the executor failure.
+    #[test]
+    fn execution_error_survives_failure_input_write_error() {
+        let root = tempfile::tempdir().unwrap();
+        let file_root = root.path().join("not-a-directory");
+        fs::write(&file_root, b"occupied").unwrap();
+
+        let (_, error, metrics) = failed_explicit_iteration(root.path(), &file_root);
+
+        assert!(error.starts_with(EXECUTION_ERROR));
+        assert!(error.contains("failed to save failure input repro"));
+        assert_eq!(metrics["cases"][0]["outcome"], "fuzzer_timeout");
+        assert_eq!(fs::read(file_root).unwrap(), b"occupied");
+    }
 
     // A real target timeout remains a completed case with its exact input and reproducible settings.
     #[cfg(target_os = "linux")]
@@ -544,6 +699,29 @@ mod tests {
             serde_json::from_slice(&fs::read(metrics).unwrap()).unwrap();
 
         assert!(error.contains("FUZZER_OUTCOME=fuzzer_timeout"));
+        assert_eq!(document["schema_version"], "coreutils-fuzzer.metrics.v3");
+        let schedule: Vec<String> = serde_json::from_str(
+            document["configuration"]["process_umask_schedule"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(schedule, ["0o077"]);
+        let environment: std::collections::BTreeMap<String, String> = serde_json::from_str(
+            document["configuration"]["target_environment"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            environment,
+            crate::utils::execution_context::canonical_process_environment()
+        );
+        assert_eq!(document["configuration"]["target_launch"], "ready-go-exec");
+        assert_eq!(
+            document["configuration"]["target_identity_transition"],
+            "after-go-before-exec"
+        );
         assert_eq!(document["requested"], 1);
         assert_eq!(document["submitted"], 1);
         assert_eq!(document["completed"], 1);
@@ -567,8 +745,7 @@ mod tests {
             "shrink_attempts",
             "case_set_path",
             "case_set_artifact_fingerprint",
-            "process_umask",
-            "read_only_time_anchor_seconds",
+            "process_umask_schedule",
         ] {
             assert!(document["configuration"].get(key).is_some(), "{key}");
         }

@@ -1,5 +1,5 @@
 use super::support;
-use crate::fuzz::mutation::generate_missing_operands;
+use super::system_state::generate_missing_operands;
 use crate::fuzz::{FixtureBlueprint, UtilityProfile};
 use rand::rngs::StdRng;
 use rand::Rng;

@@ -10,7 +10,6 @@ pub const FUZZER_TIMEOUT: &str = "fuzzer_timeout";
 pub const FUZZER_UNSUPPORTED_CAPABILITY: &str = "fuzzer_unsupported_capability";
 pub const REPLAY_NOT_REPRODUCED: &str = "replay_not_reproduced";
 pub const REGRESSION_FAILURE: &str = "regression_failure";
-pub const INCOMPLETE_COVERAGE: &str = "incomplete_coverage";
 pub const SEMANTIC_MISMATCH: &str = "semantic_mismatch";
 
 pub use fuzz::run_fuzzer;
@@ -27,7 +26,7 @@ pub fn run_cli(cli: Cli) -> Result<(), String> {
         CliCommand::Capabilities(args) => utils::cli::run_capabilities(args),
         CliCommand::Replay(args) => fuzz::replay::run_replay(args),
         CliCommand::Regression(args) => fuzz::regression::run_regression(args),
-        CliCommand::ChmodExecHelper(args) => fuzz::execution::run_chmod_exec_helper(args),
+        CliCommand::ExecHelper(args) => fuzz::execution::run_exec_helper(args),
         CliCommand::StartupRun(args) => fuzz::startup::run_startup(args),
         CliCommand::ContainerRunCase(args) => fuzz::container::run_container_case(args),
     }
@@ -50,23 +49,23 @@ use rand::rngs::StdRng;
 use rand::SeedableRng;
 
 #[cfg(test)]
-pub(crate) use fuzz::compare::{compare_results_with_roots, render_text_diff};
-#[cfg(test)]
 pub(crate) use fuzz::corpus::InterestingCorpus;
 #[cfg(test)]
 pub(crate) use fuzz::coverage::OptionCoverage;
 #[cfg(test)]
 pub(crate) use fuzz::execution::apply_deterministic_env;
 #[cfg(test)]
-pub(crate) use fuzz::fixture::{materialize_fixture, prepare_iteration_dirs, reset_dir};
+pub(crate) use fuzz::input::mutations::generate_case;
 #[cfg(test)]
 pub(crate) use fuzz::input::scenario_case;
-#[cfg(test)]
-pub(crate) use fuzz::mutation::generate_case;
 #[cfg(test)]
 pub(crate) use fuzz::runtime::{resolve_fuzz_paths, work_root_for_util};
 #[cfg(test)]
 pub(crate) use fuzz::semantic::{classify_case, SemanticCoverage};
+#[cfg(test)]
+pub(crate) use fuzz::system_state_concretizer::{
+    materialize_fixture, prepare_iteration_dirs, reset_dir,
+};
 #[cfg(test)]
 pub(crate) use utils::cli::parse_option_pool;
 

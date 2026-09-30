@@ -1,16 +1,13 @@
-use super::execution::IdentityTransitionEvidence;
-use super::input::{
-    ls_direct_ctime_case, ls_short_ctime_sort_case, LsDirectCtimeCase, LsDirectOperandFollow,
-    LsShortCtimeSortCase,
-};
-use super::process_outcome::Termination;
-use super::{CompareResult, DiffOp, FsNodeSnapshot, FsSnapshot, RunResult};
+use super::{CompareResult, DiffOp};
+use crate::fuzz::comparison::fs_snapshot::IdentityTransitionEvidence;
+use crate::fuzz::comparison::process_outcome::Termination;
+use crate::fuzz::{FsNodeSnapshot, FsSnapshot, RunResult};
 use crate::utils::arg_semantics::requests_help_or_version;
 use crate::{fuzzer_outcome_marker, SEMANTIC_MISMATCH};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compare_results_with_roots(
@@ -23,38 +20,22 @@ pub(crate) fn compare_results_with_roots(
     dut_identity: &IdentityTransitionEvidence,
     dut_fs: &FsSnapshot,
     ignore_stderr: bool,
-    reference_root: Option<&Path>,
-    dut_root: Option<&Path>,
-    cwd: Option<&Path>,
+    _reference_root: Option<&Path>,
+    _dut_root: Option<&Path>,
+    _cwd: Option<&Path>,
 ) -> Result<CompareResult, String> {
-    let strict_chmod = util == "chmod";
-    let requested_message_output = !strict_chmod && requests_help_or_version(util, argv);
     let process_outcome_diff = (reference.termination != dut.termination).then_some((
         ProcessOutcomeEvidence::Observed(reference.termination),
         ProcessOutcomeEvidence::Observed(dut.termination),
     ));
-    let stdout_diff = if requested_message_output {
-        streams_differ_by_presence(&reference.stdout, &dut.stdout)
-    } else {
-        stdout_streams_differ(
-            util,
-            argv,
-            &reference.stdout,
-            &dut.stdout,
-            reference_fs,
-            dut_fs,
-            reference_root,
-            dut_root,
-            cwd,
-        )
-    };
-    let stderr_diff = !ignore_stderr && stderr_streams_differ(util, &reference.stderr, &dut.stderr);
+    let stdout_diff = stdout_streams_differ(util, argv, &reference.stdout, &dut.stdout);
+    let stderr_diff = !ignore_stderr && stderr_streams_differ(&reference.stderr, &dut.stderr);
     let fs_diff = filesystem_comparison_details(
         reference_fs,
         dut_fs,
         reference_identity,
         dut_identity,
-        strict_chmod,
+        false,
     )?;
     Ok(comparison_from_components(
         process_outcome_diff,
@@ -107,7 +88,6 @@ impl<'de> Deserialize<'de> for ProcessOutcomeEvidence {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ReplayStreamEvidence {
     Ignored,
-    Presence(bool),
     CanonicalBytes(Vec<u8>),
     RawBytes(Vec<u8>),
     Records(Vec<Vec<u8>>),
@@ -116,6 +96,10 @@ pub(crate) enum ReplayStreamEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplayFsNodeEvidence {
+    #[serde(default)]
+    pub(crate) raw_times: Option<crate::fuzz::FsTimes>,
+    #[serde(default)]
+    pub(crate) host_key: Option<crate::fuzz::HostInodeKeySnapshot>,
     pub(crate) raw_stat_metadata: crate::utils::world_json::RawStatMetadataJson,
     pub(crate) kind: String,
     pub(crate) mode_octal: String,
@@ -144,6 +128,8 @@ pub(crate) struct ReplayFsEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ReplayVerdict {
+    #[serde(default)]
+    pub(crate) execution: Option<crate::fuzz::execution::ExecutionEvidence>,
     pub(crate) comparison: CompareResult,
     pub(crate) reference_process_outcome: ProcessOutcomeEvidence,
     pub(crate) dut_process_outcome: ProcessOutcomeEvidence,
@@ -160,6 +146,164 @@ pub(crate) struct ReplayVerdict {
 }
 
 impl ReplayVerdict {
+    /// Returns the recorded reference time inputs after validating temporal evidence.
+    pub(crate) fn fixture_time_inputs(
+        &self,
+    ) -> Result<BTreeMap<String, crate::fuzz::FsTimes>, String> {
+        self.validate_time_evidence()?;
+        self.reference_pre_fs
+            .nodes
+            .iter()
+            .map(|(path, node)| {
+                if node.kind == "inaccessible" {
+                    return Err(format!(
+                        "cannot restore unobserved fixture time input at {path}"
+                    ));
+                }
+                Ok((
+                    path.clone(),
+                    node.raw_times
+                        .ok_or("missing saved raw timestamps; rerun with --case-set")?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Checks raw timestamps, transition flags and run windows before replay abstraction.
+    pub(crate) fn validate_time_evidence(&self) -> Result<(), String> {
+        let execution = self
+            .execution
+            .as_ref()
+            .ok_or("missing execution time/sharing evidence; rerun with --case-set")?;
+        for window in [execution.reference_window, execution.dut_window] {
+            if !window.contains(window.start) || !window.contains(window.end) {
+                return Err("invalid execution wall-clock window".into());
+            }
+        }
+        if execution.reference_window.end > execution.dut_window.start {
+            return Err("execution windows are not sequential".into());
+        }
+        for (pre, post, identity) in [
+            (
+                &self.reference_pre_fs,
+                &self.reference_post_fs,
+                &self.reference_identity,
+            ),
+            (&self.dut_pre_fs, &self.dut_post_fs, &self.dut_identity),
+        ] {
+            let mut transitions = BTreeSet::new();
+            for (before_path, before) in &pre.nodes {
+                let key = before.host_key.ok_or("missing raw filesystem identity")?;
+                for (after_path, after) in &post.nodes {
+                    if after.host_key == Some(key) {
+                        transitions.insert((before_path.clone(), after_path.clone()));
+                    }
+                }
+            }
+            if &transitions != identity {
+                return Err("raw filesystem identity transition evidence disagrees".into());
+            }
+            for snapshot in [pre, post] {
+                let mut aliases = BTreeSet::new();
+                for (left_path, left) in &snapshot.nodes {
+                    let key = left.host_key.ok_or("missing raw filesystem identity")?;
+                    for (right_path, right) in snapshot.nodes.range::<String, _>((
+                        std::ops::Bound::Excluded(left_path),
+                        std::ops::Bound::Unbounded,
+                    )) {
+                        if right.host_key == Some(key) {
+                            aliases.insert((left_path.clone(), right_path.clone()));
+                        }
+                    }
+                }
+                if aliases != snapshot.hardlink_aliases {
+                    return Err("raw hardlink identity evidence disagrees".into());
+                }
+            }
+            for (is_post, snapshot) in [(false, pre), (true, post)] {
+                for (path, node) in &snapshot.nodes {
+                    let times = node
+                        .raw_times
+                        .ok_or("missing raw timestamp evidence; rerun with --case-set")?;
+                    if [times.atime_nsec, times.mtime_nsec, times.ctime_nsec]
+                        .iter()
+                        .any(|n| !(0..1_000_000_000).contains(n))
+                    {
+                        return Err(format!("invalid raw timestamp at {path}"));
+                    }
+                    let before = pre.nodes.get(path).and_then(|node| node.raw_times);
+                    if node.atime != Some(atime(times))
+                        || node.mtime != Some(mtime(times))
+                        || node.atime_changed_from_pre
+                            != (is_post && before.map(atime) != Some(atime(times)))
+                        || node.mtime_changed_from_pre
+                            != (is_post && before.map(mtime) != Some(mtime(times)))
+                        || node.ctime_changed_from_pre
+                            != (is_post && before.map(ctime) != Some(ctime(times)))
+                    {
+                        return Err(format!(
+                            "raw timestamp transition evidence disagrees at {path}"
+                        ));
+                    }
+                }
+            }
+        }
+        if execution.fixture_sharing && self.reference_pre_fs != self.reference_post_fs {
+            // Post transition flags are false precisely when every raw field was unchanged.
+            return Err("shared fixture reference pre/post evidence differs".into());
+        }
+        if execution.fixture_sharing && self.reference_post_fs != self.dut_pre_fs {
+            return Err("shared fixture DUT prestate differs from reference poststate".into());
+        }
+        Ok(())
+    }
+
+    /// Reproduces observable evidence without host allocations or timestamp metadata.
+    pub(crate) fn reproduces(&self, saved: &Self) -> Result<bool, String> {
+        Ok(self.replay_comparison_evidence()? == saved.replay_comparison_evidence()?)
+    }
+
+    fn replay_comparison_evidence(&self) -> Result<Self, String> {
+        self.validate_time_evidence()?;
+        let execution = self.execution.as_ref().expect("validated execution");
+        let mut result = self.clone();
+        // Runtime windows are diagnostic evidence; absolute clock readings vary across runs.
+        result.execution = None;
+        // Raw host keys are preserved and checked against alias/transition partitions;
+        // fresh clones reproduce those partitions, not the host's inode allocations.
+        for snapshot in [
+            &mut result.reference_pre_fs,
+            &mut result.dut_pre_fs,
+            &mut result.reference_post_fs,
+            &mut result.dut_post_fs,
+        ] {
+            for node in snapshot.nodes.values_mut() {
+                node.host_key = None;
+                // Time behavior is outside coverage. Preserve raw values in the bundle,
+                // but do not require clock-dependent metadata to reproduce a mismatch.
+                node.raw_times = None;
+                node.atime = None;
+                node.mtime = None;
+                node.atime_changed_from_pre = false;
+                node.mtime_changed_from_pre = false;
+                node.ctime_changed_from_pre = false;
+            }
+        }
+        // Preserve the reuse decision even though absolute wall-clock values vary.
+        result.execution = Some(crate::fuzz::execution::ExecutionEvidence {
+            fixture_sharing: execution.fixture_sharing,
+            reference_window: crate::fuzz::execution::ExecutionWindow {
+                start: (0, 0),
+                end: (0, 0),
+            },
+            dut_window: crate::fuzz::execution::ExecutionWindow {
+                start: (0, 0),
+                end: (0, 0),
+            },
+        });
+        Ok(result)
+    }
+
     pub(crate) fn validate_process_outcome_consistency(&self) -> Result<(), String> {
         if let CompareResult::Mismatch {
             process_outcome_diff: Some((reference, dut)),
@@ -195,36 +339,19 @@ pub(crate) fn replay_verdict_with_roots(
     reference_post_fs: &FsSnapshot,
     dut_post_fs: &FsSnapshot,
     ignore_stderr: bool,
-    reference_root: Option<&Path>,
-    dut_root: Option<&Path>,
-    cwd: Option<&Path>,
+    _reference_root: Option<&Path>,
+    _dut_root: Option<&Path>,
+    _cwd: Option<&Path>,
 ) -> Result<ReplayVerdict, String> {
-    let requested_message_output = util != "chmod" && requests_help_or_version(util, argv);
-    let (reference_stdout, dut_stdout) = if requested_message_output {
-        (
-            ReplayStreamEvidence::Presence(!reference.stdout.is_empty()),
-            ReplayStreamEvidence::Presence(!dut.stdout.is_empty()),
-        )
-    } else {
-        replay_stdout_evidence(
-            util,
-            argv,
-            &reference.stdout,
-            &dut.stdout,
-            reference_post_fs,
-            dut_post_fs,
-            reference_root,
-            dut_root,
-            cwd,
-        )
-    };
+    let (reference_stdout, dut_stdout) =
+        replay_stdout_evidence(util, argv, &reference.stdout, &dut.stdout);
     let (reference_stderr, dut_stderr) = if ignore_stderr {
         (ReplayStreamEvidence::Ignored, ReplayStreamEvidence::Ignored)
     } else {
-        replay_stderr_evidence(util, &reference.stderr, &dut.stderr)
+        replay_stderr_evidence(&reference.stderr, &dut.stderr)
     };
-    let include_times = matches!(util, "chmod" | "ls" | "stat");
     Ok(ReplayVerdict {
+        execution: None,
         comparison: compare.clone(),
         reference_process_outcome: ProcessOutcomeEvidence::Observed(reference.termination),
         dut_process_outcome: ProcessOutcomeEvidence::Observed(dut.termination),
@@ -234,58 +361,51 @@ pub(crate) fn replay_verdict_with_roots(
         dut_stderr,
         reference_identity: reference_identity.clone(),
         dut_identity: dut_identity.clone(),
-        reference_pre_fs: replay_fs_evidence(
-            reference_pre_fs,
-            None,
-            include_times,
-            "reference pre",
-        )?,
-        dut_pre_fs: replay_fs_evidence(dut_pre_fs, None, include_times, "DUT pre")?,
+        reference_pre_fs: replay_fs_evidence(reference_pre_fs, None, "reference pre")?,
+        dut_pre_fs: replay_fs_evidence(dut_pre_fs, None, "DUT pre")?,
         reference_post_fs: replay_fs_evidence(
             reference_post_fs,
             Some(reference_pre_fs),
-            include_times,
             "reference post",
         )?,
-        dut_post_fs: replay_fs_evidence(dut_post_fs, Some(dut_pre_fs), include_times, "DUT post")?,
+        dut_post_fs: replay_fs_evidence(dut_post_fs, Some(dut_pre_fs), "DUT post")?,
     })
 }
 
 fn replay_fs_evidence(
     snapshot: &FsSnapshot,
     pre_snapshot: Option<&FsSnapshot>,
-    include_times: bool,
     label: &str,
 ) -> Result<ReplayFsEvidence, String> {
     let nodes = snapshot
         .iter()
         .map(|(path, node)| {
             let pre = pre_snapshot.and_then(|snapshot| snapshot.get(path));
-            let atime_changed_from_pre = include_times
-                && pre.is_some_and(|before| {
+            let atime_changed_from_pre = pre_snapshot.is_some()
+                && pre.is_none_or(|before| {
                     (before.times.atime_sec, before.times.atime_nsec)
                         != (node.times.atime_sec, node.times.atime_nsec)
                 });
-            let mtime_changed_from_pre = include_times
-                && pre.is_some_and(|before| {
+            let mtime_changed_from_pre = pre_snapshot.is_some()
+                && pre.is_none_or(|before| {
                     (before.times.mtime_sec, before.times.mtime_nsec)
                         != (node.times.mtime_sec, node.times.mtime_nsec)
                 });
-            let ctime_changed_from_pre = include_times
-                && pre.is_some_and(|before| {
+            let ctime_changed_from_pre = pre_snapshot.is_some()
+                && pre.is_none_or(|before| {
                     (before.times.ctime_sec, before.times.ctime_nsec)
                         != (node.times.ctime_sec, node.times.ctime_nsec)
                 });
             (
                 path.clone(),
                 ReplayFsNodeEvidence {
+                    raw_times: Some(node.times),
+                    host_key: node.host_key,
                     raw_stat_metadata: node.raw_stat_metadata,
                     kind: node.kind.to_string(),
                     mode_octal: node.mode_octal.clone(),
-                    atime: (include_times && !atime_changed_from_pre)
-                        .then_some((node.times.atime_sec, node.times.atime_nsec)),
-                    mtime: (include_times && !mtime_changed_from_pre)
-                        .then_some((node.times.mtime_sec, node.times.mtime_nsec)),
+                    atime: Some((node.times.atime_sec, node.times.atime_nsec)),
+                    mtime: Some((node.times.mtime_sec, node.times.mtime_nsec)),
                     atime_changed_from_pre,
                     mtime_changed_from_pre,
                     ctime_changed_from_pre,
@@ -305,6 +425,16 @@ fn replay_fs_evidence(
         nodes,
         hardlink_aliases: alias_partition(snapshot, label)?,
     })
+}
+
+fn atime(times: crate::fuzz::FsTimes) -> (i64, i64) {
+    (times.atime_sec, times.atime_nsec)
+}
+fn mtime(times: crate::fuzz::FsTimes) -> (i64, i64) {
+    (times.mtime_sec, times.mtime_nsec)
+}
+fn ctime(times: crate::fuzz::FsTimes) -> (i64, i64) {
+    (times.ctime_sec, times.ctime_nsec)
 }
 
 pub(crate) fn mismatch_signature(
@@ -479,7 +609,7 @@ pub(crate) fn fs_snapshots_match(
 fn paths_by_host_key<'a>(
     snapshot: &'a FsSnapshot,
     label: &str,
-) -> Result<BTreeMap<super::HostInodeKeySnapshot, Vec<&'a String>>, String> {
+) -> Result<BTreeMap<crate::fuzz::HostInodeKeySnapshot, Vec<&'a String>>, String> {
     let mut paths_by_key = BTreeMap::new();
     for (path, node) in snapshot {
         let host_key = node
@@ -524,73 +654,32 @@ fn fs_nodes_match(reference: &FsNodeSnapshot, dut: &FsNodeSnapshot, compare_time
     reference_without_times == dut_without_times
 }
 
-fn streams_differ_by_presence(reference: &[u8], dut: &[u8]) -> bool {
-    reference.is_empty() != dut.is_empty()
-}
-
-fn stderr_streams_differ(util: &str, reference: &[u8], dut: &[u8]) -> bool {
-    if util == "ls" {
-        const UNMODELED_GNU_TIME_SELECTOR: &[u8] = b"  - 'birth', 'creation'\n";
-        let reference = reference
-            .windows(UNMODELED_GNU_TIME_SELECTOR.len())
-            .position(|window| window == UNMODELED_GNU_TIME_SELECTOR)
-            .map(|offset| {
-                [
-                    &reference[..offset],
-                    &reference[offset + UNMODELED_GNU_TIME_SELECTOR.len()..],
-                ]
-                .concat()
-            });
-        if let Some(reference) = reference {
-            return reference != dut;
-        }
-    }
+fn stderr_streams_differ(reference: &[u8], dut: &[u8]) -> bool {
     reference != dut
 }
 
 fn replay_stderr_evidence(
-    util: &str,
     reference: &[u8],
     dut: &[u8],
 ) -> (ReplayStreamEvidence, ReplayStreamEvidence) {
-    if util == "ls" {
-        const UNMODELED_GNU_TIME_SELECTOR: &[u8] = b"  - 'birth', 'creation'\n";
-        let reference = reference
-            .windows(UNMODELED_GNU_TIME_SELECTOR.len())
-            .position(|window| window == UNMODELED_GNU_TIME_SELECTOR)
-            .map_or_else(
-                || reference.to_vec(),
-                |offset| {
-                    [
-                        &reference[..offset],
-                        &reference[offset + UNMODELED_GNU_TIME_SELECTOR.len()..],
-                    ]
-                    .concat()
-                },
-            );
-        return (
-            ReplayStreamEvidence::CanonicalBytes(reference),
-            ReplayStreamEvidence::CanonicalBytes(dut.to_vec()),
-        );
-    }
     (
         ReplayStreamEvidence::RawBytes(reference.to_vec()),
         ReplayStreamEvidence::RawBytes(dut.to_vec()),
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn replay_stdout_evidence(
     util: &str,
     argv: &[String],
     reference: &[u8],
     dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    reference_root: Option<&Path>,
-    dut_root: Option<&Path>,
-    cwd: Option<&Path>,
 ) -> (ReplayStreamEvidence, ReplayStreamEvidence) {
+    if requests_help_or_version(util, argv) {
+        return (
+            ReplayStreamEvidence::RawBytes(reference.to_vec()),
+            ReplayStreamEvidence::RawBytes(dut.to_vec()),
+        );
+    }
     if util == "printenv" {
         if let Some(separator) = printenv_environment_separator(argv) {
             return (
@@ -599,1112 +688,23 @@ fn replay_stdout_evidence(
             );
         }
     }
-    if util == "pwd" {
-        if let (Some(reference_root), Some(dut_root)) = (reference_root, dut_root) {
-            return (
-                ReplayStreamEvidence::CanonicalBytes(normalized_pwd_output(
-                    reference,
-                    reference_root,
-                )),
-                ReplayStreamEvidence::CanonicalBytes(normalized_pwd_output(dut, dut_root)),
-            );
-        }
-    }
-    if util == "stat" {
-        if let Some(evidence) =
-            replay_stat_stdout_evidence(argv, reference, dut, reference_fs, dut_fs, cwd)
-        {
-            return evidence;
-        }
-    }
-    if util == "ls" {
-        if let Some(evidence) =
-            replay_ls_stdout_evidence(argv, reference, dut, reference_fs, dut_fs, cwd)
-        {
-            return evidence;
-        }
-    }
     (
         ReplayStreamEvidence::RawBytes(reference.to_vec()),
         ReplayStreamEvidence::RawBytes(dut.to_vec()),
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn stdout_streams_differ(
-    util: &str,
-    argv: &[String],
-    reference: &[u8],
-    dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    reference_root: Option<&Path>,
-    dut_root: Option<&Path>,
-    cwd: Option<&Path>,
-) -> bool {
+fn stdout_streams_differ(util: &str, argv: &[String], reference: &[u8], dut: &[u8]) -> bool {
+    if requests_help_or_version(util, argv) {
+        return reference != dut;
+    }
     if util == "printenv" {
         if let Some(separator) = printenv_environment_separator(argv) {
             return normalized_printenv_records(reference, separator)
                 != normalized_printenv_records(dut, separator);
         }
     }
-    if util == "pwd" {
-        if let (Some(reference_root), Some(dut_root)) = (reference_root, dut_root) {
-            return normalized_pwd_output(reference, reference_root)
-                != normalized_pwd_output(dut, dut_root);
-        }
-    }
-    if util == "stat" {
-        if let Some(differs) =
-            stat_stdout_streams_differ(argv, reference, dut, reference_fs, dut_fs, cwd)
-        {
-            return differs;
-        }
-    }
-    if util == "ls" {
-        if let Some(differs) =
-            ls_stdout_streams_differ(argv, reference, dut, reference_fs, dut_fs, cwd)
-        {
-            return differs;
-        }
-    }
     reference != dut
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LsTimeColumns {
-    DefaultC,
-    FullIso,
-    LongIso,
-    Iso,
-    EpochSeconds,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct LsColumnOptions {
-    numeric_long: bool,
-    show_blocks: bool,
-    time_columns: LsTimeColumns,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LsColumnSource {
-    Reference,
-    Dut,
-}
-
-fn ls_stdout_streams_differ(
-    argv: &[String],
-    reference: &[u8],
-    dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    cwd: Option<&Path>,
-) -> Option<bool> {
-    let options = ls_column_options(argv)?;
-    if let Some(invocation) = ls_short_ctime_sort_case(argv) {
-        let reference_expected = expected_ls_short_ctime_output(reference_fs, cwd?, invocation)?;
-        let dut_expected = expected_ls_short_ctime_output(dut_fs, cwd?, invocation)?;
-        return Some(reference != reference_expected || dut != dut_expected);
-    }
-    if !options.numeric_long && !options.show_blocks {
-        return None;
-    }
-
-    if let Some(invocation) = ls_direct_ctime_case(argv) {
-        let reference_ctime = ls_direct_operand_ctime(reference_fs, cwd?, invocation)?;
-        let dut_ctime = ls_direct_operand_ctime(dut_fs, cwd?, invocation)?;
-        let Some(dut_canonical) = normalize_ls_column_output(dut, options, LsColumnSource::Dut)
-        else {
-            return Some(true);
-        };
-        if dut_canonical != dut {
-            return Some(true);
-        }
-        return match (
-            normalize_ls_direct_ctime_output(
-                reference,
-                options,
-                reference_ctime,
-                LsColumnSource::Reference,
-            ),
-            normalize_ls_direct_ctime_output(dut, options, dut_ctime, LsColumnSource::Dut),
-        ) {
-            (Ok(reference), Ok(dut)) => Some(reference != dut),
-            (Err(LsOutputNormalizationError::MetadataMismatch), _)
-            | (_, Err(LsOutputNormalizationError::MetadataMismatch)) => Some(true),
-            (Ok(_), Err(LsOutputNormalizationError::Ambiguous)) => Some(true),
-            (Err(LsOutputNormalizationError::Ambiguous), _) => None,
-        };
-    }
-
-    let reference = normalize_ls_column_output(reference, options, LsColumnSource::Reference)?;
-    let Some(dut_normalized) = normalize_ls_column_output(dut, options, LsColumnSource::Dut) else {
-        return Some(true);
-    };
-    Some(dut_normalized != dut || reference != dut_normalized)
-}
-
-fn replay_ls_stdout_evidence(
-    argv: &[String],
-    reference: &[u8],
-    dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    cwd: Option<&Path>,
-) -> Option<(ReplayStreamEvidence, ReplayStreamEvidence)> {
-    let options = ls_column_options(argv)?;
-    if ls_short_ctime_sort_case(argv).is_some() {
-        return Some((
-            ReplayStreamEvidence::RawBytes(reference.to_vec()),
-            ReplayStreamEvidence::RawBytes(dut.to_vec()),
-        ));
-    }
-    if !options.numeric_long && !options.show_blocks {
-        return None;
-    }
-
-    if let Some(invocation) = ls_direct_ctime_case(argv) {
-        let reference_ctime = ls_direct_operand_ctime(reference_fs, cwd?, invocation)?;
-        let dut_ctime = ls_direct_operand_ctime(dut_fs, cwd?, invocation)?;
-        return Some((
-            replay_ls_direct_stream(
-                reference,
-                options,
-                reference_ctime,
-                LsColumnSource::Reference,
-            ),
-            replay_ls_direct_stream(dut, options, dut_ctime, LsColumnSource::Dut),
-        ));
-    }
-
-    Some((
-        normalize_ls_column_output(reference, options, LsColumnSource::Reference).map_or_else(
-            || ReplayStreamEvidence::RawBytes(reference.to_vec()),
-            ReplayStreamEvidence::CanonicalBytes,
-        ),
-        normalize_ls_column_output(dut, options, LsColumnSource::Dut).map_or_else(
-            || ReplayStreamEvidence::RawBytes(dut.to_vec()),
-            ReplayStreamEvidence::CanonicalBytes,
-        ),
-    ))
-}
-
-fn replay_ls_direct_stream(
-    data: &[u8],
-    options: LsColumnOptions,
-    expected_ctime: i64,
-    source: LsColumnSource,
-) -> ReplayStreamEvidence {
-    normalize_ls_direct_ctime_output(data, options, expected_ctime, source).map_or_else(
-        |_| ReplayStreamEvidence::RawBytes(data.to_vec()),
-        ReplayStreamEvidence::CanonicalBytes,
-    )
-}
-
-fn expected_ls_short_ctime_output(
-    snapshot: &FsSnapshot,
-    cwd: &Path,
-    invocation: LsShortCtimeSortCase,
-) -> Option<Vec<u8>> {
-    let directory = snapshot_relative_key(cwd, ".")?;
-    let mut entries = Vec::new();
-    for (path, node) in snapshot {
-        let path = Path::new(path);
-        if normalized_snapshot_key(path.parent()?)? != directory {
-            continue;
-        }
-        let name = path.file_name()?.to_str()?.as_bytes();
-        if name.starts_with(b".") {
-            continue;
-        }
-        entries.push(((node.times.ctime_sec, node.times.ctime_nsec), name.to_vec()));
-    }
-
-    entries.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
-    if invocation.reverse {
-        entries.reverse();
-    }
-
-    let mut output = Vec::new();
-    for (_, name) in entries {
-        output.extend_from_slice(&name);
-        output.push(b'\n');
-    }
-    Some(output)
-}
-
-fn ls_direct_operand_ctime(
-    snapshot: &FsSnapshot,
-    cwd: &Path,
-    invocation: LsDirectCtimeCase<'_>,
-) -> Option<i64> {
-    let key = snapshot_relative_key(cwd, invocation.operand)?;
-    let follow = invocation.follow == LsDirectOperandFollow::Follow;
-    Some(snapshot_node(snapshot, &key, follow)?.times.ctime_sec)
-}
-
-fn ls_column_options(argv: &[String]) -> Option<LsColumnOptions> {
-    let mut result = LsColumnOptions {
-        numeric_long: false,
-        show_blocks: false,
-        time_columns: LsTimeColumns::DefaultC,
-    };
-    let mut index = 0;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if arg == "--" {
-            break;
-        }
-        match arg {
-            "--all"
-            | "--almost-all"
-            | "--directory"
-            | "--reverse"
-            | "--dereference-command-line"
-            | "--dereference"
-            | "--recursive"
-            | "--help"
-            | "--version" => {}
-            "--numeric-uid-gid" => result.numeric_long = true,
-            "--size" => result.show_blocks = true,
-            "--time" => {
-                index += 1;
-                if !ls_selects_modeled_time(argv.get(index)?.as_str()) {
-                    return None;
-                }
-            }
-            "--time-style" => {
-                index += 1;
-                result.time_columns = ls_time_columns(argv.get(index)?.as_str())?;
-            }
-            "--block-size" => {
-                index += 1;
-                if !ls_positive_decimal(argv.get(index)?.as_str()) {
-                    return None;
-                }
-            }
-            _ => {
-                if let Some(value) = arg.strip_prefix("--time=") {
-                    if !ls_selects_modeled_time(value) {
-                        return None;
-                    }
-                } else if let Some(value) = arg.strip_prefix("--time-style=") {
-                    result.time_columns = ls_time_columns(value)?;
-                } else if let Some(value) = arg.strip_prefix("--block-size=") {
-                    if !ls_positive_decimal(value) {
-                        return None;
-                    }
-                } else if let Some(shorts) = arg.strip_prefix('-') {
-                    if shorts.starts_with('-')
-                        || !shorts.chars().all(|short| {
-                            matches!(
-                                short,
-                                'a' | 'A'
-                                    | 'd'
-                                    | 'n'
-                                    | 's'
-                                    | 'S'
-                                    | 't'
-                                    | 'r'
-                                    | 'u'
-                                    | 'c'
-                                    | 'H'
-                                    | 'L'
-                                    | 'R'
-                            )
-                        })
-                    {
-                        return None;
-                    }
-                    result.numeric_long |= shorts.contains('n');
-                    result.show_blocks |= shorts.contains('s');
-                } else if arg.starts_with('-') {
-                    return None;
-                }
-            }
-        }
-        index += 1;
-    }
-    Some(result)
-}
-
-fn ls_selects_modeled_time(value: &str) -> bool {
-    matches!(
-        value,
-        "atime" | "access" | "use" | "ctime" | "status" | "mtime" | "modification"
-    )
-}
-
-fn ls_time_columns(value: &str) -> Option<LsTimeColumns> {
-    match value {
-        "+%s" => Some(LsTimeColumns::EpochSeconds),
-        "full-iso" => Some(LsTimeColumns::FullIso),
-        "long-iso" => Some(LsTimeColumns::LongIso),
-        "iso" => Some(LsTimeColumns::Iso),
-        "locale" | "posix-full-iso" | "posix-long-iso" | "posix-iso" | "posix-locale" => {
-            Some(LsTimeColumns::DefaultC)
-        }
-        _ => None,
-    }
-}
-
-fn ls_positive_decimal(value: &str) -> bool {
-    !value.is_empty()
-        && value.bytes().all(|byte| byte.is_ascii_digit())
-        && value.bytes().any(|byte| byte != b'0')
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LsOutputNormalizationError {
-    Ambiguous,
-    MetadataMismatch,
-}
-
-fn normalize_ls_column_output(
-    data: &[u8],
-    options: LsColumnOptions,
-    source: LsColumnSource,
-) -> Option<Vec<u8>> {
-    if data.is_empty() {
-        return Some(Vec::new());
-    }
-    if !data.ends_with(b"\n") {
-        return None;
-    }
-
-    let mut normalized = Vec::with_capacity(data.len());
-    let mut start = 0;
-    while start < data.len() {
-        let newline = data.get(start..)?.iter().position(|byte| *byte == b'\n')? + start;
-        let line = data.get(start..newline)?;
-        if line.starts_with(b"total ") {
-            normalize_ls_total_line(line, &mut normalized)?;
-        } else if options.numeric_long {
-            normalize_ls_long_line(line, options, None, source, &mut normalized).ok()?;
-        } else if options.show_blocks {
-            normalize_ls_block_line(line, &mut normalized)?;
-        } else {
-            normalized.extend_from_slice(line);
-        }
-        normalized.push(b'\n');
-        start = newline + 1;
-    }
-    Some(normalized)
-}
-
-fn normalize_ls_direct_ctime_output(
-    data: &[u8],
-    options: LsColumnOptions,
-    expected_ctime: i64,
-    source: LsColumnSource,
-) -> Result<Vec<u8>, LsOutputNormalizationError> {
-    if !options.numeric_long
-        || options.show_blocks
-        || options.time_columns != LsTimeColumns::EpochSeconds
-    {
-        return Err(LsOutputNormalizationError::Ambiguous);
-    }
-    let line = data
-        .strip_suffix(b"\n")
-        .ok_or(LsOutputNormalizationError::Ambiguous)?;
-    if line.is_empty() || line.contains(&b'\n') {
-        return Err(LsOutputNormalizationError::Ambiguous);
-    }
-
-    let mut normalized = Vec::with_capacity(data.len());
-    normalize_ls_long_line(line, options, Some(expected_ctime), source, &mut normalized)?;
-    normalized.push(b'\n');
-    Ok(normalized)
-}
-
-fn normalize_ls_total_line(line: &[u8], normalized: &mut Vec<u8>) -> Option<()> {
-    let value = line.strip_prefix(b"total ")?;
-    if !ascii_unsigned(value) {
-        return None;
-    }
-    normalized.extend_from_slice(b"total ");
-    normalized.extend_from_slice(value);
-    Some(())
-}
-
-fn normalize_ls_block_line(line: &[u8], normalized: &mut Vec<u8>) -> Option<()> {
-    if line.is_empty() || line.ends_with(b":") {
-        normalized.extend_from_slice(line);
-        return Some(());
-    }
-    let mut cursor = 0;
-    let blocks = take_ascii_space_token(line, &mut cursor)?;
-    if !ascii_unsigned(blocks) {
-        return None;
-    }
-    let name = remaining_after_one_ascii_space(line, cursor)?;
-    normalized.extend_from_slice(blocks);
-    normalized.push(b' ');
-    normalized.extend_from_slice(name);
-    Some(())
-}
-
-fn normalize_ls_long_line(
-    line: &[u8],
-    options: LsColumnOptions,
-    expected_ctime: Option<i64>,
-    source: LsColumnSource,
-    normalized: &mut Vec<u8>,
-) -> Result<(), LsOutputNormalizationError> {
-    if line.is_empty() || line.ends_with(b":") {
-        if expected_ctime.is_some() {
-            return Err(LsOutputNormalizationError::Ambiguous);
-        }
-        normalized.extend_from_slice(line);
-        return Ok(());
-    }
-
-    let mut cursor = 0;
-    let mut fields = Vec::<Vec<u8>>::new();
-    if options.show_blocks {
-        let blocks = take_ascii_space_token(line, &mut cursor)
-            .ok_or(LsOutputNormalizationError::Ambiguous)?;
-        if !ascii_unsigned(blocks) {
-            return Err(LsOutputNormalizationError::Ambiguous);
-        }
-        fields.push(blocks.to_vec());
-        if line.get(cursor) != Some(&b' ') {
-            return Err(LsOutputNormalizationError::Ambiguous);
-        }
-        cursor += 1;
-    }
-
-    let raw_mode =
-        take_ascii_token(line, &mut cursor).ok_or(LsOutputNormalizationError::Ambiguous)?;
-    let mode = normalized_ls_mode(raw_mode, source).ok_or(LsOutputNormalizationError::Ambiguous)?;
-    fields.push(mode.to_vec());
-    for _ in 0..4 {
-        let number = take_ascii_space_token(line, &mut cursor)
-            .ok_or(LsOutputNormalizationError::Ambiguous)?;
-        if !ascii_unsigned(number) {
-            return Err(LsOutputNormalizationError::Ambiguous);
-        }
-        fields.push(number.to_vec());
-    }
-
-    match options.time_columns {
-        LsTimeColumns::EpochSeconds => {
-            let seconds = take_ascii_space_token(line, &mut cursor)
-                .ok_or(LsOutputNormalizationError::Ambiguous)?;
-            if !ascii_signed_decimal(seconds) {
-                return Err(LsOutputNormalizationError::Ambiguous);
-            }
-            if let Some(expected_ctime) = expected_ctime {
-                if seconds != expected_ctime.to_string().as_bytes() {
-                    return Err(LsOutputNormalizationError::MetadataMismatch);
-                }
-                fields.push(b"<ctime-role:direct>".to_vec());
-            } else {
-                fields.push(seconds.to_vec());
-            }
-        }
-        LsTimeColumns::FullIso => {
-            let mut time = Vec::new();
-            for _ in 0..3 {
-                let part = take_ascii_space_token(line, &mut cursor)
-                    .ok_or(LsOutputNormalizationError::Ambiguous)?;
-                if !time.is_empty() {
-                    time.push(b' ');
-                }
-                time.extend_from_slice(part);
-            }
-            fields.push(time);
-        }
-        LsTimeColumns::LongIso => {
-            let mut time = Vec::new();
-            for _ in 0..2 {
-                let part = take_ascii_space_token(line, &mut cursor)
-                    .ok_or(LsOutputNormalizationError::Ambiguous)?;
-                if !time.is_empty() {
-                    time.push(b' ');
-                }
-                time.extend_from_slice(part);
-            }
-            fields.push(time);
-        }
-        LsTimeColumns::Iso => {
-            let mut time = take_ascii_space_token(line, &mut cursor)
-                .ok_or(LsOutputNormalizationError::Ambiguous)?
-                .to_vec();
-            let mut lookahead = cursor;
-            if let Some(candidate) = take_ascii_space_token(line, &mut lookahead) {
-                if looks_like_hour_minute(candidate) {
-                    time.push(b' ');
-                    time.extend_from_slice(candidate);
-                    cursor = lookahead;
-                }
-            }
-            fields.push(time);
-        }
-        LsTimeColumns::DefaultC => {
-            let month = take_ascii_space_token(line, &mut cursor)
-                .ok_or(LsOutputNormalizationError::Ambiguous)?;
-            let day = take_ascii_space_token(line, &mut cursor)
-                .ok_or(LsOutputNormalizationError::Ambiguous)?;
-            let time_or_year = take_ascii_space_token(line, &mut cursor)
-                .ok_or(LsOutputNormalizationError::Ambiguous)?;
-            let mut time = month.to_vec();
-            time.push(b' ');
-            if day.len() == 1 {
-                time.push(b' ');
-            }
-            time.extend_from_slice(day);
-            time.push(b' ');
-            if !looks_like_hour_minute(time_or_year) {
-                time.push(b' ');
-            }
-            time.extend_from_slice(time_or_year);
-            fields.push(time);
-        }
-    }
-
-    let name = remaining_after_one_ascii_space(line, cursor)
-        .ok_or(LsOutputNormalizationError::Ambiguous)?;
-    for (index, field) in fields.iter().enumerate() {
-        if index > 0 {
-            normalized.push(b' ');
-        }
-        normalized.extend_from_slice(field.as_slice());
-    }
-    normalized.push(b' ');
-    normalized.extend_from_slice(name);
-    Ok(())
-}
-
-fn take_ascii_space_token<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
-    while line.get(*cursor).is_some_and(|byte| *byte == b' ') {
-        *cursor += 1;
-    }
-    take_ascii_token(line, cursor)
-}
-
-fn take_ascii_token<'a>(line: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
-    let start = *cursor;
-    while line.get(*cursor).is_some_and(|byte| *byte != b' ') {
-        *cursor += 1;
-    }
-    (start < *cursor).then(|| &line[start..*cursor])
-}
-
-fn remaining_after_one_ascii_space(line: &[u8], cursor: usize) -> Option<&[u8]> {
-    (line.get(cursor) == Some(&b' ') && cursor + 1 < line.len()).then(|| &line[cursor + 1..])
-}
-
-fn ascii_unsigned(value: &[u8]) -> bool {
-    !value.is_empty() && value.iter().all(u8::is_ascii_digit)
-}
-
-fn ascii_signed_decimal(value: &[u8]) -> bool {
-    ascii_unsigned(value) || value.strip_prefix(b"-").is_some_and(ascii_unsigned)
-}
-
-fn looks_like_ls_mode(value: &[u8]) -> bool {
-    value.len() == 10
-        && matches!(value[0], b'-' | b'd' | b'l' | b'b' | b'c' | b'p' | b's')
-        && value[1..]
-            .iter()
-            .all(|byte| matches!(byte, b'-' | b'r' | b'w' | b'x' | b's' | b'S' | b't' | b'T'))
-}
-
-fn normalized_ls_mode(value: &[u8], source: LsColumnSource) -> Option<&[u8]> {
-    let mode = if source == LsColumnSource::Reference
-        && value.len() == 11
-        && matches!(value[10], b'+' | b'.' | b'?')
-    {
-        &value[..10]
-    } else {
-        value
-    };
-    looks_like_ls_mode(mode).then_some(mode)
-}
-
-fn looks_like_hour_minute(value: &[u8]) -> bool {
-    value.len() == 5
-        && value[0].is_ascii_digit()
-        && value[1].is_ascii_digit()
-        && value[2] == b':'
-        && value[3].is_ascii_digit()
-        && value[4].is_ascii_digit()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum StatFormatPart {
-    Literal(Vec<u8>),
-    Directive(u8),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StatInvocation<'a> {
-    format: &'a str,
-    dereference: bool,
-    operands: Vec<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct StatOperandMetadata {
-    inode: u64,
-    ctime_sec: i64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatOutputNormalizationError {
-    Ambiguous,
-    MetadataMismatch,
-}
-
-fn stat_stdout_streams_differ(
-    argv: &[String],
-    reference: &[u8],
-    dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    cwd: Option<&Path>,
-) -> Option<bool> {
-    let invocation = parse_stat_invocation(argv)?;
-    let parts = parse_stat_format(invocation.format)?;
-    if !parts.iter().any(
-        |part| matches!(part, StatFormatPart::Directive(directive) if matches!(directive, b'i' | b'Z')),
-    ) {
-        return None;
-    }
-    if !stat_format_has_safe_numeric_boundaries(&parts) {
-        return None;
-    }
-    let cwd = cwd?;
-    let reference_metadata = stat_operand_metadata(reference_fs, cwd, &invocation)?;
-    let dut_metadata = stat_operand_metadata(dut_fs, cwd, &invocation)?;
-    match (
-        normalize_stat_output(reference, &parts, &reference_metadata),
-        normalize_stat_output(dut, &parts, &dut_metadata),
-    ) {
-        (Ok(reference), Ok(dut)) => Some(reference != dut),
-        (Err(StatOutputNormalizationError::MetadataMismatch), _)
-        | (_, Err(StatOutputNormalizationError::MetadataMismatch)) => Some(true),
-        _ => None,
-    }
-}
-
-fn replay_stat_stdout_evidence(
-    argv: &[String],
-    reference: &[u8],
-    dut: &[u8],
-    reference_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-    cwd: Option<&Path>,
-) -> Option<(ReplayStreamEvidence, ReplayStreamEvidence)> {
-    let invocation = parse_stat_invocation(argv)?;
-    let parts = parse_stat_format(invocation.format)?;
-    if !parts.iter().any(
-        |part| matches!(part, StatFormatPart::Directive(directive) if matches!(directive, b'i' | b'Z')),
-    ) || !stat_format_has_safe_numeric_boundaries(&parts)
-    {
-        return None;
-    }
-    let cwd = cwd?;
-    let reference_metadata = stat_operand_metadata(reference_fs, cwd, &invocation)?;
-    let dut_metadata = stat_operand_metadata(dut_fs, cwd, &invocation)?;
-    Some((
-        normalize_stat_output(reference, &parts, &reference_metadata).map_or_else(
-            |_| ReplayStreamEvidence::RawBytes(reference.to_vec()),
-            ReplayStreamEvidence::CanonicalBytes,
-        ),
-        normalize_stat_output(dut, &parts, &dut_metadata).map_or_else(
-            |_| ReplayStreamEvidence::RawBytes(dut.to_vec()),
-            ReplayStreamEvidence::CanonicalBytes,
-        ),
-    ))
-}
-
-fn parse_stat_invocation(argv: &[String]) -> Option<StatInvocation<'_>> {
-    let mut format = None;
-    let mut dereference = false;
-    let mut operands = Vec::new();
-    let mut index = 0;
-    let mut options = true;
-    while index < argv.len() {
-        let arg = argv[index].as_str();
-        if options && arg == "--" {
-            options = false;
-            index += 1;
-            continue;
-        }
-        if !options || !arg.starts_with('-') || arg == "-" {
-            operands.push(arg);
-            index += 1;
-            continue;
-        }
-        if matches!(arg, "-L" | "--dereference") {
-            dereference = true;
-            index += 1;
-            continue;
-        }
-        if matches!(arg, "-c" | "--format") {
-            format = Some(argv.get(index + 1)?.as_str());
-            index += 2;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--format=") {
-            format = Some(value);
-            index += 1;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("-c").filter(|value| !value.is_empty()) {
-            format = Some(value);
-            index += 1;
-            continue;
-        }
-        return None;
-    }
-    Some(StatInvocation {
-        format: format?,
-        dereference,
-        operands,
-    })
-}
-
-fn stat_operand_metadata(
-    snapshot: &FsSnapshot,
-    cwd: &Path,
-    invocation: &StatInvocation<'_>,
-) -> Option<Vec<StatOperandMetadata>> {
-    let mut result = Vec::new();
-    for operand in &invocation.operands {
-        if operand.is_empty() {
-            continue;
-        }
-        let key = snapshot_relative_key(cwd, operand)?;
-        let Some(node) = snapshot_node(snapshot, &key, invocation.dereference) else {
-            continue;
-        };
-        result.push(StatOperandMetadata {
-            inode: node.host_key?.inode,
-            ctime_sec: node.times.ctime_sec,
-        });
-    }
-    Some(result)
-}
-
-fn snapshot_relative_key(cwd: &Path, operand: &str) -> Option<String> {
-    let operand = Path::new(operand);
-    if cwd.is_absolute() || operand.is_absolute() {
-        return None;
-    }
-    normalized_snapshot_key(&cwd.join(operand))
-}
-
-fn normalized_snapshot_key(path: &Path) -> Option<String> {
-    let mut parts = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::Normal(part) => parts.push(part.to_str()?.to_string()),
-            Component::ParentDir => {
-                parts.pop()?;
-            }
-            Component::RootDir | Component::Prefix(_) => return None,
-        }
-    }
-    Some(if parts.is_empty() {
-        ".".to_string()
-    } else {
-        parts.join("/")
-    })
-}
-
-fn snapshot_node<'a>(
-    snapshot: &'a FsSnapshot,
-    key: &str,
-    follow_symlinks: bool,
-) -> Option<&'a FsNodeSnapshot> {
-    let mut key = key.to_string();
-    let mut visited = BTreeSet::new();
-    loop {
-        if key == "." {
-            return snapshot.get(&key);
-        }
-        let components = key.split('/').collect::<Vec<_>>();
-        let mut prefix = PathBuf::new();
-        let mut redirected = false;
-        for (index, component) in components.iter().enumerate() {
-            prefix.push(component);
-            let prefix_key = normalized_snapshot_key(&prefix)?;
-            let node = snapshot.get(&prefix_key)?;
-            let final_component = index + 1 == components.len();
-            if node.kind != "symlink" || (final_component && !follow_symlinks) {
-                continue;
-            }
-            if !visited.insert(prefix_key) || visited.len() > 40 {
-                return None;
-            }
-            let parent = prefix.parent().unwrap_or_else(|| Path::new("."));
-            let mut redirected_path = parent.join(&node.target);
-            for remaining in &components[index + 1..] {
-                redirected_path.push(remaining);
-            }
-            key = normalized_snapshot_key(&redirected_path)?;
-            redirected = true;
-            break;
-        }
-        if !redirected {
-            return snapshot.get(&key);
-        }
-    }
-}
-
-fn parse_stat_format(format: &str) -> Option<Vec<StatFormatPart>> {
-    if format.as_bytes().contains(&b'\n') {
-        return None;
-    }
-    let bytes = format.as_bytes();
-    let mut parts = Vec::new();
-    let mut literal = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'%' {
-            literal.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        let Some(directive) = bytes.get(index + 1).copied() else {
-            literal.push(b'%');
-            break;
-        };
-        if directive == b'%' {
-            literal.push(b'%');
-        } else if matches!(
-            directive,
-            b'a' | b'b'
-                | b'B'
-                | b'd'
-                | b'D'
-                | b'f'
-                | b'g'
-                | b'h'
-                | b'i'
-                | b'o'
-                | b's'
-                | b'u'
-                | b'X'
-                | b'Y'
-                | b'Z'
-        ) {
-            if !literal.is_empty() {
-                parts.push(StatFormatPart::Literal(std::mem::take(&mut literal)));
-            }
-            parts.push(StatFormatPart::Directive(directive));
-        } else {
-            literal.push(b'?');
-        }
-        index += 2;
-    }
-    if !literal.is_empty() {
-        parts.push(StatFormatPart::Literal(literal));
-    }
-    Some(parts)
-}
-
-fn stat_format_has_safe_numeric_boundaries(parts: &[StatFormatPart]) -> bool {
-    parts.iter().enumerate().all(|(index, part)| {
-        let StatFormatPart::Directive(directive) = part else {
-            return true;
-        };
-        match parts.get(index + 1) {
-            None => true,
-            Some(StatFormatPart::Literal(literal)) => {
-                !literal.is_empty() && !stat_numeric_possible_byte(*directive, literal[0])
-            }
-            Some(StatFormatPart::Directive(_)) => false,
-        }
-    })
-}
-
-fn normalize_stat_output(
-    data: &[u8],
-    parts: &[StatFormatPart],
-    metadata: &[StatOperandMetadata],
-) -> Result<Vec<u8>, StatOutputNormalizationError> {
-    if data.is_empty() {
-        return if metadata.is_empty() {
-            Ok(Vec::new())
-        } else {
-            Err(StatOutputNormalizationError::Ambiguous)
-        };
-    }
-    let records = data
-        .strip_suffix(b"\n")
-        .ok_or(StatOutputNormalizationError::Ambiguous)?;
-    let records = records.split(|byte| *byte == b'\n').collect::<Vec<_>>();
-    if records.len() != metadata.len() {
-        return Err(StatOutputNormalizationError::Ambiguous);
-    }
-
-    let mut inode_tokens = BTreeMap::<u64, usize>::new();
-    let mut normalized = Vec::new();
-    for (record_index, (record, expected)) in records.iter().zip(metadata).enumerate() {
-        normalize_stat_record(
-            record,
-            parts,
-            expected,
-            record_index,
-            &mut inode_tokens,
-            &mut normalized,
-        )?;
-        normalized.push(b'\n');
-    }
-    Ok(normalized)
-}
-
-fn normalize_stat_record(
-    record: &[u8],
-    parts: &[StatFormatPart],
-    metadata: &StatOperandMetadata,
-    record_index: usize,
-    inode_tokens: &mut BTreeMap<u64, usize>,
-    normalized: &mut Vec<u8>,
-) -> Result<(), StatOutputNormalizationError> {
-    let mut cursor = 0;
-    for (index, part) in parts.iter().enumerate() {
-        match part {
-            StatFormatPart::Literal(literal) => {
-                if !record
-                    .get(cursor..)
-                    .ok_or(StatOutputNormalizationError::Ambiguous)?
-                    .starts_with(literal)
-                {
-                    return Err(StatOutputNormalizationError::Ambiguous);
-                }
-                normalized.extend_from_slice(literal);
-                cursor += literal.len();
-            }
-            StatFormatPart::Directive(directive) => {
-                let end = match parts.get(index + 1) {
-                    Some(StatFormatPart::Literal(literal)) => {
-                        let remaining = record
-                            .get(cursor..)
-                            .ok_or(StatOutputNormalizationError::Ambiguous)?;
-                        let offset = remaining
-                            .iter()
-                            .position(|byte| *byte == literal[0])
-                            .ok_or(StatOutputNormalizationError::Ambiguous)?;
-                        let boundary = cursor + offset;
-                        if !record
-                            .get(boundary..)
-                            .ok_or(StatOutputNormalizationError::Ambiguous)?
-                            .starts_with(literal)
-                        {
-                            return Err(StatOutputNormalizationError::Ambiguous);
-                        }
-                        boundary
-                    }
-                    None => record.len(),
-                    Some(StatFormatPart::Directive(_)) => {
-                        return Err(StatOutputNormalizationError::Ambiguous)
-                    }
-                };
-                let value = record
-                    .get(cursor..end)
-                    .ok_or(StatOutputNormalizationError::Ambiguous)?;
-                if !stat_numeric_value_is_valid(*directive, value) {
-                    return Err(StatOutputNormalizationError::Ambiguous);
-                }
-                match directive {
-                    b'i' => {
-                        if value != metadata.inode.to_string().as_bytes() {
-                            return Err(StatOutputNormalizationError::MetadataMismatch);
-                        }
-                        let token = match inode_tokens.get(&metadata.inode) {
-                            Some(token) => *token,
-                            None => {
-                                let token = inode_tokens.len();
-                                inode_tokens.insert(metadata.inode, token);
-                                token
-                            }
-                        };
-                        normalized.extend_from_slice(format!("<inode:{token}>").as_bytes());
-                    }
-                    b'Z' => {
-                        if value != metadata.ctime_sec.to_string().as_bytes() {
-                            return Err(StatOutputNormalizationError::MetadataMismatch);
-                        }
-                        normalized
-                            .extend_from_slice(format!("<ctime-role:{record_index}>").as_bytes());
-                    }
-                    _ => normalized.extend_from_slice(value),
-                }
-                cursor = end;
-            }
-        }
-    }
-    if cursor == record.len() {
-        Ok(())
-    } else {
-        Err(StatOutputNormalizationError::Ambiguous)
-    }
-}
-
-fn stat_numeric_value_is_valid(directive: u8, value: &[u8]) -> bool {
-    let unsigned = if matches!(directive, b'd' | b'D' | b'i' | b'X' | b'Y' | b'Z') {
-        value.strip_prefix(b"-").unwrap_or(value)
-    } else {
-        value
-    };
-    !unsigned.is_empty()
-        && unsigned
-            .iter()
-            .all(|byte| stat_numeric_body_byte(directive, *byte))
-}
-
-fn stat_numeric_body_byte(directive: u8, byte: u8) -> bool {
-    match directive {
-        b'a' => matches!(byte, b'0'..=b'7'),
-        b'D' | b'f' => byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase(),
-        _ => byte.is_ascii_digit(),
-    }
-}
-
-fn stat_numeric_possible_byte(directive: u8, byte: u8) -> bool {
-    stat_numeric_body_byte(directive, byte)
-        || (byte == b'-' && matches!(directive, b'd' | b'D' | b'i' | b'X' | b'Y' | b'Z'))
-}
-
-fn normalized_pwd_output(data: &[u8], root: &Path) -> Vec<u8> {
-    let root = root.display().to_string();
-    let ends_with_newline = data.ends_with(b"\n");
-    let text = String::from_utf8_lossy(data);
-    let normalized: Vec<String> = text
-        .lines()
-        .map(|line| normalize_pwd_line(line, &root))
-        .collect();
-    if normalized.is_empty() && text.is_empty() {
-        return Vec::new();
-    }
-    let mut output = normalized.join("\n").into_bytes();
-    if ends_with_newline {
-        output.push(b'\n');
-    }
-    output
-}
-
-fn normalize_pwd_line(line: &str, root: &str) -> String {
-    match strip_path_prefix(line, root) {
-        Some(suffix) => format!("$WORKDIR_ROOT{suffix}"),
-        None => line.to_string(),
-    }
-}
-
-fn strip_path_prefix<'a>(text: &'a str, prefix: &str) -> Option<&'a str> {
-    let suffix = text.strip_prefix(prefix)?;
-    if suffix.is_empty() || suffix.starts_with('/') {
-        Some(suffix)
-    } else {
-        None
-    }
 }
 
 fn printenv_environment_separator(argv: &[String]) -> Option<u8> {
@@ -1821,18 +821,78 @@ fn diff_lines(left: &[String], right: &[String]) -> Vec<DiffOp> {
 #[cfg(test)]
 mod tests {
     use super::{
-        compare_results_with_roots, ls_column_options, mismatch_signature, MismatchSignature,
-        ProcessOutcomeEvidence,
+        compare_results_with_roots, mismatch_signature, replay_stderr_evidence, MismatchSignature,
+        ProcessOutcomeEvidence, ReplayStreamEvidence,
     };
-    use crate::fuzz::execution::IdentityTransitionEvidence;
-    use crate::fuzz::{
-        CompareResult, FsNodeSnapshot, FsSnapshot, FsTimes, HostInodeKeySnapshot, RunResult,
-    };
+    use crate::fuzz::comparison::fs_snapshot::IdentityTransitionEvidence;
+    use crate::fuzz::comparison::CompareResult;
+    use crate::fuzz::{FsNodeSnapshot, FsSnapshot, FsTimes, HostInodeKeySnapshot, RunResult};
     use std::path::Path;
     use std::process::Command;
 
     #[cfg(unix)]
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    fn execution_windows() -> crate::fuzz::execution::ExecutionEvidence {
+        use crate::fuzz::execution::{ExecutionEvidence, ExecutionWindow};
+        ExecutionEvidence {
+            fixture_sharing: false,
+            reference_window: ExecutionWindow {
+                start: (100, 0),
+                end: (110, 999_999_999),
+            },
+            dut_window: ExecutionWindow {
+                start: (200, 0),
+                end: (210, 999_999_999),
+            },
+        }
+    }
+
+    fn timestamp_replay_fixture(reference_time: i64, dut_time: i64) -> super::ReplayVerdict {
+        let pre = transition_snapshot(&[("a", Some((1, 2)))]);
+        let mut reference = pre.clone();
+        reference.get_mut("a").unwrap().times.mtime_sec = reference_time;
+        let mut dut = pre.clone();
+        dut.get_mut("a").unwrap().times.mtime_sec = dut_time;
+        let mut verdict = raw_replay_fixture("cat", &pre, &pre);
+        verdict.reference_post_fs =
+            super::replay_fs_evidence(&reference, Some(&pre), "reference").unwrap();
+        verdict.dut_post_fs = super::replay_fs_evidence(&dut, Some(&pre), "DUT").unwrap();
+        verdict.reference_identity.insert(("a".into(), "a".into()));
+        verdict.dut_identity = verdict.reference_identity.clone();
+        verdict.execution = Some(execution_windows());
+        verdict
+    }
+
+    // A claimed unchanged timestamp cannot disagree with the saved raw pre/post values.
+    #[test]
+    fn replay_rejects_forged_time_transition() {
+        let mut verdict = timestamp_replay_fixture(100, 200);
+        verdict
+            .dut_post_fs
+            .nodes
+            .get_mut("a")
+            .unwrap()
+            .mtime_changed_from_pre = false;
+        assert!(verdict
+            .validate_time_evidence()
+            .unwrap_err()
+            .contains("transition evidence"));
+    }
+
+    // Raw replacement of an inode must agree with the saved identity transition partition.
+    #[test]
+    fn replay_rejects_forged_identity_transition() {
+        let mut verdict = timestamp_replay_fixture(100, 200);
+        verdict.dut_post_fs.nodes.get_mut("a").unwrap().host_key = Some(HostInodeKeySnapshot {
+            device: 1,
+            inode: 3,
+        });
+        assert!(verdict
+            .validate_time_evidence()
+            .unwrap_err()
+            .contains("identity transition"));
+    }
 
     // Direct outcome deserialization retains duplicate-field validation inside the tag.
     #[test]
@@ -1893,7 +953,9 @@ mod tests {
             .output()
             .unwrap();
         RunResult {
-            termination: crate::fuzz::process_outcome::Termination::from_status(output.status),
+            termination: crate::fuzz::comparison::process_outcome::Termination::from_status(
+                output.status,
+            ),
             stdout: output.stdout,
             stderr: output.stderr,
         }
@@ -1919,10 +981,16 @@ mod tests {
             CompareResult::Mismatch {
                 process_outcome_diff: Some((
                     ProcessOutcomeEvidence::Observed(
-                        crate::fuzz::process_outcome::Termination::Exit { code: 141, .. }
+                        crate::fuzz::comparison::process_outcome::Termination::Exit {
+                            code: 141,
+                            ..
+                        }
                     ),
                     ProcessOutcomeEvidence::Observed(
-                        crate::fuzz::process_outcome::Termination::Signal { signal: 13, .. }
+                        crate::fuzz::comparison::process_outcome::Termination::Signal {
+                            signal: 13,
+                            ..
+                        }
                     )
                 )),
                 ..
@@ -1955,7 +1023,7 @@ mod tests {
     // Exit code, signal number, and core-dump provenance each participate in comparison.
     #[test]
     fn process_outcome_comparison_rejects_each_typed_difference() {
-        use crate::fuzz::process_outcome::Termination;
+        use crate::fuzz::comparison::process_outcome::Termination;
 
         let cases = [
             (Termination::test_exit(7), Termination::test_exit(8)),
@@ -2023,8 +1091,10 @@ mod tests {
         cwd: &Path,
     ) -> CompareResult {
         let reference_fs =
-            crate::fuzz::execution::snapshot_fs_without_restore(reference_root).unwrap();
-        let dut_fs = crate::fuzz::execution::snapshot_fs_without_restore(dut_root).unwrap();
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(reference_root)
+                .unwrap();
+        let dut_fs =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(dut_root).unwrap();
         compare_results_with_roots(
             "stat",
             argv,
@@ -2052,8 +1122,10 @@ mod tests {
         cwd: &Path,
     ) -> CompareResult {
         let reference_fs =
-            crate::fuzz::execution::snapshot_fs_without_restore(reference_root).unwrap();
-        let dut_fs = crate::fuzz::execution::snapshot_fs_without_restore(dut_root).unwrap();
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(reference_root)
+                .unwrap();
+        let dut_fs =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(dut_root).unwrap();
         compare_results_with_roots(
             "ls",
             argv,
@@ -2224,7 +1296,7 @@ mod tests {
             device_number: u64::MAX,
             io_block_bytes: i64::MIN,
         };
-        let evidence = super::replay_fs_evidence(&snapshot, None, false, "raw fixture").unwrap();
+        let evidence = super::replay_fs_evidence(&snapshot, None, "raw fixture").unwrap();
         let serialized = serde_json::to_value(&evidence).unwrap();
         assert_eq!(
             serialized["nodes"]["a"]["raw_stat_metadata"],
@@ -2240,13 +1312,277 @@ mod tests {
         );
     }
 
+    fn raw_stream_replay(
+        util: &str,
+        argv: &[String],
+        reference: &RunResult,
+        dut: &RunResult,
+        reference_fs: &FsSnapshot,
+        dut_fs: &FsSnapshot,
+        ignore_stderr: bool,
+    ) -> super::ReplayVerdict {
+        let comparison = compare_results(
+            util,
+            argv,
+            reference,
+            dut,
+            reference_fs,
+            dut_fs,
+            ignore_stderr,
+        );
+        super::replay_verdict_with_roots(
+            util,
+            argv,
+            reference,
+            dut,
+            &comparison,
+            &IdentityTransitionEvidence::new(),
+            &IdentityTransitionEvidence::new(),
+            reference_fs,
+            dut_fs,
+            reference_fs,
+            dut_fs,
+            ignore_stderr,
+            None,
+            None,
+            Some(Path::new(".")),
+        )
+        .unwrap()
+    }
+
+    // Numeric-long ACL markers remain raw bytes in both comparison and serialized replay evidence.
+    #[test]
+    fn ls_replay_preserves_raw_mode_markers_and_alignment() {
+        let argv = ["-n", "--time-style=+%s"].map(str::to_string);
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b"-rw-r-----+ 1  1013 1013   1 2000000000 file\n".to_vec(),
+            stderr: vec![],
+        };
+        let dut = RunResult {
+            stdout: b"-rw-r----- 1  1013 1013   1 2000000000 file\n".to_vec(),
+            ..reference.clone()
+        };
+        let replay = raw_stream_replay(
+            "ls",
+            &argv,
+            &reference,
+            &dut,
+            &FsSnapshot::new(),
+            &FsSnapshot::new(),
+            false,
+        );
+        assert!(matches!(
+            replay.comparison,
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            replay.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(
+            replay.dut_stdout,
+            ReplayStreamEvidence::RawBytes(dut.stdout)
+        );
+        let restored: super::ReplayVerdict =
+            serde_json::from_slice(&serde_json::to_vec(&replay).unwrap()).unwrap();
+        assert_eq!(restored, replay);
+    }
+
+    // Direct ctime bytes retain their clone-local values while snapshot evidence remains untouched.
+    #[test]
+    fn ls_replay_preserves_direct_ctime_bytes() {
+        let argv = ["-ndc", "--time-style=+%s", "file"].map(str::to_string);
+        let mut reference_fs = transition_snapshot(&[("file", Some((1, 7)))]);
+        reference_fs.get_mut("file").unwrap().times.ctime_sec = 100;
+        let mut dut_fs = transition_snapshot(&[("file", Some((1, 8)))]);
+        dut_fs.get_mut("file").unwrap().times.ctime_sec = 200;
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b"-rw-r--r-- 1 0 0 10 100 file\n".to_vec(),
+            stderr: vec![],
+        };
+        let dut = RunResult {
+            stdout: b"-rw-r--r-- 1 0 0 10 200 file\n".to_vec(),
+            ..reference.clone()
+        };
+        let replay =
+            raw_stream_replay("ls", &argv, &reference, &dut, &reference_fs, &dut_fs, false);
+        assert!(matches!(
+            replay.comparison,
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            replay.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(
+            replay.dut_stdout,
+            ReplayStreamEvidence::RawBytes(dut.stdout)
+        );
+        assert_eq!(
+            replay.reference_pre_fs.nodes["file"].raw_times,
+            Some(reference_fs["file"].times)
+        );
+        assert_eq!(
+            replay.dut_pre_fs.nodes["file"].raw_times,
+            Some(dut_fs["file"].times)
+        );
+    }
+
+    // Stat replay preserves inode and ctime bytes even when snapshots establish the same alias pattern.
+    #[test]
+    #[cfg(unix)]
+    fn stat_replay_preserves_clone_local_inode_and_ctime_bytes() {
+        let reference_root = stat_hardlink_fixture();
+        let dut_root = stat_hardlink_fixture();
+        let argv =
+            ["-L", "-c", "i=%i|Z=%Z|s=%s", "regular-link", "regular-hard"].map(str::to_string);
+        let operands = ["regular-link", "regular-hard"];
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: followed_stat_output(reference_root.path(), &operands, 7),
+            stderr: vec![],
+        };
+        let dut = RunResult {
+            stdout: followed_stat_output(dut_root.path(), &operands, 7),
+            ..reference.clone()
+        };
+        let reference_fs = crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(
+            reference_root.path(),
+        )
+        .unwrap();
+        let dut_fs =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(dut_root.path())
+                .unwrap();
+        let comparison = compare_stat_with_roots(
+            &argv,
+            &reference,
+            &dut,
+            reference_root.path(),
+            dut_root.path(),
+            Path::new("work"),
+        );
+        let replay = super::replay_verdict_with_roots(
+            "stat",
+            &argv,
+            &reference,
+            &dut,
+            &comparison,
+            &IdentityTransitionEvidence::new(),
+            &IdentityTransitionEvidence::new(),
+            &reference_fs,
+            &dut_fs,
+            &reference_fs,
+            &dut_fs,
+            false,
+            Some(reference_root.path()),
+            Some(dut_root.path()),
+            Some(Path::new("work")),
+        )
+        .unwrap();
+        assert!(matches!(
+            replay.comparison,
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            replay.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(
+            replay.dut_stdout,
+            ReplayStreamEvidence::RawBytes(dut.stdout)
+        );
+        assert_eq!(
+            replay.reference_pre_fs.hardlink_aliases,
+            replay.dut_pre_fs.hardlink_aliases
+        );
+    }
+
+    // Block-only replay retains right alignment and filename spaces as the observed stream.
+    #[test]
+    fn ls_replay_preserves_raw_block_alignment() {
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b" 4  file\n12 other\n".to_vec(),
+            stderr: vec![],
+        };
+        let dut = RunResult {
+            stdout: b"4  file\n12 other\n".to_vec(),
+            ..reference.clone()
+        };
+        let replay = raw_stream_replay(
+            "ls",
+            &["-s".into()],
+            &reference,
+            &dut,
+            &FsSnapshot::new(),
+            &FsSnapshot::new(),
+            false,
+        );
+        assert!(matches!(
+            replay.comparison,
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+        assert_eq!(
+            replay.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(
+            replay.dut_stdout,
+            ReplayStreamEvidence::RawBytes(dut.stdout)
+        );
+    }
+
+    // Ignoring stderr preserves stdout evidence and records the existing ignored-stream policy.
+    #[test]
+    fn stat_replay_honors_ignore_stderr_with_raw_stdout() {
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b"file\n".to_vec(),
+            stderr: b"reference\n".to_vec(),
+        };
+        let dut = RunResult {
+            stderr: b"dut\n".to_vec(),
+            ..reference.clone()
+        };
+        let replay = raw_stream_replay(
+            "stat",
+            &["-c".into(), "%n".into(), "file".into()],
+            &reference,
+            &dut,
+            &FsSnapshot::new(),
+            &FsSnapshot::new(),
+            true,
+        );
+        assert_eq!(replay.comparison, CompareResult::Match);
+        assert_eq!(
+            replay.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(replay.reference_stderr, ReplayStreamEvidence::Ignored);
+        assert_eq!(replay.dut_stderr, ReplayStreamEvidence::Ignored);
+    }
+
     fn raw_replay_fixture(
         util: &str,
         reference: &FsSnapshot,
         dut: &FsSnapshot,
     ) -> super::ReplayVerdict {
         let run = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: vec![0, 128, 255],
             stderr: vec![0, 255],
         };
@@ -2313,7 +1649,7 @@ mod tests {
         dut_fs: &FsSnapshot,
     ) -> Result<CompareResult, String> {
         let run = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
@@ -2431,97 +1767,11 @@ mod tests {
         assert!(error.contains("fs.identity unsupported"));
     }
 
-    #[test]
-    fn compare_ignores_filesystem_timestamp_only_changes() {
-        let run = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        };
-        let argv: Vec<String> = Vec::new();
-        let mut reference_fs = FsSnapshot::new();
-        reference_fs.insert(
-            "a.txt".to_string(),
-            node_with_times(FsTimes {
-                atime_sec: 1,
-                atime_nsec: 2,
-                mtime_sec: 3,
-                mtime_nsec: 4,
-                ctime_sec: 5,
-                ctime_nsec: 6,
-            }),
-        );
-        let mut dut_fs = FsSnapshot::new();
-        dut_fs.insert(
-            "a.txt".to_string(),
-            node_with_times(FsTimes {
-                atime_sec: 10,
-                atime_nsec: 20,
-                mtime_sec: 30,
-                mtime_nsec: 40,
-                ctime_sec: 50,
-                ctime_nsec: 60,
-            }),
-        );
-
-        assert_eq!(
-            compare_results("cat", &argv, &run, &run, &reference_fs, &dut_fs, false),
-            CompareResult::Match
-        );
-    }
-
-    // Chmod timestamp changes are modeled filesystem mismatches, even when every other field matches.
-    #[test]
-    fn chmod_compare_reports_filesystem_timestamp_only_changes() {
-        let run = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: Vec::new(),
-            stderr: Vec::new(),
-        };
-        let mut reference_fs = FsSnapshot::new();
-        reference_fs.insert(
-            "a.txt".to_string(),
-            node_with_times(FsTimes {
-                atime_sec: 1,
-                atime_nsec: 2,
-                mtime_sec: 3,
-                mtime_nsec: 4,
-                ctime_sec: 5,
-                ctime_nsec: 6,
-            }),
-        );
-        let mut dut_fs = FsSnapshot::new();
-        dut_fs.insert(
-            "a.txt".to_string(),
-            node_with_times(FsTimes {
-                atime_sec: 10,
-                atime_nsec: 20,
-                mtime_sec: 30,
-                mtime_nsec: 40,
-                ctime_sec: 50,
-                ctime_nsec: 60,
-            }),
-        );
-
-        assert!(matches!(
-            compare_results(
-                "chmod",
-                &[],
-                &run,
-                &run,
-                &reference_fs,
-                &dut_fs,
-                false,
-            ),
-            CompareResult::Mismatch { ref fs_diff, .. } if !fs_diff.is_empty()
-        ));
-    }
-
     // 순차 생성된 복제 트리의 원시 변경 시각만 다르면 엄격한 파일 시스템 비교에서도 무시한다.
     #[test]
     fn chmod_compare_ignores_cross_clone_ctime_only_difference() {
         let run = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
@@ -2548,16 +1798,16 @@ mod tests {
         );
     }
 
-    // Chmod help output remains byte-exact rather than collapsing nonempty streams to presence.
+    // Chmod help output reports a byte difference in an otherwise successful request.
     #[test]
     fn chmod_compare_reports_one_byte_help_mismatch() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"help\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"help!\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2579,16 +1829,90 @@ mod tests {
         ));
     }
 
+    // Requested help output preserves differing invalid UTF-8 bytes in comparison and replay.
+    #[test]
+    fn pwd_help_preserves_invalid_utf8_bytes_in_comparison_and_replay() {
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b"Usage: pwd [OPTION]...\nReport bugs: <bugs@example.org>\x80\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let dut = RunResult {
+            stdout: b"Usage: pwd [OPTION]...\nReport bugs: <bugs@example.org>\x81\n".to_vec(),
+            ..reference.clone()
+        };
+        let argv = ["--help".to_string()];
+        let identity = IdentityTransitionEvidence::new();
+        let snapshot = FsSnapshot::new();
+        let reference_root = Some(Path::new("/fixture/reference"));
+        let dut_root = Some(Path::new("/fixture/dut"));
+        let compare = compare_results_with_roots(
+            "pwd",
+            &argv,
+            &reference,
+            &dut,
+            &identity,
+            &snapshot,
+            &identity,
+            &snapshot,
+            false,
+            reference_root,
+            dut_root,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            compare,
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }
+        );
+        assert_eq!(
+            mismatch_signature(&compare, &identity, &identity),
+            Some(MismatchSignature::Stdout)
+        );
+        let verdict = super::replay_verdict_with_roots(
+            "pwd",
+            &argv,
+            &reference,
+            &dut,
+            &compare,
+            &identity,
+            &identity,
+            &snapshot,
+            &snapshot,
+            &snapshot,
+            &snapshot,
+            false,
+            reference_root,
+            dut_root,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verdict.reference_stdout,
+            ReplayStreamEvidence::RawBytes(reference.stdout)
+        );
+        assert_eq!(
+            verdict.dut_stdout,
+            ReplayStreamEvidence::RawBytes(dut.stdout)
+        );
+    }
+
     // A stat format value named --help keeps stdout comparison byte-exact.
     #[test]
     fn stat_help_format_value_does_not_weaken_stdout_comparison() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"--help\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"corrupt\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2618,12 +1942,12 @@ mod tests {
     #[test]
     fn ls_help_operand_does_not_weaken_stdout_comparison() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"--help\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"corrupt\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2653,12 +1977,12 @@ mod tests {
     #[test]
     fn chmod_compare_can_ignore_diagnostic_mismatch() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
             stderr: b"chmod: missing operand\nTry 'chmod --help' for more information.\n".to_vec(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
             stderr: b"/tmp/chmod: missing operand\nTry 'chmod --help' for more information.\n"
                 .to_vec(),
@@ -2681,12 +2005,12 @@ mod tests {
     #[test]
     fn compare_ignores_printenv_environment_record_order() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"B=2\nA=1\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"A=1\nB=2\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2709,12 +2033,12 @@ mod tests {
     #[test]
     fn compare_keeps_printenv_operand_output_order_significant() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"2\n1\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"1\n2\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2737,15 +2061,16 @@ mod tests {
         ));
     }
 
+    // Different absolute pwd output bytes remain a mismatch even when role roots are supplied.
     #[test]
-    fn compare_normalizes_pwd_variant_roots() {
+    fn compare_preserves_pwd_absolute_path_bytes() {
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"/tmp/fuzz/iter-000001/ref/dir0\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"/tmp/fuzz/iter-000001/dut/dir0\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2767,7 +2092,12 @@ mod tests {
                 None,
             )
             .unwrap(),
-            CompareResult::Match
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new()
+            }
         );
 
         assert!(matches!(
@@ -2787,18 +2117,56 @@ mod tests {
         ));
     }
 
-    // Numeric-long comparison ignores only GNU's inter-column padding while retaining every value.
+    // Dafny LS must reproduce GNU's exact grouped column width, so a DUT that omits the
+    // reference's size-column alignment padding is a real mismatch, not noise to collapse.
     #[test]
-    fn ls_compare_normalizes_numeric_long_column_padding() {
+    fn ls_compare_rejects_missing_numeric_long_column_padding() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"total 4\n-rw-r----- 1 1013 1013    0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"total 4\n-rw-r----- 1 1013 1013 0 2000000000 visible\n".to_vec(),
+            stderr: Vec::new(),
+        };
+
+        assert!(matches!(
+            compare_results(
+                "ls",
+                &argv,
+                &reference,
+                &dut,
+                &FsSnapshot::new(),
+                &FsSnapshot::new(),
+                false,
+            ),
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+    }
+
+    // Byte-identical GNU-aligned output, including differing per-line size-column widths,
+    // must match rather than being flagged semantic_mismatch by an overzealous self-check.
+    #[test]
+    fn ls_compare_matches_byte_identical_aligned_numeric_long_output() {
+        let argv = vec!["-n".to_string()];
+        let stdout = b"total 4\n\
+drwxr-xr-x 2 1000 1000  40 Oct  1  2026 empty\n\
+-rw-r--r-- 1 1000 1000 150 Sep 27 00:00 zzz-large\n"
+            .to_vec();
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: stdout.clone(),
+            stderr: Vec::new(),
+        };
+        let dut = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout,
             stderr: Vec::new(),
         };
 
@@ -2816,17 +2184,17 @@ mod tests {
         );
     }
 
-    // GNU tests/ls/acl.sh의 참조 출력 표지는 모델 밖이므로 수치 긴 출력에서만 제거한다.
+    // A reference ACL marker remains an exact stdout byte difference.
     #[test]
-    fn ls_compare_excludes_reference_acl_mode_marker() {
+    fn ls_compare_preserves_reference_acl_mode_marker() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r-----+ 1 1013 1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2841,21 +2209,26 @@ mod tests {
                 &FsSnapshot::new(),
                 false,
             ),
-            CompareResult::Match
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }
         );
     }
 
-    // 접근 제어 목록 표지를 제외해도 GNU tests/ls/acl.sh의 권한 비트는 계속 비교한다.
+    // Permission bytes remain exact beside an ACL marker.
     #[test]
     fn ls_compare_keeps_permissions_strict_with_reference_acl_marker() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r-----+ 1 1013 1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rwxr----- 1 1013 1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2877,18 +2250,18 @@ mod tests {
         ));
     }
 
-    // 모델 밖 표지를 시험 대상에도 허용하면 명세의 10자 모드 출력 위반을 숨기게 된다.
+    // Identical mode-marker bytes compare equally while only raw observable equality is assessed.
     #[test]
-    fn ls_compare_rejects_dut_acl_mode_marker() {
+    fn ls_compare_matches_identical_mode_marker_bytes() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r-----+ 1 1013 1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = reference.clone();
 
-        assert!(matches!(
+        assert_eq!(
             compare_results(
                 "ls",
                 &argv,
@@ -2898,24 +2271,21 @@ mod tests {
                 &FsSnapshot::new(),
                 false,
             ),
-            CompareResult::Mismatch {
-                stdout_diff: true,
-                ..
-            }
-        ));
+            CompareResult::Match
+        );
     }
 
-    // GNU column padding is normalized without accepting a noncanonical DUT field separator.
+    // Inter-field numeric-long spaces remain exact output bytes.
     #[test]
     fn ls_compare_rejects_extra_space_between_numeric_long_fields() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013    1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013  1013 1 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2942,12 +2312,12 @@ mod tests {
     fn ls_compare_rejects_missing_default_time_day_padding() {
         let argv = vec!["-n".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013 1 Aug  7 12:34 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013 1 Aug 7 12:34 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -2974,12 +2344,12 @@ mod tests {
     fn ls_compare_rejects_leading_space_before_long_mode() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013 0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b" -rw-r----- 1 1013 1013 0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3006,12 +2376,12 @@ mod tests {
     fn ls_compare_rejects_extra_space_between_block_count_and_mode() {
         let argv = vec!["-ns".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"4 -rw-r----- 1 1013 1013 0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"4  -rw-r----- 1 1013 1013 0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3033,17 +2403,17 @@ mod tests {
         ));
     }
 
-    // A different modeled timestamp remains visible after numeric-long column normalization.
+    // Different numeric-long timestamp bytes remain observable.
     #[test]
     fn ls_compare_keeps_numeric_long_values_exact() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013    0 2000000000 visible\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r----- 1 1013 1013 0 2000000001 visible\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3070,12 +2440,12 @@ mod tests {
     fn ls_compare_keeps_standalone_time_selector_names_strict() {
         let argv = vec!["--time=status".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"expected-name\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"corrupt-name\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3102,12 +2472,12 @@ mod tests {
     fn ls_compare_keeps_standalone_time_selector_errors_strict() {
         let argv = vec!["--time=status".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"newer\nolder\n".to_vec(),
             stderr: b"reference error\n".to_vec(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(2),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(2),
             stdout: b"older\nnewer\n".to_vec(),
             stderr: b"dut error\n".to_vec(),
         };
@@ -3131,19 +2501,19 @@ mod tests {
         ));
     }
 
-    // GNU's unmodeled birth-time selector line is removed without weakening modeled diagnostics.
+    // Identical current LS invalid-time diagnostics, including the birth-time row, match exactly.
     #[test]
-    fn ls_compare_excludes_only_unmodeled_birth_time_diagnostic() {
-        let argv = vec!["--time=XX".to_string()];
+    fn ls_compare_matches_identical_invalid_time_diagnostics() {
+        let argv = vec!["--time=invalid--end".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
-            stderr: b"ls: invalid argument 'XX' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\n  - 'birth', 'creation'\nTry 'ls --help' for more information.\n".to_vec(),
+            stderr: b"ls: invalid argument 'invalid--end' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\n  - 'birth', 'creation'\nTry 'ls --help' for more information.\n".to_vec(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
-            stderr: b"ls: invalid argument 'XX' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\nTry 'ls --help' for more information.\n".to_vec(),
+            stderr: b"ls: invalid argument 'invalid--end' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\n  - 'birth', 'creation'\nTry 'ls --help' for more information.\n".to_vec(),
         };
 
         assert_eq!(
@@ -3160,17 +2530,63 @@ mod tests {
         );
     }
 
-    // A ctime sort without fixture roots falls back to byte-for-byte comparison.
+    // A real difference on the formerly normalized LS diagnostic row remains visible.
+    #[test]
+    fn ls_compare_keeps_invalid_time_diagnostic_differences_strict() {
+        let argv = vec!["--time=invalid--end".to_string()];
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
+            stdout: Vec::new(),
+            stderr: b"ls: invalid argument 'invalid--end' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\n  - 'birth', 'creation'\nTry 'ls --help' for more information.\n".to_vec(),
+        };
+        let dut = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
+            stdout: Vec::new(),
+            stderr: b"ls: invalid argument 'invalid--end' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\nTry 'ls --help' for more information.\n".to_vec(),
+        };
+
+        assert!(matches!(
+            compare_results(
+                "ls",
+                &argv,
+                &reference,
+                &dut,
+                &FsSnapshot::new(),
+                &FsSnapshot::new(),
+                false,
+            ),
+            CompareResult::Mismatch {
+                stderr_diff: true,
+                ..
+            }
+        ));
+    }
+
+    // LS replay evidence retains exact diagnostic bytes on both sides.
+    #[test]
+    fn ls_replay_preserves_exact_stderr_bytes() {
+        let stderr = b"ls: invalid argument 'invalid--end' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'ctime', 'status'\n  - 'mtime', 'modification'\n  - 'birth', 'creation'\nTry 'ls --help' for more information.\n";
+        assert_eq!(stderr.len(), 211);
+        assert_eq!(
+            replay_stderr_evidence(stderr, stderr),
+            (
+                ReplayStreamEvidence::RawBytes(stderr.to_vec()),
+                ReplayStreamEvidence::RawBytes(stderr.to_vec()),
+            )
+        );
+    }
+
+    // A ctime sort compares raw order bytes without requiring fixture roots.
     #[test]
     fn ls_compare_keeps_explicit_time_sort_order_strict() {
         let argv = vec!["-t".to_string(), "--time=status".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"newer\nolder\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"older\nnewer\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3192,10 +2608,10 @@ mod tests {
         ));
     }
 
-    // 복제본의 실제 변경 시각 순서가 달라도 각 출력이 자기 상태에 맞으면 일치한다.
+    // Different clone-local ctime orders remain a raw observable difference.
     #[test]
     #[cfg(unix)]
-    fn ls_compare_accepts_clone_local_ctime_sort_orders() {
+    fn ls_compare_preserves_clone_local_ctime_sort_order_difference() {
         let reference_root = ls_short_ctime_sort_fixture(["cg11-soc.bin", "i4-s13q"]);
         let dut_root = ls_short_ctime_sort_fixture(["i4-s13q", "cg11-soc.bin"]);
         let argv = ["-t", "--time=ctime"]
@@ -3203,12 +2619,12 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>();
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"i4-s13q\ncg11-soc.bin\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"cg11-soc.bin\ni4-s13q\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3222,45 +2638,13 @@ mod tests {
                 dut_root.path(),
                 Path::new("work"),
             ),
-            CompareResult::Match
-        );
-    }
-
-    // 역순 출력이 시험 대상 복제본의 실제 변경 시각 순서를 어기면 불일치한다.
-    #[test]
-    #[cfg(unix)]
-    fn ls_compare_rejects_wrong_clone_local_reverse_ctime_order() {
-        let reference_root = ls_short_ctime_sort_fixture(["cg11-soc.bin", "i4-s13q"]);
-        let dut_root = ls_short_ctime_sort_fixture(["i4-s13q", "cg11-soc.bin"]);
-        let argv = ["-tr", "--time=status"]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: b"cg11-soc.bin\ni4-s13q\n".to_vec(),
-            stderr: Vec::new(),
-        };
-        let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: b"cg11-soc.bin\ni4-s13q\n".to_vec(),
-            stderr: Vec::new(),
-        };
-
-        assert!(matches!(
-            compare_ls_with_roots(
-                &argv,
-                &reference,
-                &dut,
-                reference_root.path(),
-                dut_root.path(),
-                Path::new("work"),
-            ),
             CompareResult::Mismatch {
+                process_outcome_diff: None,
                 stdout_diff: true,
-                ..
+                stderr_diff: false,
+                fs_diff: Vec::new(),
             }
-        ));
+        );
     }
 
     // Numeric-long time output remains strict even when the selected field is change time.
@@ -3268,12 +2652,12 @@ mod tests {
     fn ls_compare_keeps_numeric_long_change_time_strict() {
         let argv = vec!["-n".to_string(), "--time=status".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r--r-- 1 1000 1000 1 Jan  1 00:00 file\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r--r-- 1 1000 1000 1 Jan  2 00:00 file\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3295,55 +2679,7 @@ mod tests {
         ));
     }
 
-    // 직접 심볼릭 링크의 실제 lstat 변경 시각만 검증한 뒤 복제본 차이를 역할로 치환한다.
-    #[test]
-    #[cfg(unix)]
-    fn ls_compare_normalizes_verified_direct_lstat_ctime() {
-        let reference_root = ls_ctime_fixture();
-        let dut_root = ls_ctime_fixture();
-        let operand = "regular-link";
-        let argv = ["-n", "-d", "--time=status", "--time-style=+%s", operand]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let reference_ctime =
-            std::fs::symlink_metadata(reference_root.path().join("work").join(operand))
-                .expect("read reference symbolic link metadata")
-                .ctime();
-        let dut_ctime = std::fs::symlink_metadata(dut_root.path().join("work").join(operand))
-            .expect("read DUT symbolic link metadata")
-            .ctime();
-        let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: direct_ls_epoch_output(
-                reference_root.path(),
-                operand,
-                false,
-                reference_ctime,
-                0,
-            ),
-            stderr: Vec::new(),
-        };
-        let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: direct_ls_epoch_output(dut_root.path(), operand, false, dut_ctime, 0),
-            stderr: Vec::new(),
-        };
-
-        assert_eq!(
-            compare_ls_with_roots(
-                &argv,
-                &reference,
-                &dut,
-                reference_root.path(),
-                dut_root.path(),
-                Path::new("work"),
-            ),
-            CompareResult::Match
-        );
-    }
-
-    // 변경 시각 대신 수정 시각을 출력한 구현은 역할 치환 전에 실제 메타데이터와 대조해 거부한다.
+    // A direct ctime record with mtime bytes remains an observable stdout difference.
     #[test]
     #[cfg(unix)]
     fn ls_compare_rejects_mtime_in_direct_ctime_column() {
@@ -3361,7 +2697,7 @@ mod tests {
             .expect("read DUT regular metadata");
         assert_ne!(dut_metadata.mtime(), dut_metadata.ctime());
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(
                 reference_root.path(),
                 operand,
@@ -3372,7 +2708,7 @@ mod tests {
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(
                 dut_root.path(),
                 operand,
@@ -3399,7 +2735,7 @@ mod tests {
         ));
     }
 
-    // 검증된 변경 시각 옆의 파일 크기는 역할 치환 뒤에도 정확히 비교한다.
+    // A size difference adjacent to direct ctime remains an observable byte difference.
     #[test]
     #[cfg(unix)]
     fn ls_compare_keeps_direct_ctime_neighbor_fields_strict() {
@@ -3418,7 +2754,7 @@ mod tests {
             .expect("read DUT regular metadata")
             .ctime();
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(
                 reference_root.path(),
                 operand,
@@ -3429,7 +2765,7 @@ mod tests {
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(dut_root.path(), operand, false, dut_ctime, 1),
             stderr: Vec::new(),
         };
@@ -3450,54 +2786,7 @@ mod tests {
         ));
     }
 
-    // -H는 직접 심볼릭 링크 피연산자의 대상 변경 시각을 검증한다.
-    #[test]
-    #[cfg(unix)]
-    fn ls_compare_uses_followed_ctime_for_command_line_dereference() {
-        let reference_root = ls_ctime_fixture();
-        let dut_root = ls_ctime_fixture();
-        let operand = "regular-link";
-        let argv = ["-ndcH", "--time-style=+%s", operand]
-            .into_iter()
-            .map(str::to_string)
-            .collect::<Vec<_>>();
-        let reference_ctime = std::fs::metadata(reference_root.path().join("work").join(operand))
-            .expect("read followed reference metadata")
-            .ctime();
-        let dut_ctime = std::fs::metadata(dut_root.path().join("work").join(operand))
-            .expect("read followed DUT metadata")
-            .ctime();
-        let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: direct_ls_epoch_output(
-                reference_root.path(),
-                operand,
-                true,
-                reference_ctime,
-                0,
-            ),
-            stderr: Vec::new(),
-        };
-        let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-            stdout: direct_ls_epoch_output(dut_root.path(), operand, true, dut_ctime, 0),
-            stderr: Vec::new(),
-        };
-
-        assert_eq!(
-            compare_ls_with_roots(
-                &argv,
-                &reference,
-                &dut,
-                reference_root.path(),
-                dut_root.path(),
-                Path::new("work"),
-            ),
-            CompareResult::Match
-        );
-    }
-
-    // 변경 시각 정렬은 역할 치환 경계 밖이므로 원시 출력 차이를 그대로 보고한다.
+    // A sorted numeric ctime output keeps its timestamp bytes exact.
     #[test]
     #[cfg(unix)]
     fn ls_compare_keeps_ctime_sort_raw_strict() {
@@ -3509,12 +2798,12 @@ mod tests {
             .map(str::to_string)
             .collect::<Vec<_>>();
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(reference_root.path(), operand, false, 1, 0),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: direct_ls_epoch_output(dut_root.path(), operand, false, 2, 0),
             stderr: Vec::new(),
         };
@@ -3535,17 +2824,17 @@ mod tests {
         ));
     }
 
-    // Block-only comparison removes the width padding before the block count but preserves the name.
+    // Block-count padding and filename spacing remain exact output bytes.
     #[test]
-    fn ls_compare_normalizes_only_the_block_prefix() {
+    fn ls_compare_preserves_block_prefix_and_name_bytes() {
         let argv = vec!["-s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b" 4 visible  name\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"4 visible name\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3567,17 +2856,17 @@ mod tests {
         ));
     }
 
-    // Block-count normalization preserves spaces that belong to the start of a file name.
+    // Spaces at the start of a block-listing filename remain exact bytes.
     #[test]
     fn ls_compare_preserves_leading_spaces_in_block_names() {
         let argv = vec!["-s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"4   name\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"4 name\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3599,17 +2888,82 @@ mod tests {
         ));
     }
 
-    // Numeric-long normalization preserves spaces that belong to the start of a file name.
+    // A different block-count column width remains an exact output byte difference.
+    #[test]
+    fn ls_compare_rejects_differing_block_column_padding() {
+        let argv = vec!["-s".to_string()];
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: b" 4 file1\n12 file2\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let dut = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            // Missing the leading padding that right-justifies "4" to the same
+            // width as "12" in the reference.
+            stdout: b"4 file1\n12 file2\n".to_vec(),
+            stderr: Vec::new(),
+        };
+
+        assert!(matches!(
+            compare_results(
+                "ls",
+                &argv,
+                &reference,
+                &dut,
+                &FsSnapshot::new(),
+                &FsSnapshot::new(),
+                false,
+            ),
+            CompareResult::Mismatch {
+                stdout_diff: true,
+                ..
+            }
+        ));
+    }
+
+    // Byte-identical block-count columns, including differing per-line widths
+    // right-justified within the same listing, must match.
+    #[test]
+    fn ls_compare_matches_identical_aligned_block_output() {
+        let argv = vec!["-s".to_string()];
+        let stdout = b" 4 file1\n12 file2\n".to_vec();
+        let reference = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout: stdout.clone(),
+            stderr: Vec::new(),
+        };
+        let dut = RunResult {
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+            stdout,
+            stderr: Vec::new(),
+        };
+
+        assert_eq!(
+            compare_results(
+                "ls",
+                &argv,
+                &reference,
+                &dut,
+                &FsSnapshot::new(),
+                &FsSnapshot::new(),
+                false,
+            ),
+            CompareResult::Match
+        );
+    }
+
+    // Spaces at the start of a numeric-long filename remain exact bytes.
     #[test]
     fn ls_compare_preserves_leading_spaces_in_long_names() {
         let argv = vec!["-n".to_string(), "--time-style=+%s".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r--r-- 1 1000 1000 1 0   name\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-rw-r--r-- 1 1000 1000 1 0 name\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3631,34 +2985,10 @@ mod tests {
         ));
     }
 
-    // Unknown long options make ls column parsing fail closed.
-    #[test]
-    fn ls_parser_rejects_unknown_long_option() {
-        assert!(ls_column_options(&["--unknown".to_string()]).is_none());
-    }
-
-    // A required time-style value cannot be omitted from the parsed command line.
-    #[test]
-    fn ls_parser_rejects_missing_time_style_value() {
-        assert!(ls_column_options(&["--time-style".to_string()]).is_none());
-    }
-
-    // An unrecognized time style cannot select a guessed output layout.
-    #[test]
-    fn ls_parser_rejects_unknown_time_style() {
-        assert!(ls_column_options(&["--time-style=unknown".to_string()]).is_none());
-    }
-
-    // Unknown short options make ls column parsing fail closed.
-    #[test]
-    fn ls_parser_rejects_unknown_short_option() {
-        assert!(ls_column_options(&["-Q".to_string()]).is_none());
-    }
-
-    // 서로 복제된 트리는 원시 아이노드와 변경 시각이 달라도 같은 하드 링크 관계로 비교된다.
+    // Clone-local inode and ctime output remains an exact byte difference.
     #[test]
     #[cfg(unix)]
-    fn stat_compare_normalizes_inode_identity_and_change_time_observations() {
+    fn stat_compare_preserves_clone_local_inode_and_ctime_bytes() {
         let reference_root = stat_hardlink_fixture();
         let dut_root = stat_hardlink_fixture();
         let operands = ["regular-link", "regular-hard"];
@@ -3670,12 +3000,12 @@ mod tests {
             operands[1].to_string(),
         ];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(reference_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(dut_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
@@ -3689,14 +3019,19 @@ mod tests {
                 dut_root.path(),
                 Path::new("work"),
             ),
-            CompareResult::Match
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }
         );
     }
 
-    // Host comparison uses transported snapshots and never reopens container-only fixture paths.
+    // Container-only roots do not prevent comparing transported raw output bytes.
     #[test]
     #[cfg(unix)]
-    fn stat_compare_uses_snapshots_when_roots_do_not_exist_on_host() {
+    fn stat_compare_preserves_raw_difference_with_container_only_roots() {
         let reference_root = stat_hardlink_fixture();
         let dut_root = stat_hardlink_fixture();
         let operands = ["regular-link", "regular-hard"];
@@ -3708,18 +3043,22 @@ mod tests {
             operands[1].to_string(),
         ];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(reference_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(dut_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
-        let reference_fs =
-            crate::fuzz::execution::snapshot_fs_without_restore(reference_root.path()).unwrap();
-        let dut_fs = crate::fuzz::execution::snapshot_fs_without_restore(dut_root.path()).unwrap();
+        let reference_fs = crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(
+            reference_root.path(),
+        )
+        .unwrap();
+        let dut_fs =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs_without_restore(dut_root.path())
+                .unwrap();
 
         let result = compare_results_with_roots(
             "stat",
@@ -3737,13 +3076,21 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(result, CompareResult::Match);
+        assert_eq!(
+            result,
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }
+        );
     }
 
-    // A GNU-style unknown directive remains a literal question mark beside normalized inode output.
+    // An unknown directive does not hide an adjacent inode byte difference.
     #[test]
     #[cfg(unix)]
-    fn stat_compare_normalizes_inode_beside_unknown_directive() {
+    fn stat_compare_preserves_inode_bytes_beside_unknown_directive() {
         let reference_root = stat_hardlink_fixture();
         let dut_root = stat_hardlink_fixture();
         let argv = ["-c", "q=%Q|i=%i", "regular"]
@@ -3757,12 +3104,12 @@ mod tests {
             .expect("read DUT inode metadata")
             .ino();
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: format!("q=?|i={reference_inode}\n").into_bytes(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: format!("q=?|i={dut_inode}\n").into_bytes(),
             stderr: Vec::new(),
         };
@@ -3776,11 +3123,16 @@ mod tests {
                 dut_root.path(),
                 Path::new("work"),
             ),
-            CompareResult::Match
+            CompareResult::Mismatch {
+                process_outcome_diff: None,
+                stdout_diff: true,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }
         );
     }
 
-    // 실제 하드 링크 피연산자에서 0으로 조작된 아이노드와 변경 시각은 정규화로 숨지 않는다.
+    // Zeroed inode and ctime output differs from actual hardlink output bytes.
     #[test]
     #[cfg(unix)]
     fn stat_compare_rejects_zero_metadata_for_real_hardlink_operands() {
@@ -3795,12 +3147,12 @@ mod tests {
             operands[1].to_string(),
         ];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(reference_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"i=0|Z=0|s=7\ni=0|Z=0|s=7\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3821,7 +3173,7 @@ mod tests {
         ));
     }
 
-    // 한 구현이 하드 링크 두 이름에 서로 다른 아이노드를 출력하면 관계 정규화 뒤에도 불일치다.
+    // Different printed inode bytes for hardlink aliases remain observable.
     #[test]
     #[cfg(unix)]
     fn stat_compare_reports_hardlink_identity_partition_difference() {
@@ -3838,7 +3190,7 @@ mod tests {
         let dut_metadata = std::fs::metadata(dut_root.path().join("work/regular"))
             .expect("read DUT hard link metadata");
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: format!(
                 "i={0}|Z={1}\ni={0}|Z={1}\n",
                 reference_metadata.ino(),
@@ -3848,7 +3200,7 @@ mod tests {
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: format!(
                 "i={0}|Z={1}\ni={2}|Z={1}\n",
                 dut_metadata.ino(),
@@ -3875,7 +3227,7 @@ mod tests {
         ));
     }
 
-    // 정규화 대상과 함께 출력된 결정적 크기 값은 바이트 단위로 계속 엄격히 비교된다.
+    // Size bytes adjacent to inode and ctime remain exact output evidence.
     #[test]
     #[cfg(unix)]
     fn stat_compare_keeps_deterministic_directives_exact() {
@@ -3889,12 +3241,12 @@ mod tests {
             operands[0].to_string(),
         ];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(reference_root.path(), &operands, 7),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: followed_stat_output(dut_root.path(), &operands, 8),
             stderr: Vec::new(),
         };
@@ -3920,12 +3272,12 @@ mod tests {
     fn stat_compare_falls_back_to_exact_output_for_ambiguous_format() {
         let argv = vec!["-c".to_string(), "%i%Z".to_string(), "file".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"1011700000000\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"90011800000000\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3952,12 +3304,12 @@ mod tests {
     fn stat_compare_falls_back_when_literal_can_be_a_numeric_sign() {
         let argv = vec!["-c".to_string(), "%Z-%i".to_string(), "file".to_string()];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-10-101\n".to_vec(),
             stderr: Vec::new(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: b"-20-9001\n".to_vec(),
             stderr: Vec::new(),
         };
@@ -3979,7 +3331,7 @@ mod tests {
         ));
     }
 
-    // stat 표준 출력이 정규화되어도 오류 진단 문자열은 기본 정책에서 그대로 비교된다.
+    // Stat error diagnostics remain exact under the ordinary stderr policy.
     #[test]
     fn stat_compare_keeps_stderr_strict() {
         let argv = vec![
@@ -3988,12 +3340,12 @@ mod tests {
             "missing".to_string(),
         ];
         let reference = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
             stderr: b"stat: cannot statx 'missing': No such file or directory\n".to_vec(),
         };
         let dut = RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
             stdout: Vec::new(),
             stderr: b"stat: missing file 'missing'\n".to_vec(),
         };

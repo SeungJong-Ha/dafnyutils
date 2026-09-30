@@ -1,25 +1,22 @@
-use super::compare::{
+use super::comparison::compare::{
     compare_results_with_roots, fs_snapshots_match, mismatch_signature, replay_verdict_with_roots,
     MismatchSignature, ReplayVerdict,
 };
-use super::execution::{
-    chmod_snapshot_post, chmod_snapshot_pre, prepare_controlled_chmod_variant, run_variant,
-    snapshot_fs_post, snapshot_fs_pre, IdentityTransitionEvidence,
+use super::comparison::evaluation::{CaseVerdict, EvaluatedComparison};
+use super::comparison::fs_snapshot::{
+    snapshot_fs_post, snapshot_fs_pre_with_restore, snapshot_metadata_unchanged,
+    IdentityTransitionEvidence,
 };
-use super::fixture::{
-    apply_fixture_modes, current_read_only_time_anchor, prepare_iteration_dirs,
-    prepare_read_only_iteration_dirs_at, set_fixture_owner, stage_iteration_dirs,
+use super::execution::{prepare_variant, ExecutionEvidence};
+use super::system_state_concretizer::{
+    apply_fixture_modes, clone_fixture_tree, set_fixture_owner, stage_iteration_dirs,
 };
-use super::time_coverage::{CaseVerdict, EvaluatedComparison};
-use super::{CompareResult, FsSnapshot, GeneratedCase, ResolvedPaths, RunResult, VariantKind};
+use super::{FsSnapshot, GeneratedCase, ResolvedPaths, RunResult, VariantKind};
 use crate::utils::arg_semantics::should_consume_stdin_from_argv;
-use crate::utils::capabilities::require_fuzz_capability;
-use crate::utils::chmod_campaign::{
-    canonical_environment_config, current_process_umask, selected_chmod_umask,
-};
+use crate::utils::capabilities::{require_fuzz_capability, StdinDeliveryPolicy};
 use crate::utils::cli::FuzzArgs;
+use crate::utils::execution_context::selected_process_umask;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -50,6 +47,7 @@ pub(crate) struct RawCaseObservation {
     pub(crate) dut_fs: FsSnapshot,
     pub(crate) reference_identity: IdentityTransitionEvidence,
     pub(crate) dut_identity: IdentityTransitionEvidence,
+    pub(crate) execution: ExecutionEvidence,
     pub(crate) reference_root: PathBuf,
     pub(crate) dut_root: PathBuf,
 }
@@ -93,110 +91,6 @@ impl CaseExecutor for LocalCaseExecutor<'_> {
             case,
             None,
         )
-    }
-}
-
-#[derive(Debug, Default, PartialEq, Eq)]
-struct ModeledReadTimeChanges {
-    strict_changes: Vec<String>,
-    symlink_atime_paths: BTreeSet<String>,
-}
-
-fn modeled_read_time_changes(pre: &FsSnapshot, post: &FsSnapshot) -> ModeledReadTimeChanges {
-    let mut result = ModeledReadTimeChanges::default();
-    for (path, before) in pre {
-        let Some(after) = post.get(path) else {
-            continue;
-        };
-        if before.kind == "inaccessible"
-            || after.kind == "inaccessible"
-            || before.host_key != after.host_key
-        {
-            continue;
-        }
-        let mut fields = Vec::new();
-        if (before.times.atime_sec, before.times.atime_nsec)
-            != (after.times.atime_sec, after.times.atime_nsec)
-        {
-            if before.kind == "symlink" && after.kind == "symlink" {
-                result.symlink_atime_paths.insert(path.clone());
-            } else {
-                fields.push("atime");
-            }
-        }
-        if (before.times.mtime_sec, before.times.mtime_nsec)
-            != (after.times.mtime_sec, after.times.mtime_nsec)
-        {
-            fields.push("mtime");
-        }
-        if (before.times.ctime_sec, before.times.ctime_nsec)
-            != (after.times.ctime_sec, after.times.ctime_nsec)
-        {
-            fields.push("ctime");
-        }
-        if !fields.is_empty() {
-            result
-                .strict_changes
-                .push(format!("{path}: {}", fields.join(", ")));
-        }
-    }
-    result
-}
-
-fn unexpected_dut_read_time_changes(
-    reference: &ModeledReadTimeChanges,
-    dut: &ModeledReadTimeChanges,
-) -> Vec<String> {
-    let mut changes = dut.strict_changes.clone();
-    changes.extend(
-        dut.symlink_atime_paths
-            .difference(&reference.symlink_atime_paths)
-            .map(|path| format!("{path}: atime")),
-    );
-    changes.sort();
-    changes
-}
-
-pub(crate) fn read_only_timestamp_differences(
-    util: &str,
-    pre_fs: &FsSnapshot,
-    ref_fs: &FsSnapshot,
-    dut_pre_fs: &FsSnapshot,
-    dut_fs: &FsSnapshot,
-) -> Result<Vec<String>, String> {
-    if matches!(util, "ls" | "stat") {
-        let reference_changes = modeled_read_time_changes(pre_fs, ref_fs);
-        if !reference_changes.strict_changes.is_empty() {
-            return Err(format!(
-                "reference {} changed modeled read-only timestamps: {}",
-                util,
-                reference_changes.strict_changes.join("; ")
-            ));
-        }
-        let dut_changes = modeled_read_time_changes(dut_pre_fs, dut_fs);
-        let dut_changes = unexpected_dut_read_time_changes(&reference_changes, &dut_changes)
-            .into_iter()
-            .map(|detail| format!("DUT changed read-only timestamps at {detail}"))
-            .collect();
-        return Ok(dut_changes);
-    }
-    Ok(Vec::new())
-}
-
-fn append_filesystem_differences(compare: &mut CompareResult, differences: Vec<String>) {
-    if differences.is_empty() {
-        return;
-    }
-    match compare {
-        CompareResult::Match => {
-            *compare = CompareResult::Mismatch {
-                process_outcome_diff: None,
-                stdout_diff: false,
-                stderr_diff: false,
-                fs_diff: differences,
-            };
-        }
-        CompareResult::Mismatch { fs_diff, .. } => fs_diff.extend(differences),
     }
 }
 
@@ -264,145 +158,103 @@ pub(crate) fn execute_case_in_work_dir(
     target_identity: Option<(u32, u32)>,
 ) -> Result<RawCaseObservation, String> {
     let process_timeout = Duration::from_secs(args.process_timeout_seconds);
-    let (
-        ref_dir,
-        dut_dir,
-        pre_fs,
-        dut_pre_fs,
-        mut ref_observer,
-        mut dut_observer,
-        ref_result,
-        dut_result,
-    ) = if args.common.util == "chmod" {
-        let (ref_dir, dut_dir) =
-            stage_iteration_dirs(work_root, shared_root, work_iteration, &case.fixture, true)?;
-        if let Some((uid, gid)) = target_identity {
-            set_fixture_owner(&ref_dir, uid, gid)?;
-            set_fixture_owner(&dut_dir, uid, gid)?;
-        }
-        let umask = selected_chmod_umask(seed, child_iteration);
-        let environment = canonical_environment_config(umask)?;
-        let reference = prepare_controlled_chmod_variant(
-            VariantKind::Ref,
-            paths,
-            &case.argv,
-            case.cwd.as_path(),
-            ref_dir.as_path(),
-            &environment,
-            umask,
-            target_identity,
-        )?;
-        let dut = prepare_controlled_chmod_variant(
+    let controlled_fixture_times =
+        require_fuzz_capability(&args.common.util)?.controlled_fixture_times;
+    let (ref_dir, dut_dir) = stage_iteration_dirs(
+        work_root,
+        shared_root,
+        work_iteration,
+        &case.fixture,
+        controlled_fixture_times,
+    )?;
+    let ref_dir = std::fs::canonicalize(&ref_dir)
+        .map_err(|error| format!("resolve absolute fixture path: {error}"))?;
+    let dut_dir = std::fs::canonicalize(&dut_dir)
+        .map_err(|error| format!("resolve original fixture clone path: {error}"))?;
+    if let Some((uid, gid)) = target_identity {
+        set_fixture_owner(&ref_dir, uid, gid)?;
+        set_fixture_owner(&dut_dir, uid, gid)?;
+    }
+    let umask = selected_process_umask(seed, child_iteration);
+    if args.process_umask.is_some_and(|saved| saved != umask) {
+        return Err(format!(
+            "saved process umask differs from schedule: expected {umask:04o}"
+        ));
+    }
+    let reference = prepare_variant(
+        VariantKind::Ref,
+        paths,
+        &case.argv,
+        &case.cwd,
+        &ref_dir,
+        umask,
+        target_identity,
+    )?;
+    if let Some(saved) = &args.replay_fixture_times {
+        super::system_state_concretizer::restore_fixture_time_inputs(&ref_dir, saved)?;
+    }
+    apply_fixture_modes(&ref_dir, &case.fixture)?;
+    let (pre_fs, mut ref_observer) = snapshot_fs_pre_with_restore(&ref_dir, true)?;
+    let stdin_delivery = require_fuzz_capability(&args.common.util)?.stdin_delivery;
+    let process_stdin = if stdin_delivery == StdinDeliveryPolicy::Supplied
+        || should_consume_stdin_from_argv(&args.common.util, &case.argv)
+    {
+        case.stdin.as_slice()
+    } else {
+        &[]
+    };
+    let (ref_result, reference_window) =
+        reference.go_and_collect_timed(process_stdin, process_timeout)?;
+    let (ref_fs, reference_identity) = snapshot_fs_post(&ref_dir, &mut ref_observer)?;
+    let mut fixture_sharing = pre_fs == ref_fs && snapshot_metadata_unchanged(&ref_dir, &ref_fs)?;
+    let mut prepared_dut = None;
+    if fixture_sharing {
+        prepared_dut = Some(prepare_variant(
             VariantKind::Dut,
             paths,
             &case.argv,
-            case.cwd.as_path(),
-            dut_dir.as_path(),
-            &environment,
+            &case.cwd,
+            &ref_dir,
             umask,
             target_identity,
-        )?;
-        apply_fixture_modes(ref_dir.as_path(), &case.fixture)?;
-        apply_fixture_modes(dut_dir.as_path(), &case.fixture)?;
-        let (pre_fs, ref_observer) = chmod_snapshot_pre(ref_dir.as_path())?;
-        let (dut_pre_fs, dut_observer) = chmod_snapshot_pre(dut_dir.as_path())?;
-        if !fs_snapshots_match(&pre_fs, &dut_pre_fs, true)? {
-            return Err(
-                "reference and DUT fixtures differ after pre-state observation".to_string(),
-            );
-        }
-        let ref_result = reference.go_and_collect(&case.stdin, process_timeout)?;
-        let dut_result = dut.go_and_collect(&case.stdin, process_timeout)?;
+        )?);
+        fixture_sharing = snapshot_metadata_unchanged(&ref_dir, &ref_fs)?;
+    }
+    let (dut, dut_pre_fs, mut dut_observer) = if fixture_sharing {
         (
-            ref_dir,
-            dut_dir,
-            pre_fs,
-            dut_pre_fs,
+            prepared_dut.take().expect("prepared shared DUT"),
+            ref_fs.clone(),
             ref_observer,
-            dut_observer,
-            ref_result,
-            dut_result,
         )
     } else {
-        let (ref_dir, dut_dir) = if matches!(args.common.util.as_str(), "ls" | "stat") {
-            let anchor = match args.read_only_time_anchor_seconds {
-                Some(anchor) => anchor,
-                None => current_read_only_time_anchor()?,
-            };
-            prepare_read_only_iteration_dirs_at(
-                work_root,
-                shared_root,
-                work_iteration,
-                &case.fixture,
-                anchor,
-            )?
-        } else {
-            prepare_iteration_dirs(work_root, shared_root, work_iteration, &case.fixture, false)?
-        };
-        if let Some((uid, gid)) = target_identity {
-            set_fixture_owner(&ref_dir, uid, gid)?;
-            set_fixture_owner(&dut_dir, uid, gid)?;
-            apply_fixture_modes(&ref_dir, &case.fixture)?;
-            apply_fixture_modes(&dut_dir, &case.fixture)?;
-        }
-        let (pre_fs, ref_observer) = snapshot_fs_pre(ref_dir.as_path())?;
-        let (dut_pre_fs, dut_observer) = snapshot_fs_pre(dut_dir.as_path())?;
-        if !fs_snapshots_match(&pre_fs, &dut_pre_fs, false)? {
-            return Err("reference and DUT fixtures differ before execution".to_string());
-        }
-        let process_stdin = if should_consume_stdin_from_argv(&args.common.util, &case.argv) {
-            case.stdin.as_slice()
-        } else {
-            &[]
-        };
-        let process_umask = match args.process_umask {
-            Some(umask) => umask,
-            None => current_process_umask()?,
-        };
-        let ref_result = run_variant(
-            VariantKind::Ref,
-            paths,
-            &case.argv,
-            process_stdin,
-            case.cwd.as_path(),
-            ref_dir.as_path(),
-            process_umask,
-            target_identity,
-            process_timeout,
-        )?;
-        let dut_result = run_variant(
+        // Drop the waiting helper before replacing its cwd tree.
+        drop(prepared_dut);
+        clone_fixture_tree(&dut_dir, &ref_dir)?;
+        let dut = prepare_variant(
             VariantKind::Dut,
             paths,
             &case.argv,
-            process_stdin,
-            case.cwd.as_path(),
-            dut_dir.as_path(),
-            process_umask,
+            &case.cwd,
+            &ref_dir,
+            umask,
             target_identity,
-            process_timeout,
         )?;
-        (
-            ref_dir,
-            dut_dir,
-            pre_fs,
-            dut_pre_fs,
-            ref_observer,
-            dut_observer,
-            ref_result,
-            dut_result,
-        )
+        super::system_state_concretizer::restore_observed_fixture_times(&ref_dir, &pre_fs)?;
+        apply_fixture_modes(&ref_dir, &case.fixture)?;
+        let (pre, observer) = snapshot_fs_pre_with_restore(&ref_dir, true)?;
+        if !fs_snapshots_match(&pre_fs, &pre, true)? {
+            return Err("reference and DUT fixtures differ after pre-state observation".into());
+        }
+        (dut, pre, observer)
+    };
+    let (dut_result, dut_window) = dut.go_and_collect_timed(process_stdin, process_timeout)?;
+    let (dut_fs, dut_identity) = snapshot_fs_post(&ref_dir, &mut dut_observer)?;
+    let execution = ExecutionEvidence {
+        fixture_sharing,
+        reference_window,
+        dut_window,
     };
 
-    let (ref_fs, reference_identity) = if args.common.util == "chmod" {
-        chmod_snapshot_post(ref_dir.as_path(), &mut ref_observer)?
-    } else {
-        snapshot_fs_post(ref_dir.as_path(), &mut ref_observer)?
-    };
-    let (dut_fs, dut_identity) = if args.common.util == "chmod" {
-        chmod_snapshot_post(dut_dir.as_path(), &mut dut_observer)?
-    } else {
-        snapshot_fs_post(dut_dir.as_path(), &mut dut_observer)?
-    };
     Ok(RawCaseObservation {
         reference: ref_result,
         dut: dut_result,
@@ -412,8 +264,9 @@ pub(crate) fn execute_case_in_work_dir(
         dut_fs,
         reference_identity,
         dut_identity,
-        reference_root: ref_dir,
-        dut_root: dut_dir,
+        execution,
+        reference_root: ref_dir.clone(),
+        dut_root: ref_dir,
     })
 }
 
@@ -433,8 +286,9 @@ fn finish_case_evaluation(
         dut_identity,
         reference_root: ref_dir,
         dut_root: dut_dir,
+        execution,
     } = observation;
-    let mut compare = compare_results_with_roots(
+    let compare = compare_results_with_roots(
         &args.common.util,
         &case.argv,
         &ref_result,
@@ -448,11 +302,8 @@ fn finish_case_evaluation(
         Some(dut_dir.as_path()),
         Some(case.cwd.as_path()),
     )?;
-    let time_differences =
-        read_only_timestamp_differences(&args.common.util, &pre_fs, &ref_fs, &dut_pre_fs, &dut_fs)?;
-    append_filesystem_differences(&mut compare, time_differences);
     let mismatch_signature = mismatch_signature(&compare, &reference_identity, &dut_identity);
-    let replay_verdict = replay_verdict_with_roots(
+    let mut replay_verdict = replay_verdict_with_roots(
         &args.common.util,
         &case.argv,
         &ref_result,
@@ -469,15 +320,15 @@ fn finish_case_evaluation(
         Some(dut_dir.as_path()),
         Some(case.cwd.as_path()),
     )?;
-
+    replay_verdict.execution = Some(execution.clone());
+    replay_verdict.validate_time_evidence()?;
+    let mut evaluated = EvaluatedComparison::new(compare);
+    evaluated.execution = Some(execution);
     Ok(CaseEvaluation {
         case: case.clone(),
         reference: ref_result,
         dut: dut_result,
-        comparison: EvaluatedComparison::without_time_observations(
-            compare,
-            require_fuzz_capability(&args.common.util)?.time_coverage,
-        ),
+        comparison: evaluated,
         mismatch_signature,
         replay_verdict,
         pre_fs,
@@ -586,7 +437,7 @@ pub(crate) fn shrink_mismatch(
 fn reductions(util: &str, case: &GeneratedCase) -> Vec<GeneratedCase> {
     let mut out = Vec::new();
     out.extend(reduce_argv(util, case));
-    if util != "ls" || !super::input::ls_argv_requires_followed_entry_metadata(&case.argv) {
+    if !super::input::requires_resolvable_fixture(util, &case.argv) {
         out.extend(reduce_fixture(case));
     }
     out.extend(reduce_contents(case));
@@ -603,9 +454,7 @@ fn reduce_argv(util: &str, case: &GeneratedCase) -> Vec<GeneratedCase> {
     for idx in 0..case.argv.len() {
         let mut candidate = case.clone();
         candidate.argv.remove(idx);
-        if candidate.argv != case.argv
-            && (util != "ls" || super::input::ls_argv_respects_mode_dependencies(&candidate.argv))
-        {
+        if candidate.argv != case.argv && super::input::accepts_candidate(util, &candidate.argv) {
             out.push(candidate);
         }
     }
@@ -642,9 +491,16 @@ pub(crate) fn reduce_fixture(case: &GeneratedCase) -> Vec<GeneratedCase> {
         out.push(candidate);
     }
     if case.fixture.directories.len() > 1 {
-        let mut candidate = case.clone();
-        candidate.fixture.directories.pop();
-        out.push(candidate);
+        if let Some(index) = case
+            .fixture
+            .directories
+            .iter()
+            .rposition(|directory| !case.cwd.starts_with(&directory.relative_path))
+        {
+            let mut candidate = case.clone();
+            candidate.fixture.directories.remove(index);
+            out.push(candidate);
+        }
     }
     out
 }
@@ -684,173 +540,199 @@ fn reduce_cwd(case: &GeneratedCase) -> Vec<GeneratedCase> {
 #[cfg(test)]
 mod tests {
     use super::{
-        append_filesystem_differences, evaluate_case_in_work_dir, fs_snapshots_match,
-        modeled_read_time_changes, reduce_argv, reductions, shrink_mismatch,
-        unexpected_dut_read_time_changes, CaseEvaluation, IdentityTransitionEvidence,
-        MismatchSignature,
+        evaluate_case_in_work_dir, fs_snapshots_match, reduce_argv, reductions, shrink_mismatch,
+        CaseEvaluation, IdentityTransitionEvidence, MismatchSignature,
     };
-    use crate::fuzz::execution::{
-        chmod_snapshot_post, chmod_snapshot_pre, prepare_controlled_chmod_variant,
-    };
-    use crate::fuzz::fixture::{apply_fixture_modes, stage_iteration_dirs};
+    use crate::fuzz::comparison::fs_snapshot::{snapshot_fs_post, snapshot_fs_pre_unrestored};
+    use crate::fuzz::comparison::CompareResult;
+    use crate::fuzz::execution::prepare_controlled_variant;
     use crate::fuzz::input::scenario_case;
+    use crate::fuzz::system_state_concretizer::{apply_fixture_modes, stage_iteration_dirs};
     use crate::fuzz::{
-        CompareResult, DirSpec, FileSpec, FixtureBlueprint, FsNodeSnapshot, FsSnapshot, FsTimes,
-        GeneratedCase, HostInodeKeySnapshot, ResolvedPaths, ResolvedTarget, RunResult, SymlinkSpec,
-        VariantKind,
+        DirSpec, FileSpec, FixtureBlueprint, FsSnapshot, GeneratedCase, ResolvedPaths,
+        ResolvedTarget, RunResult, SymlinkSpec, VariantKind,
     };
-    use crate::utils::chmod_campaign::{canonical_environment_config, selected_chmod_umask};
     use crate::utils::cli::{Cli, CliCommand, ExecKind};
+    use crate::utils::execution_context::{canonical_environment_config, selected_process_umask};
     use clap::Parser;
     use std::path::PathBuf;
 
-    fn symlink_node(atime_sec: i64) -> FsNodeSnapshot {
-        FsNodeSnapshot {
-            raw_stat_metadata: crate::utils::world_json::RawStatMetadataJson::Unknown,
-            kind: "symlink".to_string(),
-            mode_octal: "0777".to_string(),
-            times: FsTimes {
-                atime_sec,
-                atime_nsec: 0,
-                mtime_sec: 20,
-                mtime_nsec: 0,
-                ctime_sec: 30,
-                ctime_nsec: 0,
-            },
-            uid: None,
-            gid: None,
-            logical_size: None,
-            allocated_512_blocks: None,
-            preferred_io_block_bytes: None,
-            target: "target".to_string(),
-            data: Vec::new(),
-            host_key: Some(HostInodeKeySnapshot {
-                device: 1,
-                inode: 3,
-            }),
-            link_count: Some(1),
-        }
+    #[cfg(unix)]
+    fn observe_script(script: &str) -> super::RawCaseObservation {
+        observe_script_in_cwd(script, ".")
     }
 
-    // A regular file changed by a read-only utility must report every modeled timestamp mutation.
-    #[test]
-    fn read_only_time_transition_detects_modeled_timestamp_mutation() {
-        let before = FsNodeSnapshot {
-            raw_stat_metadata: crate::utils::world_json::RawStatMetadataJson::Unknown,
-            kind: "file".to_string(),
-            mode_octal: "0644".to_string(),
-            times: FsTimes {
-                atime_sec: 10,
-                atime_nsec: 0,
-                mtime_sec: 20,
-                mtime_nsec: 0,
-                ctime_sec: 30,
-                ctime_nsec: 0,
-            },
-            uid: None,
-            gid: None,
-            logical_size: None,
-            allocated_512_blocks: None,
-            preferred_io_block_bytes: None,
-            target: String::new(),
-            data: b"payload".to_vec(),
-            host_key: Some(HostInodeKeySnapshot {
-                device: 1,
-                inode: 2,
-            }),
-            link_count: Some(1),
+    #[cfg(unix)]
+    fn observe_script_in_cwd(script: &str, cwd: &str) -> super::RawCaseObservation {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        std::fs::write(&target, format!("#!/bin/sh\n{script}\n")).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let CliCommand::Fuzz(args) =
+            Cli::try_parse_from(["fuzzer", "fuzz", "--util", "cat", "--dut-kind", "native"])
+                .unwrap()
+                .command
+        else {
+            unreachable!()
         };
-        let mut after = before.clone();
-        after.times.atime_sec = 99;
-        after.times.mtime_sec = 21;
-        after.times.ctime_sec = 31;
-        let pre = FsSnapshot::from([("file".to_string(), before)]);
-        let post = FsSnapshot::from([("file".to_string(), after)]);
-
-        let changes = modeled_read_time_changes(&pre, &post);
-
-        assert_eq!(changes.strict_changes, ["file: atime, mtime, ctime"]);
-        assert!(changes.symlink_atime_paths.is_empty());
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: target.clone(),
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: target,
+                label: "dut",
+            },
+        };
+        let case = GeneratedCase {
+            argv: Vec::new(),
+            stdin: Vec::new(),
+            cwd: cwd.into(),
+            fixture: FixtureBlueprint {
+                directories: vec![DirSpec {
+                    relative_path: "work".into(),
+                    mode: 0o755,
+                }],
+                hardlinks: Vec::new(),
+                files: vec![FileSpec {
+                    relative_path: "data".into(),
+                    bytes: b"original".to_vec(),
+                    mode: 0o644,
+                }],
+                symlinks: vec![
+                    SymlinkSpec {
+                        relative_path: "link".into(),
+                        target: "data".into(),
+                    },
+                    SymlinkSpec {
+                        relative_path: "cwd-link".into(),
+                        target: "work".into(),
+                    },
+                ],
+            },
+        };
+        super::execute_case_in_work_dir(&args, &paths, root.path(), None, 1, 0, 0, &case, None)
+            .unwrap()
     }
 
-    // A symbolic-link access-time change is separated while modification and change times remain strict.
+    // Read-only pwd roles use exactly the same absolute cwd and reuse unchanged raw objects.
+    #[cfg(unix)]
     #[test]
-    fn read_only_time_transition_partitions_symlink_atime() {
-        let before = symlink_node(10);
-        let mut after = before.clone();
-        after.times.atime_sec = 99;
-        after.times.mtime_sec = 21;
-        after.times.ctime_sec = 31;
-        let pre = FsSnapshot::from([("link".to_string(), before)]);
-        let post = FsSnapshot::from([("link".to_string(), after)]);
-
-        let changes = modeled_read_time_changes(&pre, &post);
-
-        assert_eq!(changes.strict_changes, ["link: mtime, ctime"]);
-        assert_eq!(changes.symlink_atime_paths.len(), 1);
-        assert!(changes.symlink_atime_paths.contains("link"));
-    }
-
-    // 참조가 보존한 심볼릭 링크 접근 시각을 DUT만 바꾸면 파일 시스템 차이로 보고한다.
-    #[test]
-    fn dut_only_symlink_atime_change_becomes_filesystem_difference() {
-        let before = symlink_node(10);
-        let mut dut_after = before.clone();
-        dut_after.times.atime_sec = 99;
-        let pre = FsSnapshot::from([("link".to_string(), before.clone())]);
-        let reference_post = FsSnapshot::from([("link".to_string(), before)]);
-        let dut_post = FsSnapshot::from([("link".to_string(), dut_after)]);
-        let reference_changes = modeled_read_time_changes(&pre, &reference_post);
-        let dut_changes = modeled_read_time_changes(&pre, &dut_post);
-        let differences = unexpected_dut_read_time_changes(&reference_changes, &dut_changes)
-            .into_iter()
-            .map(|detail| format!("DUT changed read-only timestamps at {detail}"))
-            .collect();
-        let mut compare = CompareResult::Match;
-
-        append_filesystem_differences(&mut compare, differences);
-
-        assert_eq!(
-            compare,
-            CompareResult::Mismatch {
-                process_outcome_diff: None,
-                stdout_diff: false,
-                stderr_diff: false,
-                fs_diff: vec!["DUT changed read-only timestamps at link: atime".to_string()],
-            }
+    fn read_only_roles_share_exact_fixture_and_absolute_path() {
+        let observation = observe_script("/bin/pwd");
+        assert_eq!(observation.reference_root, observation.dut_root);
+        assert_eq!(observation.reference.stdout, observation.dut.stdout);
+        assert_eq!(observation.pre_fs, observation.reference_fs);
+        assert_eq!(observation.reference_fs, observation.dut_pre_fs);
+        assert!(observation.execution.fixture_sharing);
+        assert!(
+            observation.execution.reference_window.end <= observation.execution.dut_window.start
         );
     }
 
-    // 같은 링크의 서로 다른 접근 시각은 원시 비교가 같아도 시간 검사를 완료하지 못한다.
+    // A mutating reference leaves preserved evidence while DUT receives original contents at the same path.
+    #[cfg(unix)]
     #[test]
-    fn time_coverage_blocks_matching_symlink_atime_path_sets() {
-        let before = symlink_node(10);
-        let mut after = before.clone();
-        after.times.atime_sec = 99;
-        let pre = FsSnapshot::from([("link".to_string(), before)]);
-        let post = FsSnapshot::from([("link".to_string(), after)]);
-        let reference_changes = modeled_read_time_changes(&pre, &post);
-        let mut dut_post = post.clone();
-        dut_post.get_mut("link").unwrap().times.atime_sec = 123;
-        let dut_changes = modeled_read_time_changes(&pre, &dut_post);
-        let differences = unexpected_dut_read_time_changes(&reference_changes, &dut_changes)
-            .into_iter()
-            .map(|detail| format!("DUT changed read-only timestamps at {detail}"))
-            .collect();
-        let mut compare = CompareResult::Match;
+    fn mutating_roles_clone_original_fixture_at_same_path() {
+        let observation =
+            observe_script("/bin/pwd; /bin/cat data; sleep 0.02; printf mutated > data");
+        assert_eq!(observation.reference_root, observation.dut_root);
+        assert_eq!(observation.reference.stdout, observation.dut.stdout);
+        assert!(!observation.execution.fixture_sharing);
+        assert_eq!(observation.reference_fs["data"].data, b"mutated");
+        assert_eq!(observation.dut_pre_fs["data"].data, b"original");
+        assert_eq!(observation.dut_fs["data"].data, b"mutated");
+        assert_ne!(
+            observation.pre_fs["data"].host_key,
+            observation.dut_pre_fs["data"].host_key
+        );
+    }
 
-        append_filesystem_differences(&mut compare, differences);
+    // Following a symlink cwd during setup must preserve identical inputs on the fresh-clone branch.
+    #[cfg(unix)]
+    #[test]
+    fn mutating_symlink_cwd_roles_preserve_identical_initial_times() {
+        let observation = observe_script_in_cwd(
+            "/bin/pwd; /bin/cat ../data; sleep 0.02; printf mutated > ../data",
+            "cwd-link",
+        );
+        assert!(!observation.execution.fixture_sharing);
+        assert_eq!(observation.reference.stdout, observation.dut.stdout);
+        assert!(fs_snapshots_match(&observation.pre_fs, &observation.dut_pre_fs, true).unwrap());
+        assert_eq!(
+            observation.reference_fs["data"].data,
+            observation.dut_fs["data"].data
+        );
+    }
 
-        assert_eq!(compare, CompareResult::Match);
-        for util in ["ls", "stat"] {
-            let comparison = super::EvaluatedComparison::without_time_observations(
-                compare.clone(),
-                crate::utils::capabilities::require_fuzz_capability(util)
-                    .unwrap()
-                    .time_coverage,
-            );
-            assert_eq!(comparison.verdict(), super::CaseVerdict::IncompleteCoverage);
+    // Reducing a mismatch from a generated cwd must leave every candidate launchable there.
+    #[test]
+    fn fixture_reduction_preserves_generated_cwd() {
+        let case = GeneratedCase {
+            argv: vec!["a".to_string(), "z".to_string()],
+            fixture: FixtureBlueprint {
+                directories: vec![
+                    DirSpec {
+                        relative_path: "other".into(),
+                        mode: 0o755,
+                    },
+                    DirSpec {
+                        relative_path: "bw-1n".into(),
+                        mode: 0o755,
+                    },
+                ],
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: b"a".to_vec(),
+            cwd: "bw-1n".into(),
+        };
+        let candidates = super::reduce_fixture(&case);
+        assert_eq!(candidates.len(), 1);
+        for candidate in candidates {
+            let root = tempfile::tempdir().unwrap();
+            crate::fuzz::system_state_concretizer::materialize_fixture(
+                root.path(),
+                &candidate.fixture,
+            )
+            .unwrap();
+            let output = std::process::Command::new("/bin/pwd")
+                .current_dir(root.path().join(&candidate.cwd))
+                .output()
+                .unwrap();
+            assert!(output.status.success());
         }
+    }
+
+    // An ancestor's removal must not invalidate a cwd selected beneath that directory.
+    #[test]
+    fn fixture_reduction_preserves_cwd_ancestors() {
+        let case = GeneratedCase {
+            argv: Vec::new(),
+            fixture: FixtureBlueprint {
+                directories: vec![
+                    DirSpec {
+                        relative_path: "parent/child".into(),
+                        mode: 0o755,
+                    },
+                    DirSpec {
+                        relative_path: "parent".into(),
+                        mode: 0o755,
+                    },
+                ],
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: "parent/child".into(),
+        };
+        assert!(super::reduce_fixture(&case).is_empty());
     }
 
     // ls 축소는 시각 선택자만 남겨 GNU의 암시 정렬 차이를 새 불일치로 만들지 않는다.
@@ -872,6 +754,33 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].argv, vec!["-t"]);
+    }
+
+    // DU shrinking must not replace an in-slice mismatch with unsupported accounting.
+    #[test]
+    fn du_argv_shrink_preserves_byte_accounting() {
+        let case = GeneratedCase {
+            argv: vec!["-b".to_string(), "-s".to_string(), ".".to_string()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: PathBuf::from("."),
+        };
+
+        let candidates = reduce_argv("du", &case);
+
+        assert!(candidates.iter().all(|candidate| {
+            crate::fuzz::input::generators::du::argv_stays_in_modeled_accounting_slice(
+                &candidate.argv,
+            )
+        }));
+        assert!(!candidates
+            .iter()
+            .any(|candidate| candidate.argv == ["-s", "."]));
     }
 
     // Metadata-producing -L shrinking must not turn a valid implicit link into a dangling one.
@@ -949,71 +858,79 @@ mod tests {
         let original = CaseEvaluation {
             case,
             reference: RunResult {
-                termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+                termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             },
             dut: RunResult {
-                termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+                termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
                 stdout: Vec::new(),
                 stderr: Vec::new(),
             },
-            comparison: super::EvaluatedComparison::without_time_observations(
-                CompareResult::Mismatch {
-                    process_outcome_diff: Some((
-                        crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                            crate::fuzz::process_outcome::Termination::test_exit(0),
-                        ),
-                        crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                            crate::fuzz::process_outcome::Termination::test_exit(1),
-                        ),
-                    )),
-                    stdout_diff: false,
-                    stderr_diff: false,
-                    fs_diff: Vec::new(),
-                },
-                crate::utils::capabilities::TimeCoverageRequirement::None,
-            ),
+            comparison: super::EvaluatedComparison::new(CompareResult::Mismatch {
+                process_outcome_diff: Some((
+                    crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                        crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+                    ),
+                    crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                        crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
+                    ),
+                )),
+                stdout_diff: false,
+                stderr_diff: false,
+                fs_diff: Vec::new(),
+            }),
             mismatch_signature: Some(MismatchSignature::ProcessOutcome),
-            replay_verdict: crate::fuzz::compare::ReplayVerdict {
+            replay_verdict: crate::fuzz::comparison::compare::ReplayVerdict {
+                execution: None,
                 comparison: CompareResult::Mismatch {
                     process_outcome_diff: Some((
-                        crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                            crate::fuzz::process_outcome::Termination::test_exit(0),
+                        crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                            crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
                         ),
-                        crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                            crate::fuzz::process_outcome::Termination::test_exit(1),
+                        crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                            crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
                         ),
                     )),
                     stdout_diff: false,
                     stderr_diff: false,
                     fs_diff: Vec::new(),
                 },
-                reference_process_outcome: crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                    crate::fuzz::process_outcome::Termination::test_exit(0),
+                reference_process_outcome:
+                    crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                        crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+                    ),
+                dut_process_outcome:
+                    crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+                        crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
+                    ),
+                reference_stdout: crate::fuzz::comparison::compare::ReplayStreamEvidence::RawBytes(
+                    Vec::new(),
                 ),
-                dut_process_outcome: crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-                    crate::fuzz::process_outcome::Termination::test_exit(1),
+                dut_stdout: crate::fuzz::comparison::compare::ReplayStreamEvidence::RawBytes(
+                    Vec::new(),
                 ),
-                reference_stdout: crate::fuzz::compare::ReplayStreamEvidence::RawBytes(Vec::new()),
-                dut_stdout: crate::fuzz::compare::ReplayStreamEvidence::RawBytes(Vec::new()),
-                reference_stderr: crate::fuzz::compare::ReplayStreamEvidence::RawBytes(Vec::new()),
-                dut_stderr: crate::fuzz::compare::ReplayStreamEvidence::RawBytes(Vec::new()),
+                reference_stderr: crate::fuzz::comparison::compare::ReplayStreamEvidence::RawBytes(
+                    Vec::new(),
+                ),
+                dut_stderr: crate::fuzz::comparison::compare::ReplayStreamEvidence::RawBytes(
+                    Vec::new(),
+                ),
                 reference_identity: identity.clone(),
                 dut_identity: identity.clone(),
-                reference_pre_fs: crate::fuzz::compare::ReplayFsEvidence {
+                reference_pre_fs: crate::fuzz::comparison::compare::ReplayFsEvidence {
                     nodes: std::collections::BTreeMap::new(),
                     hardlink_aliases: std::collections::BTreeSet::new(),
                 },
-                dut_pre_fs: crate::fuzz::compare::ReplayFsEvidence {
+                dut_pre_fs: crate::fuzz::comparison::compare::ReplayFsEvidence {
                     nodes: std::collections::BTreeMap::new(),
                     hardlink_aliases: std::collections::BTreeSet::new(),
                 },
-                reference_post_fs: crate::fuzz::compare::ReplayFsEvidence {
+                reference_post_fs: crate::fuzz::comparison::compare::ReplayFsEvidence {
                     nodes: std::collections::BTreeMap::new(),
                     hardlink_aliases: std::collections::BTreeSet::new(),
                 },
-                dut_post_fs: crate::fuzz::compare::ReplayFsEvidence {
+                dut_post_fs: crate::fuzz::comparison::compare::ReplayFsEvidence {
                     nodes: std::collections::BTreeMap::new(),
                     hardlink_aliases: std::collections::BTreeSet::new(),
                 },
@@ -1031,6 +948,208 @@ mod tests {
             shrink_mismatch(&args, &paths, root.path(), None, 1, 0, original, 1).unwrap_err();
 
         assert!(error.contains("failed to run reference variant"), "{error}");
+    }
+
+    // Explicit chmod case stdin reaches both targets despite its semantic non-reading policy.
+    #[cfg(unix)]
+    #[test]
+    fn explicit_chmod_case_preserves_supplied_stdin_delivery() {
+        let cli = Cli::try_parse_from([
+            "coreutils_fuzzer",
+            "fuzz",
+            "--util",
+            "chmod",
+            "--dut-kind",
+            "native",
+        ])
+        .unwrap();
+        let CliCommand::Fuzz(args) = cli.command else {
+            unreachable!()
+        };
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/sh".into(),
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/sh".into(),
+                label: "dut",
+            },
+        };
+        let case = GeneratedCase {
+            argv: vec!["-c".into(), "cat".into()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: b"explicit chmod input\n".to_vec(),
+            cwd: ".".into(),
+        };
+        let root = tempfile::tempdir().unwrap();
+
+        let observed =
+            super::execute_case_in_work_dir(&args, &paths, root.path(), None, 1, 0, 0, &case, None)
+                .unwrap();
+
+        assert_eq!(observed.reference.stdout, case.stdin);
+        assert_eq!(observed.reference.termination.exit_code(), Some(0));
+        assert_eq!(observed.reference, observed.dut);
+    }
+
+    // Every registered utility creates files under the same seed/iteration umask schedule.
+    #[cfg(unix)]
+    #[test]
+    fn every_utility_uses_the_scheduled_creation_mask() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/sh".into(),
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/sh".into(),
+                label: "dut",
+            },
+        };
+        let case = GeneratedCase {
+            argv: vec!["-c".into(), "umask; : > created".into()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: ".".into(),
+        };
+        for (utility_index, capability) in crate::utils::capabilities::UTILITY_CAPABILITIES
+            .iter()
+            .enumerate()
+        {
+            let cli = Cli::try_parse_from([
+                "coreutils_fuzzer",
+                "fuzz",
+                "--util",
+                capability.utility,
+                "--dut-kind",
+                "native",
+            ])
+            .unwrap();
+            let CliCommand::Fuzz(args) = cli.command else {
+                unreachable!()
+            };
+            for (iteration, mask) in [0o077, 0o000, 0o005, 0o022, 0o027].into_iter().enumerate() {
+                let observed = super::execute_case_in_work_dir(
+                    &args,
+                    &paths,
+                    root.path(),
+                    None,
+                    4,
+                    iteration,
+                    5 * utility_index + iteration,
+                    &case,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(
+                    observed.reference.stdout,
+                    format!("{mask:04o}\n").as_bytes(),
+                    "{}",
+                    capability.utility
+                );
+                assert_eq!(observed.reference, observed.dut);
+                for fs in [&observed.reference_fs, &observed.dut_fs] {
+                    assert_eq!(
+                        fs["created"].mode_octal,
+                        format!("{:04o}", 0o666 & !mask),
+                        "{}",
+                        capability.utility
+                    );
+                }
+            }
+        }
+    }
+
+    // A non-chmod utility enters a restrictive cwd at READY before final modes are observed.
+    #[cfg(unix)]
+    #[test]
+    fn non_chmod_restrictive_cwd_is_finalized_before_prestate() {
+        let cli = Cli::try_parse_from([
+            "coreutils_fuzzer",
+            "fuzz",
+            "--util",
+            "cat",
+            "--dut-kind",
+            "native",
+        ])
+        .unwrap();
+        let CliCommand::Fuzz(args) = cli.command else {
+            unreachable!()
+        };
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/cat".into(),
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/bin/cat".into(),
+                label: "dut",
+            },
+        };
+        let case = GeneratedCase {
+            argv: vec!["--version".into()],
+            fixture: FixtureBlueprint {
+                directories: vec![DirSpec {
+                    relative_path: "d".into(),
+                    mode: 0,
+                }],
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: "d".into(),
+        };
+        let root = tempfile::tempdir().unwrap();
+
+        let observed =
+            super::execute_case_in_work_dir(&args, &paths, root.path(), None, 1, 0, 0, &case, None)
+                .unwrap();
+
+        assert_eq!(observed.reference.termination.exit_code(), Some(0));
+        assert_eq!(observed.reference, observed.dut);
+        assert!(!observed.reference.stdout.is_empty());
+        use std::os::unix::fs::PermissionsExt;
+        for directory in [&observed.reference_root, &observed.dut_root] {
+            assert_eq!(
+                std::fs::symlink_metadata(directory.join("d"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                0
+            );
+        }
+        for fs in [
+            &observed.pre_fs,
+            &observed.dut_pre_fs,
+            &observed.reference_fs,
+            &observed.dut_fs,
+        ] {
+            if fs["d"].kind == "inaccessible" {
+                assert!(fs["d"].mode_octal.is_empty());
+            } else {
+                assert_eq!(fs["d"].mode_octal, "0000");
+            }
+        }
     }
 
     // Shrink work-directory numbering must not change the original seed/iteration umask schedule.
@@ -1114,11 +1233,11 @@ mod tests {
         assert!(fs_snapshots_match(&evaluation.reference_fs, &evaluation.dut_fs, true).unwrap());
         assert_eq!(
             evaluation.comparison.observable,
-            crate::fuzz::CompareResult::Match
+            crate::fuzz::comparison::CompareResult::Match
         );
         assert_eq!(
             evaluation.comparison.verdict(),
-            crate::fuzz::time_coverage::CaseVerdict::Match
+            crate::fuzz::comparison::evaluation::CaseVerdict::Match
         );
     }
 
@@ -1167,9 +1286,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (ref_dir, dut_dir) =
             stage_iteration_dirs(root.path(), None, 597, &case.fixture, true).unwrap();
-        let umask = selected_chmod_umask(1, 597);
+        let umask = selected_process_umask(1, 597);
         let environment = canonical_environment_config(umask).unwrap();
-        let reference = prepare_controlled_chmod_variant(
+        let reference = prepare_controlled_variant(
             VariantKind::Ref,
             &paths,
             &case.argv,
@@ -1180,7 +1299,7 @@ mod tests {
             None,
         )
         .unwrap();
-        let dut = prepare_controlled_chmod_variant(
+        let dut = prepare_controlled_variant(
             VariantKind::Dut,
             &paths,
             &case.argv,
@@ -1204,8 +1323,8 @@ mod tests {
                 0o000
             );
         }
-        let (pre_fs, mut ref_observer) = chmod_snapshot_pre(&ref_dir).unwrap();
-        let (dut_pre_fs, mut dut_observer) = chmod_snapshot_pre(&dut_dir).unwrap();
+        let (pre_fs, mut ref_observer) = snapshot_fs_pre_unrestored(&ref_dir).unwrap();
+        let (dut_pre_fs, mut dut_observer) = snapshot_fs_pre_unrestored(&dut_dir).unwrap();
         assert!(fs_snapshots_match(&pre_fs, &dut_pre_fs, true).unwrap());
 
         let reference_result = reference
@@ -1215,8 +1334,8 @@ mod tests {
             .go_and_collect(&case.stdin, std::time::Duration::from_secs(10))
             .unwrap();
         assert_eq!(reference_result, dut_result);
-        let (reference_fs, _) = chmod_snapshot_post(&ref_dir, &mut ref_observer).unwrap();
-        let (dut_fs, _) = chmod_snapshot_post(&dut_dir, &mut dut_observer).unwrap();
+        let (reference_fs, _) = snapshot_fs_post(&ref_dir, &mut ref_observer).unwrap();
+        let (dut_fs, _) = snapshot_fs_post(&dut_dir, &mut dut_observer).unwrap();
         assert!(fs_snapshots_match(&reference_fs, &dut_fs, true).unwrap());
         for role_dir in [&ref_dir, &dut_dir] {
             assert_eq!(
@@ -1235,11 +1354,11 @@ mod tests {
 
         assert_eq!(
             evaluation.comparison.observable,
-            crate::fuzz::CompareResult::Match
+            crate::fuzz::comparison::CompareResult::Match
         );
         assert_eq!(
             evaluation.comparison.verdict(),
-            crate::fuzz::time_coverage::CaseVerdict::Match
+            crate::fuzz::comparison::evaluation::CaseVerdict::Match
         );
         for snapshot in [
             &evaluation.pre_fs,
@@ -1249,7 +1368,8 @@ mod tests {
             assert_eq!(snapshot["d"].kind, "inaccessible");
             assert!(snapshot["d"].mode_octal.is_empty());
         }
-        for role in ["ref", "dut"] {
+        {
+            let role = "ref";
             assert_eq!(
                 fs::symlink_metadata(root.path().join("iter-1000597").join(role).join("d"))
                     .unwrap()
@@ -1311,11 +1431,11 @@ mod tests {
 
         assert_eq!(
             evaluation.comparison.observable,
-            crate::fuzz::CompareResult::Match
+            crate::fuzz::comparison::CompareResult::Match
         );
         assert_eq!(
             evaluation.comparison.verdict(),
-            crate::fuzz::time_coverage::CaseVerdict::Match
+            crate::fuzz::comparison::evaluation::CaseVerdict::Match
         );
         assert!(fs_snapshots_match(&evaluation.reference_fs, &evaluation.dut_fs, true).unwrap());
         assert_eq!(
@@ -1375,11 +1495,11 @@ mod tests {
         assert!(!evaluation.pre_fs.contains_key("d/e"));
         assert_eq!(
             evaluation.comparison.observable,
-            crate::fuzz::CompareResult::Match
+            crate::fuzz::comparison::CompareResult::Match
         );
         assert_eq!(
             evaluation.comparison.verdict(),
-            crate::fuzz::time_coverage::CaseVerdict::Match
+            crate::fuzz::comparison::evaluation::CaseVerdict::Match
         );
         assert!(fs_snapshots_match(&evaluation.reference_fs, &evaluation.dut_fs, true).unwrap());
         assert_eq!(evaluation.reference_fs["d"].mode_octal, "0700");
@@ -1401,70 +1521,5 @@ mod tests {
                 )
             );
         }
-    }
-
-    // An explicit DUT mtime mutation must remain visible in the raw exact post-state comparison.
-    #[cfg(unix)]
-    #[test]
-    fn chmod_explicit_mtime_mutation_is_detected() {
-        use std::fs;
-        use std::os::unix::fs::PermissionsExt;
-
-        let cli = Cli::try_parse_from([
-            "coreutils_fuzzer",
-            "fuzz",
-            "--util",
-            "chmod",
-            "--dut-kind",
-            "native",
-        ])
-        .unwrap();
-        let CliCommand::Fuzz(args) = cli.command else {
-            panic!("expected fuzz command");
-        };
-        let root = tempfile::tempdir().unwrap();
-        let dut = root.path().join("mutating-chmod");
-        fs::write(
-            &dut,
-            "#!/bin/sh\n/bin/chmod \"$@\" && /usr/bin/touch -m -d @946684800 -- dir\n",
-        )
-        .unwrap();
-        fs::set_permissions(&dut, fs::Permissions::from_mode(0o755)).unwrap();
-        let paths = ResolvedPaths {
-            reference: ResolvedTarget {
-                kind: ExecKind::Native,
-                path: PathBuf::from("/bin/chmod"),
-                label: "reference",
-            },
-            dut: ResolvedTarget {
-                kind: ExecKind::Native,
-                path: dut,
-                label: "dut",
-            },
-        };
-        let case = GeneratedCase {
-            argv: vec!["0755".to_string(), "dir".to_string()],
-            fixture: FixtureBlueprint {
-                directories: vec![DirSpec {
-                    relative_path: PathBuf::from("dir"),
-                    mode: 0o700,
-                }],
-                files: Vec::new(),
-                symlinks: Vec::new(),
-                hardlinks: Vec::new(),
-            },
-            stdin: Vec::new(),
-            cwd: PathBuf::from("."),
-        };
-
-        let evaluation =
-            evaluate_case_in_work_dir(&args, &paths, root.path(), None, 1, 0, 0, &case).unwrap();
-
-        assert!(matches!(
-            evaluation.comparison.observable,
-            crate::fuzz::CompareResult::Mismatch { ref fs_diff, .. }
-                if fs_diff == &["fs changed paths: dir"]
-        ));
-        assert_eq!(evaluation.dut_fs["dir"].times.mtime_sec, 946_684_800);
     }
 }

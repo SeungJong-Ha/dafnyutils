@@ -2,7 +2,9 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueContext, ValueSource,
 };
-use super::super::{mutation, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, PatternInputGenerator};
+use crate::fuzz::UtilityProfile;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, GeneratedCase, HardlinkSpec, SymlinkSpec};
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
@@ -11,7 +13,12 @@ use std::path::PathBuf;
 
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
-        .with_mutator(mutation::regenerate_argv);
+        .with_mutator(mutations::regenerate_argv)
+        .with_cwd_policy(CwdPolicy::Root)
+        .with_profile(UtilityProfile {
+            requires_path_operand: true,
+            prefers_existing_paths: true,
+        });
 
 const STAT_DIRECTIVES: &[char] = &[
     'a', 'b', 'B', 'd', 'D', 'f', 'g', 'h', 'i', 'o', 's', 'u', 'X', 'Y', 'Z', 'Q', '%',
@@ -218,7 +225,7 @@ mod tests {
         assert!(reached);
     }
 
-    // GNU option permutation remains reachable by placing the format production after an operand.
+    // GNU option permutations remains reachable by placing the format production after an operand.
     #[test]
     fn generated_formats_reach_positions_after_operands() {
         let options = option_pool();

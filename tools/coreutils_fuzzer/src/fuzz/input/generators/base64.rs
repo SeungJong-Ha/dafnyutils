@@ -1,11 +1,11 @@
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::GeneratedCase;
 
 pub(crate) static GENERATOR: PatternInputGenerator = PatternInputGenerator::generic(scenario_case);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec![], fixture, b"hello\n"),
         1 => support::case(vec!["--decode"], fixture, b"aGVsbG8K"),

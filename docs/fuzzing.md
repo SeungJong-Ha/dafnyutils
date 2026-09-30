@@ -1,266 +1,319 @@
 # Run the coreutils fuzzer
 
-Use the fuzzer to compare the pinned GNU executable with your built Dafny executable under the same generated inputs. Keep a mismatch bundle, fix the cause, and use a separate regression expectation to show the corrected behavior.
+The fuzzer runs the **pinned GNU executable** and **your Dafny executable** on
+the same generated inputs and reports any difference in output, exit status or
+filesystem effects.
 
-A matching campaign is finite runtime evidence. It is not a Dafny proof or approval of the specification.
+The typical loop looks like this:
+
+1. Run a campaign. It stops at the first mismatch and saves a **repro bundle**.
+2. Fix the cause (in the implementation, the specification, or the setup).
+3. Add a **regression expectation** that shows the corrected behavior.
+4. Rerun the campaign and paste the output into your PR.
+
+> **What a pass means:** a matching campaign is finite runtime evidence. It is
+> not a Dafny proof and does not approve the specification. Time-related
+> behavior is not covered at all (see [What the fuzzer does not
+> check](#what-the-fuzzer-does-not-check)).
 
 ## Contents
 
-- [Prepare the targets and runner](#prepare-the-targets-and-runner)
-- [Run a campaign](#run-a-campaign)
-  - [Check capability support](#check-capability-support)
-  - [Compare generated inputs](#compare-generated-inputs)
-  - [Collect PR evidence](#collect-pr-evidence)
-  - [Run an exact scenario](#run-an-exact-scenario)
-- [Read the result and preserve evidence](#read-the-result-and-preserve-evidence)
-  - [Interpret outcomes](#interpret-outcomes)
-  - [Replay the original mismatch](#replay-the-original-mismatch)
-  - [Inspect metrics](#inspect-metrics)
-- [Create an exact case set](#create-an-exact-case-set)
-- [Run and inspect the comparison](#run-and-inspect-the-comparison)
-- [Record a fixed regression](#record-a-fixed-regression)
-- [Understand execution limits](#understand-execution-limits)
-- [Support a new utility](#support-a-new-utility)
+- [Quick start](#quick-start)
+- [1. One-time setup](#1-one-time-setup)
+- [2. Run a campaign](#2-run-a-campaign)
+- [3. Collect PR evidence](#collect-pr-evidence)
+- [4. When a campaign fails](#4-when-a-campaign-fails)
+- [5. Pin a specific scenario](#5-pin-a-specific-scenario)
+- [6. Inspect metrics](#6-inspect-metrics)
+- [7. How targets are executed](#7-how-targets-are-executed)
+- [8. Support a new utility](#support-a-new-utility)
+- [Reference](#reference)
 
-## Prepare the targets and runner
+## Quick start
 
-Use the [setup guide](../README.md#setup). Run commands in Bash or zsh from the repository root. Clear any old `REF_BIN_TEMPLATE`, `DUT_BIN_TEMPLATE`, `EVAL_REPO_ROOT` or `EVAL_TARGET_ROOT` overrides before comparing normal project artifacts.
+Already set up? Run these from the repository root in Bash or zsh:
 
 ```sh
-# Expected duration: Usually under a second after setup.
-# Success criteria: Exit 0 and capabilities, fuzz, regression and replay appear.
-python3 tools/coreutils_fuzzer/run.py --help
+# Is my utility supported?
+python3 tools/coreutils_fuzzer/run.py capabilities
+
+# Quick local check: 20 generated cases
+python3 tools/coreutils_fuzzer/run.py fuzz cat --iterations 20 --seed 1
+
+# PR evidence: 3 seeds x 1,000 cases
+python3 tools/coreutils_fuzzer/run.py fuzz '<utility_name>' --seeds 1,7,19 --iterations 1000
 ```
 
-This checks the Python wrapper without executing a target. Expected usage line:
+If any of these fail with a missing binary, DLL or image, go through
+[setup](#1-one-time-setup) first.
 
-```text
-Usage: run.py [OPTIONS] COMMAND [ARGS]...
-```
+## 1. One-time setup
 
-Build prerequisites separately; do not count setup time as campaign time.
+Follow the [setup guide](../README.md#setup) first. Then clear any old
+`REF_BIN_TEMPLATE`, `DUT_BIN_TEMPLATE`, `EVAL_REPO_ROOT` or `EVAL_TARGET_ROOT`
+overrides so the fuzzer picks up the normal project artifacts.
 
-```sh
-# Expected duration: Unknown; first GNU build depends on downloads and CPU.
-# Success criteria: Exit 0 and _build/coreutils/src/cat exists and is executable.
-make build-coreutils
-```
+You need three things. Build times depend on downloads and CPU; do not count
+them as campaign time.
 
-Expected final output, exit 0:
+| What | Command | Done when |
+| --- | --- | --- |
+| Pinned GNU binary (reference) | `make build-coreutils` | `_build/coreutils/src/cat` exists and is executable |
+| Dafny utility under test (DUT) | `make -C bench/utils/cat build` | `_build/bench/cat_bench.dll` exists |
+| Execution image (needs Docker) | `docker compose -f tools/coreutils_fuzzer/docker-compose.yaml build` | Output ends with `Image dafnyutils-coreutils-fuzzer:latest Built` |
+
+Replace `cat` with your utility. The wrapper builds its own Rust runner with
+Cargo on first use, which may download dependencies on a fresh machine.
+
+<details>
+<summary>Expected output of each build step</summary>
+
+`make build-coreutils`, exit 0:
 
 ```text
 ...
 make[1]: Leaving directory '/workspace/dafnyutils/_build/coreutils'
 ```
 
-```sh
-# Expected duration: Unknown; depends on Dafny translation and .NET restore/build.
-# Success criteria: Exit 0 and _build/bench/cat_bench.dll exists.
-make -C bench/utils/cat build
-```
-
-Expected output, exit 0:
+`make -C bench/utils/cat build`, exit 0:
 
 ```text
 Dafny program verifier did not attempt verification
 make: Leaving directory '/workspace/dafnyutils/bench/utils/cat'
 ```
 
-```sh
-# Expected duration: Unknown; requires Docker access and image/dependency downloads.
-# Success criteria: Exit 0 and dafnyutils-coreutils-fuzzer:latest is built.
-docker compose -f tools/coreutils_fuzzer/docker-compose.yaml build
-```
-
-Expected final output, exit 0:
+`docker compose ... build`, exit 0:
 
 ```text
 ...
 Image dafnyutils-coreutils-fuzzer:latest Built
 ```
 
-The first command builds the pinned GNU binary. The second builds the utility
-under test (DUT). The third builds the execution image. The wrapper also builds
-its Rust runner with Cargo when needed, which may download dependencies on a
-fresh machine.
+</details>
 
-| Path | Role |
-| --- | --- |
-| `tools/coreutils_fuzzer/run.py` | Contributor CLI and artifact discovery |
-| `tools/coreutils_fuzzer/src/fuzz/` | Generation, execution, comparison, shrinking and evidence |
-| `tools/coreutils_fuzzer/src/fuzz/input/generators/` | Per-utility patterns and deterministic scenarios |
-| `tools/coreutils_fuzzer/src/utils/capabilities.rs` | Supported utility registry |
-| `tools/coreutils_fuzzer/docker-compose.yaml` | Shared container execution policy |
-| `tools/fixtures/coreutils_fuzzer/v1/` | Persistent case sets and fixed regression expectations |
-
-## Run a campaign
-
-### Check capability support
+To check that the wrapper itself works (this runs no target and takes under a
+second):
 
 ```sh
-# Expected duration: Estimated < 1 sec with a built runner; first Cargo build is extra.
-# Success criteria: Exit 0 and a registry entry for your utility.
+python3 tools/coreutils_fuzzer/run.py --help
+# Usage: run.py [OPTIONS] COMMAND [ARGS]...
+# Lists: capabilities, fuzz, regression, replay
+```
+
+## 2. Run a campaign
+
+### Check that your utility is supported
+
+```sh
 python3 tools/coreutils_fuzzer/run.py capabilities
 ```
 
-Expected output, exit 0:
-
 ```text
-cat fuzz=custom scenarios=yes time-coverage=none
-ls fuzz=custom scenarios=yes time-coverage=exact_per_execution
+cat fuzz=custom scenarios=yes
+ls fuzz=custom scenarios=yes
+Limitation: Time-related bugs are outside fuzzer coverage. Raw output differences caused by clocks or file timestamps are inconclusive.
 ```
 
-Read the utility's generator, scenario support and time-coverage requirement before
-running it. A manifest or DLL does not register a new fuzzer capability. The
-registry is defined in `src/utils/capabilities.rs` within the fuzzer tree.
+If your utility is not listed, it has no generator yet. See
+[Support a new utility](#support-a-new-utility). A manifest or a built DLL does
+not register it; the registry lives in
+`tools/coreutils_fuzzer/src/utils/capabilities.rs`. Before running, skim the
+utility's generator, whether it has scenarios, and any reported limitations.
 
-### Compare generated inputs
+### Run generated inputs
 
 ```sh
-# Expected duration: Unknown; 20 paired executions plus possible mismatch shrinking.
-# Success criteria: Exit 0, all 20 cases match, and fresh metrics are written.
-python3 tools/coreutils_fuzzer/run.py fuzz cat   --iterations 20 --seed 1 --metrics-out /tmp/cat-seed1-metrics.json
+python3 tools/coreutils_fuzzer/run.py fuzz cat \
+  --iterations 20 --seed 1 --metrics-out /tmp/cat-seed1-metrics.json
 ```
 
-Expected Results section for a passing run, exit 0:
+This compares `_build/coreutils/src/cat` against `_build/bench/cat_bench.dll`,
+generates 20 inputs, and **stops at the first non-match**. A passing run ends
+like this (exit 0):
 
 ```text
 Results
   Iterations : requested=20 submitted=20 completed=20 not_started=0 unfinished=0
-  Outcomes   : match=20 mismatch=0 timeout=0 incomplete_coverage=0 other_errors=0
+  Outcomes   : match=20 mismatch=0 timeout=0 other_errors=0
   Elapsed    : <seconds>s
   Status     : PASS - all requested iterations matched; no mismatch found
 === End campaign ===
 ```
 
-This selects `_build/coreutils/src/cat` and `_build/bench/cat_bench.dll`, generates
-inputs, and stops at the first non-match. The runner prints Configuration,
-Coverage and Results sections and writes per-case evidence to the metrics file.
-Use a fresh output path: metrics are not overwritten.
+Stdout has three sections per campaign:
 
-`--seed` makes input generation repeatable under the same runner and configuration. It does not freeze clocks, binary contents or the host environment. Use `--seeds 1,7,19` for several campaigns; multiple seeds or utilities receive separate output names. `--all-built` selects registered utilities with built Dafny DLLs.
+- **Configuration**: seed, budget, target paths and kinds, input source,
+  limits, stderr policy, work directory mode, container image and identity,
+  metrics path.
+- **Coverage**: which options, option pairs and semantic buckets the generated
+  inputs hit, including gaps. This describes the *inputs*, not source-code
+  coverage. A missing bucket can be normal (for example, `true` never creates
+  files).
+- **Results**: requested / submitted / completed iterations, matches,
+  mismatches, timeouts, other errors, elapsed time and PASS/FAIL. Errors are
+  never counted as matches. PASS is printed only after the metrics file (if
+  requested) has been saved.
 
-Default process timeout is 10 seconds per reference/DUT process. `--process-timeout-seconds` changes that limit; it does not turn a timeout into a semantic match. `--shrink-attempts 0` disables minimization when you want the exact case unchanged.
+In Results, `not_started` counts cases never submitted and `unfinished` counts
+submitted cases that produced no result.
 
-To compare other artifacts, set `REF_BIN_TEMPLATE` and `DUT_BIN_TEMPLATE` with a `{util}` placeholder and choose the correct `--ref-kind`/`--dut-kind` (`native` or `dotnet-dll`). Report these overrides. Comparing GNU with itself can check the harness but is not evidence about a Dafny utility.
+### Useful options
 
-### Collect PR evidence
+| Option | Effect |
+| --- | --- |
+| `--seed N` | Repeatable input generation for the same runner and configuration. Does not freeze clocks, binaries or the host. |
+| `--seeds 1,7,19` | Run several campaigns, one per seed. Each gets its own output name. |
+| `--all-built` | Run every registered utility that has a built Dafny DLL. |
+| `--metrics-out PATH` | Write per-case evidence. Use a fresh path; existing files are not overwritten. |
+| `--process-timeout-seconds N` | Per-process limit for reference and DUT (default 10). A timeout is never treated as a match. |
+| `--shrink-attempts 0` | Keep a failing case exactly as generated instead of minimizing it. |
+| `--case-set FILE` | Run stored cases instead of generated ones. See [Pin a specific scenario](#5-pin-a-specific-scenario). |
 
-Run **three distinct seeds with at least 1,000 iterations per seed** for each affected coreutils utility. Every requested iteration must complete as a match, with no mismatch, timeout, incomplete coverage or other error. Keep the same code revision and include stderr comparison. Record unsuccessful campaigns and fixes too; do not search for three favorable seeds while omitting failures.
+**Comparing other artifacts.** Set `REF_BIN_TEMPLATE` and `DUT_BIN_TEMPLATE`
+(each with a `{util}` placeholder) and pick `--ref-kind` / `--dut-kind`
+(`native` or `dotnet-dll`). Mention these overrides in any report. Comparing
+GNU with itself tests the harness only; it says nothing about a Dafny utility.
+
+<a id="collect-pr-evidence"></a>
+
+## 3. Collect PR evidence
+
+For **each affected utility**, run **three distinct seeds with at least 1,000
+iterations each**:
 
 ```sh
-# Expected duration: Unknown; at least 3,000 paired target executions, plus any shrinking.
-# Success criteria: Exit 0; all three seeds complete 1,000 matches each, with no failures.
 python3 tools/coreutils_fuzzer/run.py fuzz '<utility_name>' \
   --seeds 1,7,19 --iterations 1000
 ```
 
-Expected Results section **for each of seeds 1, 7 and 19**, exit 0:
+Every seed must end with (exit 0):
 
 ```text
 Results
   Iterations : requested=1000 submitted=1000 completed=1000 not_started=0 unfinished=0
-  Outcomes   : match=1000 mismatch=0 timeout=0 incomplete_coverage=0 other_errors=0
+  Outcomes   : match=1000 mismatch=0 timeout=0 other_errors=0
   Elapsed    : <seconds>s
   Status     : PASS - all requested iterations matched; no mismatch found
 === End campaign ===
 ```
 
-Keep each seed's Configuration and Coverage sections too; they are omitted here
-only to make the expected completion counts easier to find.
+That is, `requested`, `submitted`, `completed` and `match` all equal the budget,
+and every error count is zero.
 
-Replace `<utility_name>` with the affected utility. This command runs seeds
-1, 7 and 19. Paste its full stdout into the PR. No file attachments are needed. The automatic
-`make check` gate uses only 20 cases and seed 1, so it cannot replace this evidence.
-A fixed JSON case set is a separate regression check and does not satisfy the
-generated-campaign requirement.
+**Checklist**
 
-Stdout now groups each campaign into **Configuration**, **Coverage** and **Results**:
+- [ ] Same code revision for all three seeds.
+- [ ] stderr comparison left on (the default).
+- [ ] No mismatch, timeout, incomplete coverage or other error.
+- [ ] Full stdout pasted, unedited and in order, into the single fuzzing `text`
+      block of the [PR template](../.github/pull_request_template.md). No file
+      attachments are needed.
+- [ ] Command and process exit status recorded outside the block; stderr kept
+      if it reports failure details.
+- [ ] Failed campaigns and their fixes recorded too.
 
-- Configuration identifies the seed, requested budget, target paths/kinds, input source, limits, stderr policy, work directory mode, container image/identity and metrics path.
-- Coverage shows observed option singles/pairs and semantic buckets, including gaps. These are generated-input coverage measures, not source-code coverage or proof of all behavior.
-- Results shows requested/submitted/completed iterations, unstarted/unfinished work, matches, mismatches, timeouts, incomplete observations, other errors, elapsed time and PASS/FAIL. Completed errors are not matches. PASS is printed only after any requested metrics file is successfully saved.
+**Things that do not count**
 
-Copy the full stdout from the command into the single fuzzing `text` block in the [PR template](../.github/pull_request_template.md). The output includes all three seeds in order. Do not split or edit it. Record command and process exit status separately. Keep stderr if it reports failure details. A setup failure may stop before a result report; missing output is never proof of success. The wrapper stops when a seed fails, so unstarted later seeds still need execution after the cause is fixed.
+- The automatic `make check` gate (only 20 cases, seed 1).
+- A fixed JSON case set or regression suite. Those are separate checks.
+- Picking three favorable seeds while leaving out failing ones.
+- Missing output. A setup failure may stop before any Results section appears;
+  that is never proof of success.
+- A partially completed run. The wrapper stops when a seed fails, so later
+  seeds still need to run after you fix the cause.
 
-For a passing run, `requested`, `submitted`, `completed` and `match` must all
-equal the requested budget, with every error count zero. `not_started` counts
-cases never submitted; `unfinished` counts submitted cases with no result.
+Use your own campaign logs as evidence.
 
-Option percentages count observed options and pairs. Semantic buckets count
-observed behaviors. A missing bucket can be normal (for example, `true` does not
-create files). An `incomplete_coverage` outcome instead means a required
-observation is missing, so that case cannot count as a match.
+## 4. When a campaign fails
 
-Use your own campaign logs as PR evidence.
+### What the outcome means
 
+Failures print `FUZZER_OUTCOME=<value>` when they can be classified.
 
-### Run an exact scenario
-
-Use the complete [split-CRLF example](#create-an-exact-case-set) to reproduce one upstream scenario. Pass its JSON with `--case-set` and set `--iterations` to the exact number of stored cases. Explicit cases are consumed unchanged. They replace random generation for that run and need no per-case registry edit.
-
-## Read the result and preserve evidence
-
-### Interpret outcomes
-
-The runner compares process outcomes, stdout/stderr evidence, filesystem contents/metadata and identity transitions in independent fixture trees. Its comparator owns normalization; do not suppress stderr or add output rewriting to obtain a pass. In particular, do not compare absolute host inode numbers across separate fixtures.
-
-| Result | Contributor action |
+| Outcome | What to do |
 | --- | --- |
-| `match` | Record the completed population and configuration; continue required proof/review work |
-| `semantic_mismatch` | Preserve the bundle and determine which implementation or contract is wrong |
-| `incomplete_coverage` | Obtain the missing observation; do not report a match |
-| `fuzzer_timeout` | Record the timed-out case and diagnose the deadline |
-| `fuzzer_unsupported_capability` | Implement/review the utility's generator registration |
-| `fuzzer_target_spawn_failure`, `fuzzer_dotnet_runtime_failure` | Fix the missing/unusable binary or runtime |
-| `fuzzer_infrastructure_failure`, `fuzzer_build_failure` | Fix Docker/build prerequisites and rerun |
-| `replay_not_reproduced` | New complete verdict differs from the saved verdict |
-| `regression_failure` | At least one fixed expectation failed |
+| `match` | Nothing to fix. Record the population and configuration; continue proof and review work. |
+| `semantic_mismatch` | Keep the bundle. Work out whether the implementation or the contract is wrong. |
+| `fuzzer_timeout` | Record the timed-out case and find out why it hit the deadline. |
+| `fuzzer_unsupported_capability` | Implement or review the utility's generator registration. |
+| `fuzzer_target_spawn_failure`, `fuzzer_dotnet_runtime_failure` | Fix the missing or unusable binary or runtime. |
+| `fuzzer_infrastructure_failure`, `fuzzer_build_failure` | Fix Docker or build prerequisites and rerun. |
+| `replay_not_reproduced` | A replay produced a different complete verdict than the saved one. |
+| `regression_failure` | At least one fixed expectation failed. |
 
-Failure output uses `FUZZER_OUTCOME=<value>` where classified. Keep the original command and log as well as the bundle. A setup error can happen before case metrics exist.
+Always keep the original command, its log and the bundle. A setup error can
+happen before any case metrics exist.
 
-On an early mismatch, the report keeps the unused budget visible. For example,
-a 1,000-case run that stops on its first mismatch has one completed case and 999
-not started. Keep stderr and the original bundle too; a partially completed
-campaign does not meet the PR requirement.
+An early mismatch leaves the unused budget visible. A 1,000-case run that fails
+on its first case reports one completed and 999 not started.
 
-### Replay the original mismatch
+**Do not work around a mismatch.** Don't suppress stderr, add output rewriting,
+relax the comparison, edit the expected output or modify the original bundle.
+The comparator owns all normalization. Diagnose whether the problem is in the
+utility, its specification, the adapter or the test setup.
 
-Copy the bundle path printed by the failed run. In the following command, replace `/tmp/coreutils-fuzzer-repros/cat-example` with that real path.
+### Replay a saved mismatch
+
+Take the bundle path printed by the failed run:
 
 ```sh
-# Expected duration: Unknown; depends on the saved case and target startup.
-# Success criteria: The complete saved mismatch verdict is reproduced, with a nonzero exit.
 python3 tools/coreutils_fuzzer/run.py replay /tmp/coreutils-fuzzer-repros/cat-example
 ```
 
-Expected classified outcome when the saved mismatch is reproduced (nonzero exit;
-diagnostic wording and paths vary):
+Replay **always exits nonzero**, by design:
 
-```text
-...
-FUZZER_OUTCOME=semantic_mismatch
-...
-```
+| You see | Meaning |
+| --- | --- |
+| `FUZZER_OUTCOME=semantic_mismatch` | The saved mismatch still reproduces exactly. |
+| `FUZZER_OUTCOME=replay_not_reproduced` | The program now behaves differently, e.g. after your fix. |
 
-Exact reproduction reports `semantic_mismatch` and exits nonzero by design.
-A corrected program that now matches reports `replay_not_reproduced`, also nonzero.
-Test fixed behavior with a [regression suite](#record-a-fixed-regression), not by
-rewriting the original bundle.
+Diagnostic wording and paths vary. To show that a fix works, add a
+[regression expectation](#pin-it-as-a-regression); never rewrite the original
+bundle.
 
-Replay accepts current schema 6 only. It retains raw metadata, typed process outcomes, container-image identity and numeric target identity. Old schemas are rejected. Without an image override, replay uses the saved image identity. Bundles have no signature, so they do not prove who created them.
+Replay accepts bundle schema 8 only and rejects older schemas. The bundle keeps
+raw metadata, typed process outcomes, the container image identity and numeric
+target identity. Without an image override, replay uses the saved image. Bundles
+are not signed, so they do not prove who created them.
 
-### Inspect metrics
+### Rerun an input saved after an execution error
 
-Metrics schema `coreutils-fuzzer.metrics.v1` records requested/submitted/completed/abandoned counts and each case's ID, input fingerprint, outcome and stage durations in nanoseconds. Inspect these fields with the [complete result-checking example](#run-and-inspect-the-comparison).
+If a case stopped before a comparison was possible, the fuzzer saves an
+**input-only bundle** in `FUZZ_REPRO_DIR` instead:
 
-Compare performance only with the same cases, binary/input fingerprints, seeds, deadlines, comparison settings and host conditions. A small run establishes execution and reporting; it does not establish a performance improvement.
+- `case-set.json`: the arguments, fixture, standard input and working directory.
+- `manifest.json`: the error, original seed and iteration, execution context,
+  and a `reproduce_one_liner`.
 
-## Create an exact case set
+Run the `reproduce_one_liner` from the Dafnyutils repository root, with the
+recorded binaries and image available. It runs that one input once through
+`fuzz --case-set`; whether it fails again depends on whether the original error
+recurs.
 
-This optional fuzzer example adapts split-CRLF behavior from [coreutils/tests/cat/cat-E.sh](../coreutils/tests/cat/cat-E.sh). Prepare the Cat targets and execution image as described above. Python tests in a utility's `Tests.py` are explained in [Add test cases](adding-test-cases.md).
+Keep in mind:
 
-Save this complete file as `/tmp/dafnyutils-cat-crlf.json`:
+- These bundles use schema `coreutils-fuzzer.failure-input.v2`. `run.py replay`
+  does not accept them.
+- The rerun starts at iteration zero, so iteration-dependent settings (such as
+  the `chmod` umask and read-only time anchor) can differ. Compare with the
+  original values in `manifest.json`.
+- A Docker stall may not reproduce.
+
+## 5. Pin a specific scenario
+
+Use this to reproduce one exact scenario (for example, from an upstream GNU
+test), and later to lock in a fix. Stored cases are used unchanged and replace
+random generation for that run. You don't need to edit the registry per case,
+but the utility itself must already be registered.
+
+The walkthrough below adapts split-CRLF behavior from
+[coreutils/tests/cat/cat-E.sh](../coreutils/tests/cat/cat-E.sh). It assumes the
+cat targets and image from [setup](#1-one-time-setup). For Python tests in a
+utility's `Tests.py`, see [Add test cases](adding-test-cases.md) instead.
+
+### Write a case set
+
+Save as `/tmp/dafnyutils-cat-crlf.json`:
 
 ```json
 {
@@ -288,43 +341,56 @@ Save this complete file as `/tmp/dafnyutils-cat-crlf.json`:
 }
 ```
 
-`49` and `50` are `1` and `2`; `13` is CR and `10` is LF. Mode `420` is decimal `0644`. Paths are relative to the fixture root. Use a stable unique ID. Add a second scenario as a separate case rather than mixing unrelated success and error behavior into one case.
+Reading the fixture:
 
-For a permanent contribution, add the case to `tools/fixtures/coreutils_fuzzer/v1/cases/cat.json` without replacing existing cases. Explicit `--case-set` selection loads it; a filename alone does not add it to every campaign. The utility must already have a capability registration. If the selected set has N cases, pass `--iterations N`.
+- `49` and `50` are `1` and `2`; `13` is CR and `10` is LF.
+- Mode `420` is decimal for `0644`.
+- Paths are relative to the fixture root.
 
-## Run and inspect the comparison
+Give each case a stable, unique ID. Put each scenario in its own case rather
+than mixing unrelated success and error behavior.
+
+To keep the case permanently, add it to
+`tools/fixtures/coreutils_fuzzer/v1/cases/cat.json` without replacing existing
+cases. It only runs when that file is selected with `--case-set`; the filename
+alone does not add it to every campaign.
+
+### Run it
+
+Pass `--iterations` equal to the number of cases in the file, and disable
+shrinking so the scenario stays unchanged:
 
 ```sh
-# Expected duration: Unknown; requires built targets and an accessible Docker daemon/image.
-# Success criteria: Exit 0, one completed match, and metrics containing the new case ID.
 python3 tools/coreutils_fuzzer/run.py fuzz cat \
   --case-set /tmp/dafnyutils-cat-crlf.json \
   --iterations 1 --shrink-attempts 0 \
   --metrics-out /tmp/pr-fuzzer-cat-crlf.json
 ```
 
-Expected Results section for this one stored case, exit 0:
-
 ```text
 Results
   Iterations : requested=1 submitted=1 completed=1 not_started=0 unfinished=0
-  Outcomes   : match=1 mismatch=0 timeout=0 incomplete_coverage=0 other_errors=0
+  Outcomes   : match=1 mismatch=0 timeout=0 other_errors=0
   Elapsed    : <seconds>s
   Status     : PASS - all requested iterations matched; no mismatch found
 === End campaign ===
 ```
 
-This executes the exact stored inputs against the original GNU binary and the Dafny DLL. Shrinking is disabled to keep this scenario unchanged. It compares streams, process outcome and filesystem observations through the existing comparator. Choose a fresh metrics path for another run.
+The stored input runs against the original GNU binary and the Dafny DLL, and
+the usual comparator checks streams, process outcome and filesystem state. Use
+a fresh metrics path for each run. If it mismatches, follow
+[When a campaign fails](#4-when-a-campaign-fails).
+
+To confirm the named case really completed as a match (not just that a metrics
+file exists):
 
 ```sh
-# Expected duration: Estimated < 1 sec; reads one local JSON result.
-# Success criteria: Exit 0, the expected ID is match, and integer duration fields are present.
 python3 - <<'CHECK'
 import json
 from pathlib import Path
 
 report = json.loads(Path('/tmp/pr-fuzzer-cat-crlf.json').read_text())
-assert report['schema_version'] == 'coreutils-fuzzer.metrics.v1'
+assert report['schema_version'] == 'coreutils-fuzzer.metrics.v3'
 assert report['completed'] == 1
 case = report['cases'][0]
 assert case['id'] == 'upstream-cat-E-crlf-across-files'
@@ -335,21 +401,19 @@ print(case['durations'])
 CHECK
 ```
 
-Expected output shape, exit 0 (integer timings vary):
-
 ```text
 upstream-cat-E-crlf-across-files match
 {'source_ns': <int>, 'evaluation_ns': <int>, 'coverage_ns': <int>, 'shrink_ns': <int>, 'persist_ns': <int>, 'queue_wait_ns': <int>}
 ```
 
-This checks that the named case actually completed as a match, not just that
-a metrics file exists. Durations are measured in nanoseconds and vary by run.
+Durations are integers in nanoseconds and vary by run.
 
-On a mismatch, keep the generated repro bundle and log. Diagnose whether the problem is in the utility, its specification, the adapter, or the test setup. Do not rewrite the expected output, ignore stderr, relax comparison, or modify the original bundle to obtain a match. See [replay semantics](#replay-the-original-mismatch).
+<a id="pin-it-as-a-regression"></a>
 
-## Record a fixed regression
+### Pin it as a regression
 
-Save this complete file as `/tmp/dafnyutils-cat-crlf-regression.json` after a fix or when retaining the case as a stable parity expectation:
+After a fix, or to keep the case as a stable parity check, save as
+`/tmp/dafnyutils-cat-crlf-regression.json`:
 
 ```json
 {
@@ -362,46 +426,193 @@ Save this complete file as `/tmp/dafnyutils-cat-crlf-regression.json` after a fi
 }
 ```
 
-`case_set` is relative to the suite file, not the shell's directory. JSON must not have trailing commas. For permanent storage, put the expectation in `tools/fixtures/coreutils_fuzzer/v1/regressions/cat.json` and use `../cases/cat.json`; preserve existing expectations.
+`case_set` is resolved relative to the suite file, not your shell's directory.
+JSON does not allow trailing commas. For permanent storage, add the expectation
+to `tools/fixtures/coreutils_fuzzer/v1/regressions/cat.json` with
+`"case_set": "../cases/cat.json"`, keeping existing expectations.
 
 ```sh
-# Expected duration: Unknown; one paired execution with the prepared Docker targets.
-# Success criteria: Exit 0 and the named match expectation passes.
 python3 tools/coreutils_fuzzer/run.py regression /tmp/dafnyutils-cat-crlf-regression.json \
   --metrics-out /tmp/dafnyutils-cat-crlf-regression-metrics.json
 ```
-
-Expected success message:
 
 ```text
 Regression suite passed for util=cat expectations=1
 ```
 
-The suite asserts current GNU/Dafny parity. It does not replace the immutable historical mismatch bundle. A replay can stop reproducing after a fix while this separate regression passes.
+The regression asserts *current* GNU/Dafny parity. It does not replace the
+original mismatch bundle, which stays as an unchanged historical record. After
+a fix, it is expected that replaying the old bundle no longer reproduces while
+this regression passes.
 
-## Understand execution limits
+## 6. Inspect metrics
 
-The host manages one disposable Compose service, copies the runner and target artifacts into it, collects observations, and removes that service. GNU and Dafny execute inside it, including option discovery. There is no host-target fallback and no public wrapper `--work-root` option.
+The metrics file (schema `coreutils-fuzzer.metrics.v3`) records the requested,
+submitted, completed and abandoned counts, plus each case's ID, input
+fingerprint, outcome and stage durations in nanoseconds. The
+[check script above](#run-it) shows how to read them.
 
-Both targets share the service filesystem and staged executables. Docker provides the host boundary; there is no extra per-target filesystem or oracle isolation. The service has no Docker socket, no external network, a read-only root, and writable staging/fixture tmpfs mounts. It retains default Docker seccomp/AppArmor protections and `no-new-privileges`. Trusted setup uses limited ownership/identity capabilities; target children run under the runner's non-root identity.
+Only compare performance across runs with the same cases, binary and input
+fingerprints, seeds, deadlines, comparison settings and host conditions. A
+small run shows that execution and reporting work; it does not show a
+performance improvement.
 
-The target environment is cleared and then receives controlled values including `LANG=C`, `LC_ALL=C`, `TZ=UTC0`, `TERM=dumb`, `QUOTING_STYLE=literal` and a fixed `PATH`. Host credentials are not inherited. Unsafe fixture paths, escaping symlinks and invalid links are rejected.
+## 7. How targets are executed
 
-GNU and Dafny start at different times. A common seed does not synchronize their clocks. `ls` and `stat` require exact per-execution time evidence; missing evidence is `incomplete_coverage`. The optional clock adapter alone does not supply complete campaign capture. Do not disable timestamp comparisons to make a case pass.
+### Container sandbox
 
-## Support a new utility
+For each run, the host starts one disposable Compose service, copies in the
+runner and target artifacts, collects observations, and removes the service.
+Both GNU and Dafny run inside it, including option discovery. There is no
+fallback to running targets on the host, and no public `--work-root` option.
 
-Keep input grammar and scenarios in one utility module. Start from [cat.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/cat.rs), then:
+- Both targets share the service filesystem and staged executables. Docker is
+  the only boundary; there is no extra per-target filesystem or oracle
+  isolation.
+- No Docker socket, no external network, read-only root, writable tmpfs mounts
+  for staging and fixtures.
+- Default Docker seccomp/AppArmor and `no-new-privileges` stay on. Trusted setup
+  uses limited ownership/identity capabilities; targets run as the runner's
+  non-root user.
 
-1. Add `src/fuzz/input/generators/<utility>.rs` in the fuzzer tree. Define its `GENERATOR` with `PatternInputGenerator::patterned` for a specialized `ARGV_PATTERN`, or `::generic` when the common pattern fits. Include at least one deterministic meaningful scenario.
-2. Declare the module in [generators/mod.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/mod.rs).
-3. Add the utility's capability record in [capabilities.rs](../tools/coreutils_fuzzer/src/utils/capabilities.rs), using the new generator and the required observation policy.
-4. Check reachable valid/error forms and run a real GNU/Dafny scenario through the wrapper. Verify the new ID and duration fields in fresh metrics.
+### Target environment
 
-Reuse `input/pattern.rs` for argument assembly, `input/fixtures.rs` for fixtures,
-and `input/support.rs` for scalar values. For a base32 contribution,
-[base64.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/base64.rs) is a small
-example of a generic generator with fixed scenarios; adapt its inputs to base32.
-A custom value callback may generate one semantic value; do not add another
-argument assembler or utility-name dispatch to the common interpreter. Complete
-the [utility contribution gate](../CONTRIBUTING.md#build-test-and-verify) after registration.
+The environment is cleared and then set to fixed values, including `LANG=C`,
+`LC_ALL=C`, `TZ=UTC0`, `TERM=dumb`, `QUOTING_STYLE=literal` and a fixed `PATH`.
+Host credentials are not inherited. Unsafe fixture paths, symlinks that escape
+the fixture, and invalid links are rejected.
+
+### What is compared
+
+Process outcomes, raw stdout/stderr, and filesystem contents, metadata and
+identity transitions, each in an independent fixture tree. Absolute host inode
+numbers are not compared across fixtures.
+
+<a id="what-the-fuzzer-does-not-check"></a>
+
+### What the fuzzer does not check
+
+**Time-related bugs are outside fuzzer coverage.** GNU and Dafny run at
+different moments, and a shared seed does not synchronize clocks or file
+timestamps. The fuzzer therefore does not validate current-time semantics,
+timestamp updates, or time-dependent output and ordering. A match says nothing
+about these behaviors.
+
+In practice:
+
+- Timestamps are still used to prepare fixtures, restore inputs and show raw
+  diagnostics, but they are **excluded** from filesystem mismatch and replay
+  decisions.
+- Raw streams are still compared **exactly**. If a mismatch comes from a clock
+  or timestamp difference, the result is inconclusive and needs manual
+  investigation.
+- There is no time tolerance, timestamp stripping or utility-specific time
+  oracle.
+
+Dafny specification and proof verification are separate checks.
+
+<a id="support-a-new-utility"></a>
+
+## 8. Support a new utility
+
+All of a utility's input grammar and scenarios live in one module. Start from
+[cat.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/cat.rs):
+
+1. **Add the generator.** Create
+   `tools/coreutils_fuzzer/src/fuzz/input/generators/<utility>.rs` and define
+   `GENERATOR` with `PatternInputGenerator::patterned` (for a specialized
+   `ARGV_PATTERN`) or `::generic` (when the common pattern fits). Include at
+   least one deterministic, meaningful scenario.
+2. **Declare the module** in
+   [generators/mod.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/mod.rs).
+3. **Register the capability** in
+   [capabilities.rs](../tools/coreutils_fuzzer/src/utils/capabilities.rs), using
+   the new generator and the required input/runtime policies.
+4. **Try it.** Check that valid and error forms are reachable, run a real
+   GNU/Dafny scenario through the wrapper, and confirm the new ID and duration
+   fields appear in fresh metrics.
+
+Then complete the
+[utility contribution gate](../CONTRIBUTING.md#build-test-and-verify).
+
+**Reuse shared helpers** (paths under `tools/coreutils_fuzzer/src/fuzz/`):
+
+| Helper | Use for |
+| --- | --- |
+| `input/pattern.rs` | Argument assembly |
+| `input/system_state.rs` | Shared filesystem inputs |
+| `input/mutations.rs` | Common case and argument mutation |
+| `input/support.rs` | Scalar values |
+
+Keep utility-specific filesystem state and case constraints in the utility's
+own module, wired in through `PatternInputGenerator` callbacks. A custom value
+callback may generate one semantic value. Do not add another argument assembler
+or utility-name dispatch to the common interpreter.
+
+For example, a base32 contribution can adapt
+[base64.rs](../tools/coreutils_fuzzer/src/fuzz/input/generators/base64.rs), a
+small generic generator with fixed scenarios.
+
+## Reference
+
+### Where things live
+
+| Path | Role |
+| --- | --- |
+| `tools/coreutils_fuzzer/run.py` | Contributor CLI and artifact discovery |
+| `tools/coreutils_fuzzer/src/fuzz/` | Generation, execution, comparison, shrinking and evidence |
+| `tools/coreutils_fuzzer/src/fuzz/input/generators/` | Per-utility patterns and deterministic scenarios |
+| `tools/coreutils_fuzzer/src/utils/capabilities.rs` | Supported utility registry |
+| `tools/coreutils_fuzzer/docker-compose.yaml` | Shared container execution policy |
+| `tools/fixtures/coreutils_fuzzer/v1/` | Persistent case sets and fixed regression expectations |
+
+### Schema versions and removed features
+
+| Artifact | Current version |
+| --- | --- |
+| Capabilities | schema 4 (reports the time limitation) |
+| Metrics | `coreutils-fuzzer.metrics.v3` (no time classifications) |
+| Replay bundle | schema 8 (no checker/anchor provenance) |
+| Failure-input bundle | `coreutils-fuzzer.failure-input.v2` (new execution context) |
+| Case set | `coreutils-fuzzer.case-set.v1` |
+| Regression suite | `coreutils-fuzzer.regression-suite.v1` |
+| Private container protocol | 2 (no trace/anchor fields) |
+
+The implementation-dependent `observed_spec_checker`, syscall tracing and clock
+adapter have been removed, and `--checker`, `--ls-checker` and `--stat-checker`
+are no longer supported. Old replay bundles must be rerun from their saved
+inputs with `--case-set`; keep the original bundles.
+
+### Maintenance validation: time checker removal (2026-09-30)
+
+This is contributor-maintenance evidence, not an authorized input snapshot for
+an evaluated benchmark run. Tested the working tree based on
+`2f7558765e59dcbfe9862f3931ee0ff542801ad7`, including pre-existing concurrent
+changes; no commit was created. Commands below ran from
+`/workspace/dafnyutils/tools/coreutils_fuzzer` with Rust/Cargo 1.94.0,
+Python 3.12.3, pytest 9.1.1 and Ruff 0.15.12.
+
+- `cargo test --offline`: exit 0; 480 unit tests and two CLI integration tests
+  passed. An initial run passed 480 tests and failed
+  `chmod_explicit_mtime_mutation_is_detected`; that test depended on the removed
+  timestamp verdict and was removed with the feature, then the suite passed.
+- `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -n0 -p no:cacheprovider
+  /workspace/dafnyutils/tests/core/test_fuzzer_capabilities.py
+  /workspace/dafnyutils/tests/core/test_benchmark_contribution.py
+  /workspace/dafnyutils/tests/evaluation/test_fuzzer_outcomes.py
+  --junitxml=target/maintenance/time-checker-removal/python-tests.xml`:
+  exit 0; 50 tests passed, including real capability-producer/consumer
+  conformance, malformed limitation rejection and legacy-schema rejection.
+- `cargo fmt --all -- --check` and `git diff --check`: exit 0.
+- `ruff check --no-cache` and `ruff format --check --no-cache` on
+  `native/build.py`, `/workspace/dafnyutils/src/benchmarks/contribution.py` and
+  `/workspace/dafnyutils/tests/core/test_fuzzer_capabilities.py`: exit 0.
+
+Logs and the Python JUnit report are under
+`tools/coreutils_fuzzer/target/maintenance/time-checker-removal/`. This maintenance
+change does not alter benchmark specifications, implementations or their proofs.
+No Dafny verification, `tests/bench` regression or GNU/Dafny benchmark campaign
+was run; runtime tests do not establish proof success. The removed standalone
+Dafny checker has no remaining verification target. Work is complete with no
+blocking checks; the next operational step is to regenerate inputs/results for
+any legacy replay bundle that needs to be rerun under schema 8.

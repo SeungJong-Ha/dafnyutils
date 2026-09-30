@@ -162,12 +162,12 @@ fn generated_touch_fixture_paths_never_start_with_dash() {
 #[test]
 fn compare_detects_match() {
     let a = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"ok".to_vec(),
         stderr: Vec::new(),
     };
     let b = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"ok".to_vec(),
         stderr: Vec::new(),
     };
@@ -189,12 +189,12 @@ fn compare_detects_match() {
 #[test]
 fn compare_detects_mismatch_fields() {
     let a = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"left".to_vec(),
         stderr: b"a".to_vec(),
     };
     let b = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: b"right".to_vec(),
         stderr: b"a".to_vec(),
     };
@@ -217,16 +217,17 @@ fn compare_detects_mismatch_fields() {
     );
 }
 
+// A missing help-text byte remains a mismatch even when both streams are nonempty.
 #[test]
-fn compare_help_output_uses_presence_only() {
+fn compare_help_output_reports_one_byte_difference() {
     let a = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-        stdout: b"long help".to_vec(),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"Usage: touch [OPTION]... FILE...\n".to_vec(),
         stderr: Vec::new(),
     };
     let b = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-        stdout: b"short help".to_vec(),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"Usage: touch [OPTION]... FILE..\n".to_vec(),
         stderr: Vec::new(),
     };
     assert_eq!(
@@ -239,20 +240,80 @@ fn compare_help_output_uses_presence_only() {
             &FsSnapshot::new(),
             false
         ),
+        CompareResult::Mismatch {
+            process_outcome_diff: None,
+            stdout_diff: true,
+            stderr_diff: false,
+            fs_diff: Vec::new(),
+        }
+    );
+}
+
+// Identical help bytes and successful exits produce a matching result.
+#[test]
+fn compare_help_output_matches_exact_bytes() {
+    let run = RunResult {
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"Usage: touch [OPTION]... FILE...\n".to_vec(),
+        stderr: Vec::new(),
+    };
+    assert_eq!(
+        compare_results(
+            "touch",
+            &["--help".to_string()],
+            &run,
+            &run,
+            &FsSnapshot::new(),
+            &FsSnapshot::new(),
+            false,
+        ),
         CompareResult::Match
     );
 }
 
+// A different version number is a stdout mismatch with otherwise identical outcomes.
+#[test]
+fn compare_version_output_reports_changed_version_byte() {
+    let reference = RunResult {
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"touch (GNU coreutils) 9.4\n".to_vec(),
+        stderr: Vec::new(),
+    };
+    let dut = RunResult {
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"touch (GNU coreutils) 9.3\n".to_vec(),
+        stderr: Vec::new(),
+    };
+    assert_eq!(
+        compare_results(
+            "touch",
+            &["foo".to_string(), "--version".to_string()],
+            &reference,
+            &dut,
+            &FsSnapshot::new(),
+            &FsSnapshot::new(),
+            false,
+        ),
+        CompareResult::Mismatch {
+            process_outcome_diff: None,
+            stdout_diff: true,
+            stderr_diff: false,
+            fs_diff: Vec::new(),
+        }
+    );
+}
+
+// A version banner emitted on stderr is observable even when stdout bytes match.
 #[test]
 fn compare_version_output_requires_matching_channels() {
     let a = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"touch (GNU coreutils) 9.4".to_vec(),
         stderr: Vec::new(),
     };
     let b = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-        stdout: b"touch (Dafny port)".to_vec(),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
+        stdout: b"touch (GNU coreutils) 9.4".to_vec(),
         stderr: b"minor stderr banner".to_vec(),
     };
     assert_eq!(
@@ -274,15 +335,16 @@ fn compare_version_output_requires_matching_channels() {
     );
 }
 
+// A failed help request differs from a successful request with identical output.
 #[test]
 fn compare_help_exit_mismatch_is_reported() {
     let a = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: b"help".to_vec(),
         stderr: Vec::new(),
     };
     let b = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"help".to_vec(),
         stderr: Vec::new(),
     };
@@ -308,12 +370,12 @@ fn compare_help_exit_mismatch_is_reported() {
 #[test]
 fn compare_error_detection_reports_missing_stderr_text() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"/tmp/build/coreutils/src/basename: option '--suffix' requires an argument\nTry '/tmp/build/coreutils/src/basename --help' for more information.\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
@@ -341,12 +403,12 @@ fn compare_error_detection_reports_missing_stderr_text() {
 #[test]
 fn compare_error_detection_reports_prefix_and_hint_differences() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"/tmp/build/coreutils/src/cat: invalid option -- 'z'\nTry '/tmp/build/coreutils/src/cat --help' for more information.\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"cat: invalid option -- 'z'\nTry 'cat --help' for more information.\n".to_vec(),
     };
@@ -373,12 +435,12 @@ fn compare_error_detection_reports_prefix_and_hint_differences() {
 #[test]
 fn compare_error_detection_reports_meaningful_stderr_difference() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"/tmp/build/coreutils/src/cat: invalid option -- 'z'\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"cat: invalid option -- 'b'\n".to_vec(),
     };
@@ -405,12 +467,12 @@ fn compare_error_detection_reports_meaningful_stderr_difference() {
 #[test]
 fn compare_can_ignore_stderr_differences() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"cat: 'a=rw': No such file or directory\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"cat: a=rw: No such file or directory\n".to_vec(),
     };
@@ -432,12 +494,12 @@ fn compare_can_ignore_stderr_differences() {
 #[test]
 fn compare_ignoring_stderr_still_checks_exit_stdout_and_filesystem() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: b"left".to_vec(),
         stderr: b"touch: left\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"right".to_vec(),
         stderr: b"touch: right\n".to_vec(),
     };
@@ -474,14 +536,14 @@ fn compare_ignoring_stderr_still_checks_exit_stdout_and_filesystem() {
 #[test]
 fn compare_error_detection_still_checks_exit_and_filesystem() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr:
             b"touch: invalid argument '-m' for '--time'\nTry 'touch --help' for more information.\n"
                 .to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
@@ -551,12 +613,12 @@ fn compare_error_detection_still_checks_exit_and_filesystem() {
 #[test]
 fn compare_error_detection_requires_nonzero_exit() {
     let reference = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: Vec::new(),
         stderr: b"touch: invalid argument '-m' for '--time'\nValid arguments are:\n  - 'atime', 'access', 'use'\n  - 'mtime', 'modify'\nTry 'touch --help' for more information.\n".to_vec(),
     };
     let dut = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
@@ -577,40 +639,6 @@ fn compare_error_detection_requires_nonzero_exit() {
             stderr_diff: true,
             fs_diff: Vec::new(),
         }
-    );
-}
-
-// Touch relies on its typed public snapshot proof rather than raw per-execution traces.
-#[test]
-fn time_coverage_does_not_require_touch_raw_trace() {
-    let run = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
-        stdout: Vec::new(),
-        stderr: Vec::new(),
-    };
-    let mut ref_fs = FsSnapshot::new();
-    ref_fs.insert(
-        "a.txt".to_string(),
-        fs_file_with_identity(b"same", "0644", 1),
-    );
-    let mut dut_file = fs_file_with_identity(b"same", "0644", 2);
-    dut_file.times.mtime_sec = 10;
-    let mut dut_fs = FsSnapshot::new();
-    dut_fs.insert("a.txt".to_string(), dut_file);
-
-    assert_eq!(
-        compare_results("touch", &[], &run, &run, &ref_fs, &dut_fs, false),
-        CompareResult::Match
-    );
-    let comparison = crate::fuzz::time_coverage::EvaluatedComparison::without_time_observations(
-        compare_results("touch", &[], &run, &run, &ref_fs, &dut_fs, false),
-        crate::utils::capabilities::require_fuzz_capability("touch")
-            .unwrap()
-            .time_coverage,
-    );
-    assert_eq!(
-        comparison.verdict(),
-        crate::fuzz::time_coverage::CaseVerdict::Match
     );
 }
 
@@ -732,7 +760,7 @@ fn fs_metadata_node() -> FsNodeSnapshot {
 
 fn compare_single_fs_nodes(reference: FsNodeSnapshot, dut: FsNodeSnapshot) -> CompareResult {
     let result = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
@@ -818,7 +846,7 @@ fn semantic_coverage_tracks_behavior_buckets() {
         cwd: PathBuf::from("."),
     };
     let result = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(1),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(1),
         stdout: b"alpha".to_vec(),
         stderr: b"cat: missing.txt: No such file or directory\n".to_vec(),
     };
@@ -867,7 +895,7 @@ fn semantic_operand_classification_skips_mv_suffix_values() {
         cwd: PathBuf::from("."),
     };
     let result = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: Vec::new(),
         stderr: Vec::new(),
     };
@@ -896,7 +924,7 @@ fn semantic_coverage_reports_new_bucket_discovery() {
         cwd: PathBuf::from("."),
     };
     let result = RunResult {
-        termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+        termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
         stdout: b"stdin".to_vec(),
         stderr: Vec::new(),
     };
@@ -1163,7 +1191,7 @@ fn evaluate_case_suppresses_stdin_when_argv_does_not_consume_it() {
     assert_eq!(evaluation.comparison.observable, CompareResult::Match);
     assert_eq!(
         evaluation.comparison.verdict(),
-        crate::fuzz::time_coverage::CaseVerdict::Match
+        crate::fuzz::comparison::evaluation::CaseVerdict::Match
     );
 }
 
@@ -1681,12 +1709,12 @@ fn compare_detects_hardlink_partition_difference() {
         "cat",
         &[],
         &RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
         },
         &RunResult {
-            termination: crate::fuzz::process_outcome::Termination::test_exit(0),
+            termination: crate::fuzz::comparison::process_outcome::Termination::test_exit(0),
             stdout: Vec::new(),
             stderr: Vec::new(),
         },

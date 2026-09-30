@@ -2,9 +2,11 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueContext, ValueSource,
 };
+use super::super::system_state::generate_missing_operands;
+use super::super::system_state::{generate_fixture_blueprint, random_file_mode};
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
-use crate::fuzz::mutation::generate_missing_operands;
+use super::super::{support, system_state};
+use crate::fuzz::UtilityProfile;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, GeneratedCase, SymlinkSpec};
 use rand::prelude::SliceRandom;
 use rand::rngs::StdRng;
@@ -12,7 +14,12 @@ use rand::Rng;
 use std::path::PathBuf;
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_system_state(generate_chmod_fixture_blueprint)
+        .with_profile(UtilityProfile {
+            requires_path_operand: true,
+            prefers_existing_paths: true,
+        });
 
 const CHMOD_OPTIONS: Element = Element::repeated(
     0,
@@ -135,7 +142,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         40 => chmod_ordered_recovery_fixture(),
         41 => chmod_inaccessible_fixture(),
         8.. => chmod_domain_fixture(),
-        _ => fixtures::basic_fixture(),
+        _ => system_state::basic_fixture(),
     };
     Some(match iteration {
         0 => GeneratedCase {
@@ -317,5 +324,76 @@ fn chmod_domain_fixture() -> FixtureBlueprint {
             },
         ],
         hardlinks: Vec::new(),
+    }
+}
+
+fn generate_chmod_fixture_blueprint(rng: &mut StdRng, max_fs_entries: usize) -> FixtureBlueprint {
+    let budget = max_fs_entries.max(1);
+    let mut fixture = generate_fixture_blueprint(rng, budget, true);
+    fixture.symlinks.clear();
+    fixture.hardlinks.clear();
+    match rng.random_range(0..4) {
+        0 if budget >= 2 => {
+            if fixture.files.is_empty() {
+                fixture.directories.truncate(budget.saturating_sub(2));
+                fixture.files.push(FileSpec {
+                    relative_path: PathBuf::from("chmod-target"),
+                    bytes: Vec::new(),
+                    mode: random_file_mode(rng),
+                });
+            }
+            trim_fixture_for_links(&mut fixture, budget, 1, true, false);
+            fixture.symlinks.push(SymlinkSpec {
+                relative_path: PathBuf::from("chmod-file-link"),
+                target: fixture.files[0].relative_path.clone(),
+            });
+        }
+        1 if budget >= 2 => {
+            trim_fixture_for_links(&mut fixture, budget, 1, false, true);
+            fixture.symlinks.push(SymlinkSpec {
+                relative_path: PathBuf::from("chmod-dir-link"),
+                target: fixture.directories[0].relative_path.clone(),
+            });
+        }
+        2 if budget >= 1 => {
+            trim_fixture_for_links(&mut fixture, budget, 1, false, false);
+            fixture.symlinks.push(SymlinkSpec {
+                relative_path: PathBuf::from("chmod-dangling-link"),
+                target: PathBuf::from("chmod-missing-target"),
+            });
+        }
+        _ if budget >= 2 => {
+            trim_fixture_for_links(&mut fixture, budget, 2, false, false);
+            fixture.symlinks.extend([
+                SymlinkSpec {
+                    relative_path: PathBuf::from("chmod-cycle-a"),
+                    target: PathBuf::from("chmod-cycle-b"),
+                },
+                SymlinkSpec {
+                    relative_path: PathBuf::from("chmod-cycle-b"),
+                    target: PathBuf::from("chmod-cycle-a"),
+                },
+            ]);
+        }
+        _ => {}
+    }
+    fixture
+}
+
+fn trim_fixture_for_links(
+    fixture: &mut FixtureBlueprint,
+    budget: usize,
+    link_count: usize,
+    keep_file: bool,
+    keep_directory: bool,
+) {
+    while fixture.directories.len() + fixture.files.len() + link_count > budget {
+        if fixture.files.len() > usize::from(keep_file) {
+            fixture.files.pop();
+        } else if fixture.directories.len() > usize::from(keep_directory) {
+            fixture.directories.pop();
+        } else {
+            break;
+        }
     }
 }

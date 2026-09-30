@@ -3,8 +3,12 @@ use super::super::pattern::{
     OptionValueForm, ValueSource,
 };
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
+use super::super::{system_state::generate_line_fixture_blueprint, CwdPolicy};
 use crate::fuzz::GeneratedCase;
+use crate::fuzz::{FileSpec, FixtureBlueprint};
+use rand::rngs::StdRng;
+use std::path::PathBuf;
 
 const COMPLEMENT: Element =
     Element::optional(35, Atom::Option(OptionChoice::available(&["--complement"])));
@@ -77,10 +81,12 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[
 ]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_system_state(random_system_state)
+        .with_cwd_policy(CwdPolicy::Root);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec!["-b", "1-3"], fixture, b"abcdef\n"),
         1 => support::case(vec!["-c", "2-", "a.txt"], fixture, b""),
@@ -111,4 +117,18 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         10 => support::case(vec!["-b", "1", "-", "-"], fixture, b"once\n"),
         _ => return None,
     })
+}
+
+fn generate_cut_fixture_blueprint() -> FixtureBlueprint {
+    let mut fixture = generate_line_fixture_blueprint();
+    fixture.files.push(FileSpec {
+        relative_path: PathBuf::from("nul.txt"),
+        bytes: b"ab\0cd\0tail".to_vec(),
+        mode: 0o644,
+    });
+    fixture
+}
+
+fn random_system_state(_rng: &mut StdRng, _max_fs_entries: usize) -> FixtureBlueprint {
+    generate_cut_fixture_blueprint()
 }

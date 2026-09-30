@@ -1,6 +1,6 @@
 use super::case_source::CaseOrigin;
+use super::comparison::evaluation::EvaluatedComparison;
 use super::repro::{tool_provenance, ToolProvenance};
-use super::time_coverage::EvaluatedComparison;
 use super::{GeneratedCase, ResolvedTarget};
 use crate::utils::cli::ExecKind;
 use serde::Serialize;
@@ -10,7 +10,16 @@ use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-pub(crate) const METRICS_SCHEMA_V1: &str = "coreutils-fuzzer.metrics.v1";
+pub(crate) const METRICS_SCHEMA_V3: &str = "coreutils-fuzzer.metrics.v3";
+
+/// The metrics configuration fields identical between the fuzz and
+/// regression campaigns; see `MetricsRecorder::configure_common`.
+pub(crate) struct CommonMetricsConfig<'a> {
+    pub(crate) reference: &'a ResolvedTarget,
+    pub(crate) dut: &'a ResolvedTarget,
+
+    pub(crate) umask_schedule: &'a [String],
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -51,7 +60,7 @@ pub(crate) struct CoverageMetricsV1 {
 }
 
 #[derive(Debug, Serialize)]
-struct CampaignMetricsV1 {
+struct CampaignMetricsV3 {
     schema_version: &'static str,
     run_id: String,
     tool: ToolProvenance,
@@ -72,7 +81,7 @@ struct CampaignMetricsV1 {
 pub(crate) struct MetricsRecorder {
     path: Option<PathBuf>,
     started: std::time::Instant,
-    document: CampaignMetricsV1,
+    document: CampaignMetricsV3,
 }
 
 impl MetricsRecorder {
@@ -91,8 +100,8 @@ impl MetricsRecorder {
         Self {
             path,
             started: std::time::Instant::now(),
-            document: CampaignMetricsV1 {
-                schema_version: METRICS_SCHEMA_V1,
+            document: CampaignMetricsV3 {
+                schema_version: METRICS_SCHEMA_V3,
                 run_id: format!("{timestamp}-{}-{seed}", std::process::id()),
                 tool,
                 mode,
@@ -104,14 +113,10 @@ impl MetricsRecorder {
                 abandoned: 0,
                 outcomes: BTreeMap::new(),
                 elapsed_ns: 0,
-                configuration: crate::utils::capabilities::capability_for(util)
-                    .map(|capability| {
-                        BTreeMap::from([(
-                            "time_coverage_requirement".to_string(),
-                            capability.time_coverage.as_str().to_string(),
-                        )])
-                    })
-                    .unwrap_or_default(),
+                configuration: BTreeMap::from([(
+                    "time_behavior_limitation".to_string(),
+                    crate::utils::capabilities::TIME_BEHAVIOR_LIMITATION.to_string(),
+                )]),
                 coverage: CoverageMetricsV1::default(),
                 cases: Vec::new(),
             },
@@ -191,18 +196,58 @@ impl MetricsRecorder {
         self.set_artifact_configuration(prefix, path)
     }
 
+    /// Applies the metrics fields shared identically by the fuzz and
+    /// regression campaigns: target and fuzzer-executable identification,
+    /// the shared umask schedule, canonical environment and launch policy. Callers still
+    /// record their own case-set/regression-suite inputs, option pool,
+    /// `ignore_stderr`, and `shrink_attempts`, which differ between the two
+    /// campaign kinds.
+    pub(crate) fn configure_common(
+        &mut self,
+        config: CommonMetricsConfig<'_>,
+    ) -> Result<(), String> {
+        self.set_target_configuration("reference", config.reference)?;
+        self.set_target_configuration("dut", config.dut)?;
+        self.set_artifact_configuration(
+            "fuzzer_executable",
+            &std::env::current_exe()
+                .map_err(|error| format!("failed to resolve current fuzzer executable: {error}"))?,
+        )?;
+        self.set_configuration(
+            "process_umask_schedule",
+            serde_json::to_string(config.umask_schedule).map_err(|error| {
+                format!("failed to serialize process umask schedule for metrics: {error}")
+            })?,
+        );
+        self.set_configuration("target_launch", "ready-go-exec");
+        self.set_configuration("target_identity_transition", "after-go-before-exec");
+        self.set_configuration("fixture_path_policy", "same-absolute-path-sequential");
+        self.set_configuration(
+            "fixture_sharing_policy",
+            "exact-raw-equality-and-observer-stability",
+        );
+        self.set_configuration("filesystem_time_policy", "unsupported");
+        self.set_configuration(
+            "target_environment",
+            serde_json::to_string(
+                &crate::utils::execution_context::canonical_process_environment(),
+            )
+            .map_err(|error| format!("failed to serialize target environment: {error}"))?,
+        );
+        Ok(())
+    }
+
     pub(crate) fn render_population_report(&self) -> String {
         let document = &self.document;
         let count = |name: &str| document.outcomes.get(name).copied().unwrap_or(0);
         let matches = count("match");
         let mismatches = count("mismatch") + count("semantic_mismatch");
         let timeouts = count("fuzzer_timeout");
-        let incomplete = count("incomplete_coverage");
-        let other = document.completed - matches - mismatches - timeouts - incomplete;
+        let other = document.completed - matches - mismatches - timeouts;
         format!(
             concat!(
                 "  Iterations : requested={} submitted={} completed={} not_started={} unfinished={}\n",
-                "  Outcomes   : match={} mismatch={} timeout={} incomplete_coverage={} other_errors={}\n",
+                "  Outcomes   : match={} mismatch={} timeout={} other_errors={}\n",
                 "  Elapsed    : {:.2}s"
             ),
             document.requested,
@@ -213,7 +258,6 @@ impl MetricsRecorder {
             matches,
             mismatches,
             timeouts,
-            incomplete,
             other,
             self.started.elapsed().as_secs_f64(),
         )
@@ -268,7 +312,7 @@ fn exec_kind_name(kind: ExecKind) -> &'static str {
     }
 }
 
-fn file_fingerprint(path: &Path) -> Result<(String, u64), String> {
+pub(crate) fn file_fingerprint(path: &Path) -> Result<(String, u64), String> {
     let file = fs::File::open(path).map_err(|error| {
         format!(
             "failed to read metrics artifact `{}`: {error}",
@@ -298,7 +342,7 @@ fn file_fingerprint(path: &Path) -> Result<(String, u64), String> {
     Ok((format!("fnv1a64:{hash:016x}"), size))
 }
 
-fn write_metrics(path: &Path, metrics: &CampaignMetricsV1) -> Result<(), String> {
+fn write_metrics(path: &Path, metrics: &CampaignMetricsV3) -> Result<(), String> {
     if path.exists() {
         return Err(format!(
             "refusing to overwrite metrics output `{}`",
@@ -351,7 +395,7 @@ fn write_metrics(path: &Path, metrics: &CampaignMetricsV1) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::{
-        case_fingerprint, error_outcome, CampaignMode, MetricsRecorder, METRICS_SCHEMA_V1,
+        case_fingerprint, error_outcome, CampaignMode, MetricsRecorder, METRICS_SCHEMA_V3,
     };
     use crate::fuzz::{FixtureBlueprint, GeneratedCase};
     use std::fs;
@@ -389,7 +433,7 @@ mod tests {
             .finish()
             .unwrap();
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(value["schema_version"], METRICS_SCHEMA_V1);
+        assert_eq!(value["schema_version"], METRICS_SCHEMA_V3);
 
         let error = MetricsRecorder::new(Some(path.clone()), CampaignMode::Fuzz, "cat", 1, 0)
             .finish()
@@ -446,23 +490,19 @@ mod tests {
         assert!(
             report.contains("requested=1000 submitted=2 completed=2 not_started=998 unfinished=0")
         );
-        assert!(
-            report.contains("match=1 mismatch=0 timeout=1 incomplete_coverage=0 other_errors=0")
-        );
+        assert!(report.contains("match=1 mismatch=0 timeout=1 other_errors=0"));
     }
 
-    // Mismatches and missing observations remain visible even without a metrics output file.
+    // Mismatches and infrastructure errors remain visible even without a metrics output file.
     #[test]
     fn population_report_retains_nonmatch_outcomes_without_json() {
         let mut recorder = MetricsRecorder::new(None, CampaignMode::Fuzz, "cat", 19, 4);
         record_outcome(&mut recorder, "mismatch");
-        record_outcome(&mut recorder, "incomplete_coverage");
+        record_outcome(&mut recorder, "fuzzer_infrastructure_failure");
         record_outcome(&mut recorder, "fuzzer_target_spawn_failure");
         recorder.submit();
         let report = recorder.render_population_report();
         assert!(report.contains("requested=4 submitted=4 completed=3 not_started=0 unfinished=1"));
-        assert!(
-            report.contains("match=0 mismatch=1 timeout=0 incomplete_coverage=1 other_errors=1")
-        );
+        assert!(report.contains("match=0 mismatch=1 timeout=0 other_errors=2"));
     }
 }

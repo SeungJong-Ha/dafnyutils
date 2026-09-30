@@ -1,4 +1,4 @@
-"""Build the fuzzer's optional native observation libraries."""
+"""Build the fuzzer's native startup library."""
 
 from __future__ import annotations
 
@@ -31,11 +31,6 @@ class NativeLibrary:
 
 
 LIBRARIES = {
-    "clock-observer": NativeLibrary(
-        source=FUZZER_ROOT / "native" / "clock_syscall.c",
-        filename="libclock_syscall.so",
-        options=("-shared", "-Wl,-z,defs"),
-    ),
     "startup-reference": NativeLibrary(
         source=REPO_ROOT / "bench" / "core" / "IOStartup.c",
         filename="libdafnyutils_reference_startup.so",

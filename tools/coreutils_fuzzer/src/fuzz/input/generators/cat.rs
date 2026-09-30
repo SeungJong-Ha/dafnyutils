@@ -1,5 +1,6 @@
-use super::super::fixtures;
 use super::super::pattern::{Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice};
+use super::super::system_state;
+use super::super::CwdPolicy;
 use super::super::PatternInputGenerator;
 use crate::fuzz::GeneratedCase;
 use std::path::PathBuf;
@@ -38,10 +39,11 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[
 ])]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_cwd_policy(CwdPolicy::RootOnGeneration);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::basic_fixture();
+    let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
             argv: Vec::new(),

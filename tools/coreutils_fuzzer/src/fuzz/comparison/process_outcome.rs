@@ -1,5 +1,15 @@
+use crate::fuzz::RunResult;
+use crate::utils::process::ProcessOutput;
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use std::process::ExitStatus;
+
+pub(crate) fn run_result(output: ProcessOutput) -> RunResult {
+    RunResult {
+        termination: Termination::from_status(output.status),
+        stdout: output.stdout,
+        stderr: output.stderr,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

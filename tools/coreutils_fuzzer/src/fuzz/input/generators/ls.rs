@@ -2,14 +2,24 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueContext, ValueSource,
 };
-use super::super::{mutation, support, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, support, PatternInputGenerator};
+use crate::fuzz::UtilityProfile;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, GeneratedCase, HardlinkSpec, SymlinkSpec};
 use rand::rngs::StdRng;
 use std::path::PathBuf;
 
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
-        .with_mutator(mutation::regenerate_argv);
+        .with_mutator(mutations::regenerate_argv)
+        .with_candidate_guard(ls_argv_respects_mode_dependencies)
+        .with_resolvable_fixture(ls_argv_requires_followed_entry_metadata)
+        .with_case_regeneration_on_argv_mutation()
+        .with_cwd_policy(CwdPolicy::Root)
+        .with_profile(UtilityProfile {
+            requires_path_operand: false,
+            prefers_existing_paths: true,
+        });
 
 const BLOCK_SIZES: &[&str] = &["0", "1", "512", "1024", "4096"];
 // Long ctime output stays limited to a direct host-validated record because clone ctimes differ.
@@ -862,9 +872,9 @@ mod tests {
             })
     }
 
-    // Access-time sorting excludes symbolic-link fixtures whose reads can mutate host atime.
+    // Access-time sorting excludes symbolic-link system_state whose reads can mutate host atime.
     #[test]
-    fn generated_access_time_sort_excludes_symlink_fixtures() {
+    fn generated_access_time_sort_excludes_symlink_system_state() {
         let pool = option_pool();
         let symlink_fixture = fixture();
 
@@ -875,9 +885,9 @@ mod tests {
         }
     }
 
-    // Access-time sorting remains reachable for fixtures whose reads preserve modeled timestamps.
+    // Access-time sorting remains reachable for system_state whose reads preserve modeled timestamps.
     #[test]
-    fn generated_access_time_sort_reaches_plain_file_fixtures() {
+    fn generated_access_time_sort_reaches_plain_file_system_state() {
         let pool = option_pool();
         let mut file_fixture = fixture();
         file_fixture.symlinks.clear();
@@ -1064,7 +1074,7 @@ fn case(argv: &[&str], fixture: FixtureBlueprint) -> GeneratedCase {
 mod scenario_tests {
     use super::scenario_case;
 
-    // Deterministic seeds cover every high-value modeled listing behavior before mutation begins.
+    // Deterministic seeds cover every high-value modeled listing behavior before mutations begins.
     #[test]
     fn scenarios_cover_modeled_listing_shapes() {
         let scenarios: Vec<_> = (0..32)

@@ -107,6 +107,7 @@ pub(crate) enum ProcessError {
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     StderrThreadPanic,
     Wait(String),
+    Kill(String),
     Timeout,
     InvalidTimeout,
     Channel {
@@ -299,10 +300,9 @@ impl PreparedProcess {
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             result.errors.push(ProcessError::InvalidTimeout);
             if let Some(mut child) = self.child.take() {
-                let _ = child.kill();
-                match child.wait() {
+                match kill_and_reap(&mut child) {
                     Ok(status) => result.status = Some(status),
-                    Err(error) => result.errors.push(ProcessError::Wait(error.to_string())),
+                    Err(error) => result.errors.push(error),
                 }
             }
             return result;
@@ -406,10 +406,9 @@ impl PreparedProcess {
             }
         }
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            match child.wait() {
+            match kill_and_reap(&mut child) {
                 Ok(status) => result.status = Some(status),
-                Err(error) => result.errors.push(ProcessError::Wait(error.to_string())),
+                Err(error) => result.errors.push(error),
             }
         }
         for (index, channel) in channels.into_iter().enumerate() {
@@ -515,10 +514,32 @@ impl PreparedProcess {
 
     fn terminate(&mut self) {
         if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+            // A failed signal cannot justify an unbounded wait on a live child.
+            let _ = kill_and_reap(&mut child);
         }
     }
+}
+
+fn kill_and_reap(child: &mut Child) -> Result<ExitStatus, ProcessError> {
+    if let Some(status) = child
+        .try_wait()
+        .map_err(|error| ProcessError::Wait(error.to_string()))?
+    {
+        return Ok(status);
+    }
+    if let Err(error) = child.kill() {
+        // The child may have exited between try_wait and kill.
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| ProcessError::Wait(error.to_string()))?
+        {
+            return Ok(status);
+        }
+        return Err(ProcessError::Kill(error.to_string()));
+    }
+    child
+        .wait()
+        .map_err(|error| ProcessError::Wait(error.to_string()))
 }
 
 impl Drop for PreparedProcess {

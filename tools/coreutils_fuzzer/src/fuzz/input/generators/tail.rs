@@ -2,7 +2,8 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueSource,
 };
-use super::super::{fixtures, mutation, support, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, support, system_state, PatternInputGenerator};
 use crate::fuzz::GeneratedCase;
 
 const TAIL_STREAMS: Element = Element::repeated(
@@ -69,10 +70,12 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[
 
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
-        .with_mutator(mutation::regenerate_argv);
+        .with_mutator(mutations::regenerate_argv)
+        .with_system_state(system_state::line_system_state)
+        .with_cwd_policy(CwdPolicy::Root);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec!["-z", "-n", "2"], fixture, b"a\0b\0c\0"),
         1 => support::case(vec!["+2c"], fixture, b"abcd"),

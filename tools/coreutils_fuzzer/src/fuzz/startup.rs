@@ -11,8 +11,8 @@ pub(crate) use linux::run_startup;
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 mod linux {
     use super::StartupRunArgs;
+    use crate::fuzz::comparison::process_outcome::Termination;
     use crate::fuzz::execution::{pipe_cloexec, set_cloexec_io};
-    use crate::fuzz::process_outcome::Termination;
     use crate::utils::cli::ExecKind;
     use crate::utils::process::{
         validate_timeout, PreparedProcess, ProcessChannel, ProcessCollection,

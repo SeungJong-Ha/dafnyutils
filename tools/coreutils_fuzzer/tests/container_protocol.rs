@@ -25,7 +25,6 @@ fn container_runner_rejects_unknown_protocol_before_fixture_changes() {
         "work_iteration": 0,
         "workdir_mode": "per-iteration",
         "process_timeout_seconds": 1,
-        "read_only_time_anchor_seconds": null,
         "process_umask": 18,
         "target_uid": 1000,
         "target_gid": 1000

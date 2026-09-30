@@ -3,6 +3,7 @@
 
 use super::shrink::{execute_case_in_work_dir, CaseExecutor, RawCaseObservation};
 use super::{GeneratedCase, ResolvedPaths, ResolvedTarget};
+use crate::utils::capabilities::capability_for;
 use crate::utils::cli::{CampaignArgs, ContainerRunCaseArgs, ExecKind, FuzzArgs, WorkdirMode};
 use crate::utils::process::run_command_with_timeout_and_input;
 use crate::{fuzzer_outcome_marker, FUZZER_TARGET_SPAWN_FAILURE};
@@ -13,8 +14,28 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const CONTAINER_PROTOCOL_VERSION: u32 = 1;
-const COMPOSE_FILE: &str = "tools/coreutils_fuzzer/docker-compose.yaml";
+const CONTAINER_PROTOCOL_VERSION: u32 = 2;
+pub(crate) fn compose_file() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("docker-compose.yaml")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ComposeProvenance {
+    pub(crate) path: PathBuf,
+    pub(crate) fingerprint: String,
+    pub(crate) size_bytes: u64,
+}
+
+pub(crate) fn compose_provenance() -> Result<ComposeProvenance, String> {
+    let path = compose_file();
+    let (fingerprint, size_bytes) = super::metrics::file_fingerprint(&path)?;
+    Ok(ComposeProvenance {
+        path,
+        fingerprint,
+        size_bytes,
+    })
+}
 const COMPOSE_SERVICE: &str = "coreutils-fuzzer";
 const CONTAINER_RUNNER_PATH: &str = "/opt/coreutils-fuzzer-staging/coreutils_fuzzer";
 const CONTAINER_WORK_ROOT: &str = "/fuzz/work";
@@ -34,8 +55,9 @@ struct ContainerCaseRequest {
     work_iteration: usize,
     workdir_mode: WorkdirMode,
     process_timeout_seconds: u64,
-    read_only_time_anchor_seconds: Option<i64>,
+
     process_umask: u32,
+    replay_fixture_times: Option<std::collections::BTreeMap<String, super::FsTimes>>,
     target_uid: u32,
     target_gid: u32,
 }
@@ -188,10 +210,9 @@ impl DockerCaseExecutor {
         let name = std::env::var("FUZZ_CONTAINER_NAME").unwrap_or(default_name);
         let mut compose = Command::new("docker");
         compose
+            .args(["compose", "-f"])
+            .arg(compose_file())
             .args([
-                "compose",
-                "-f",
-                COMPOSE_FILE,
                 "run",
                 "--detach",
                 "--no-deps",
@@ -316,7 +337,7 @@ impl DockerCaseExecutor {
                     )
                 })?;
                 let destination = format!("/opt/coreutils-fuzzer-staging/{role}-runtime");
-                for file in runtime_files(target, utility == "touch")? {
+                for file in runtime_files(target, extra_runtime_files(utility))? {
                     docker_copy_file(&file, &self.container_id, &destination, role)?;
                 }
                 PathBuf::from(destination).join(file_name)
@@ -347,10 +368,12 @@ impl DockerCaseExecutor {
             work_iteration,
             workdir_mode: args.common.workdir_mode,
             process_timeout_seconds: args.process_timeout_seconds,
-            read_only_time_anchor_seconds: args.read_only_time_anchor_seconds,
-            process_umask: args.process_umask.ok_or_else(|| {
-                "container execution requires an explicit process umask".to_string()
-            })?,
+
+            replay_fixture_times: args.replay_fixture_times.clone(),
+            process_umask: crate::utils::execution_context::selected_process_umask(
+                seed,
+                child_iteration,
+            ),
             target_uid: args.common.target_uid,
             target_gid: args.common.target_gid,
         };
@@ -466,9 +489,11 @@ pub(crate) fn run_container_case(_args: ContainerRunCaseArgs) -> Result<(), Stri
         shrink_attempts: 0,
         process_timeout_seconds: request.process_timeout_seconds,
         ignore_stderr: false,
-        read_only_time_anchor_seconds: request.read_only_time_anchor_seconds,
+
         process_umask: Some(request.process_umask),
+        replay_fixture_times: request.replay_fixture_times,
         container_image_id: None,
+        compose_provenance: None,
     };
     let work_root = Path::new(CONTAINER_WORK_ROOT);
     std::fs::create_dir_all(work_root).map_err(|error| {
@@ -492,13 +517,17 @@ pub(crate) fn run_container_case(_args: ContainerRunCaseArgs) -> Result<(), Stri
     Ok(())
 }
 
-fn runtime_files(target: &ResolvedTarget, touch_parser: bool) -> Result<Vec<PathBuf>, String> {
+fn extra_runtime_files(utility: &str) -> &'static [&'static str] {
+    capability_for(utility).map_or(&[], |capability| capability.extra_runtime_files)
+}
+
+fn runtime_files(target: &ResolvedTarget, extra_files: &[&str]) -> Result<Vec<PathBuf>, String> {
     let mut files = vec![target.path.clone()];
     if target.kind == ExecKind::DotnetDll {
         files.push(target.path.with_extension("deps.json"));
         files.push(target.path.with_extension("runtimeconfig.json"));
-        if touch_parser {
-            files.push(target.path.with_file_name("touch_time_parser"));
+        for extra in extra_files {
+            files.push(target.path.with_file_name(extra));
         }
     }
     for path in &files {
@@ -677,6 +706,22 @@ fn collect_options(help: &[u8]) -> std::collections::BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
+    // A stale experiment-relative Compose file cannot select the runtime isolation profile.
+    #[test]
+    fn compose_is_package_owned_and_fingerprinted() {
+        let provenance = super::compose_provenance().unwrap();
+        assert!(provenance.path.is_absolute());
+        assert_eq!(
+            provenance.path,
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docker-compose.yaml")
+        );
+        let (fingerprint, bytes) =
+            crate::fuzz::metrics::file_fingerprint(&provenance.path).unwrap();
+        assert_eq!(provenance.fingerprint, fingerprint);
+        assert_eq!(provenance.size_bytes, bytes);
+        assert!(bytes > 0);
+    }
+
     use super::{collect_options, docker_output, ContainerTarget, DockerCaseExecutor};
     use crate::utils::cli::{Cli, CliCommand, ExecKind};
     use clap::Parser;

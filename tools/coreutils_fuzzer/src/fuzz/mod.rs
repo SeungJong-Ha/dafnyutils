@@ -78,7 +78,7 @@ pub enum VariantKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunResult {
-    pub(crate) termination: process_outcome::Termination,
+    pub(crate) termination: comparison::process_outcome::Termination,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
 }
@@ -121,40 +121,15 @@ pub struct FsTimes {
 
 pub type FsSnapshot = BTreeMap<String, FsNodeSnapshot>;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub enum CompareResult {
-    Match,
-    Mismatch {
-        process_outcome_diff: Option<(
-            compare::ProcessOutcomeEvidence,
-            compare::ProcessOutcomeEvidence,
-        )>,
-        stdout_diff: bool,
-        stderr_diff: bool,
-        fs_diff: Vec<String>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DiffOp {
-    Equal(String),
-    Remove(String),
-    Add(String),
-}
-
 pub mod campaign;
 pub mod case_source;
-pub mod compare;
+pub mod comparison;
 pub(crate) mod container;
 pub mod corpus;
 pub mod coverage;
 pub mod execution;
-pub mod fixture;
 pub(crate) mod input;
 pub mod metrics;
-pub mod mutation;
-pub(crate) mod process_outcome;
 pub mod regression;
 pub mod replay;
 pub mod repro;
@@ -162,6 +137,6 @@ pub(crate) mod runtime;
 pub mod semantic;
 pub mod shrink;
 pub(crate) mod startup;
-pub(crate) mod time_coverage;
+pub mod system_state_concretizer;
 
 pub use campaign::run_fuzzer;

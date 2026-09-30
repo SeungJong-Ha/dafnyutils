@@ -1,7 +1,9 @@
 use super::super::pattern::{Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice};
+use super::super::CwdPolicy;
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::GeneratedCase;
+use crate::utils::arg_semantics::{positional_args, requests_help_or_version};
 
 static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[
     Element::repeated(
@@ -30,10 +32,13 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[
 ])]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_system_state(system_state::line_system_state)
+        .with_mutation_guard(uniq_argv_is_supported)
+        .with_cwd_policy(CwdPolicy::Root);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec![], fixture, b"a\na\nb\n"),
         1 => support::case(vec!["-c", "dups.txt"], fixture, b""),
@@ -43,4 +48,16 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         5 => support::case(vec!["missing.txt"], fixture, b""),
         _ => return None,
     })
+}
+
+pub(in crate::fuzz::input) fn uniq_argv_is_supported(argv: &[String]) -> bool {
+    if requests_help_or_version("uniq", argv) {
+        return true;
+    }
+    let operands = positional_args("uniq", argv);
+    !operands.iter().any(|operand| {
+        operand
+            .strip_prefix('+')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    }) && (operands.len() != 2 || operands[1] == "-")
 }

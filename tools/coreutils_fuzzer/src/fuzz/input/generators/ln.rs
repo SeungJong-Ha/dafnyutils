@@ -2,8 +2,9 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, ValueContext,
 };
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::GeneratedCase;
+use crate::fuzz::UtilityProfile;
 use rand::rngs::StdRng;
 use rand::Rng;
 
@@ -17,7 +18,10 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[
 ])]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case).with_profile(UtilityProfile {
+        requires_path_operand: true,
+        prefers_existing_paths: true,
+    });
 
 fn ln_source(context: &ValueContext<'_>, rng: &mut StdRng) -> String {
     if rng.random_bool(0.2) {
@@ -38,7 +42,7 @@ fn ln_name(context: &ValueContext<'_>, rng: &mut StdRng) -> String {
 }
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec!["-s", "a.txt", "a.sym"], fixture, b""),
         1 => support::case(

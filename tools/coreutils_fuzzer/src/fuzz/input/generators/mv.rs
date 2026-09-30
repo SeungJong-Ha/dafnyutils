@@ -2,7 +2,9 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionValue, OptionValueForm,
     ValueContext, ValueSource,
 };
-use super::super::{fixtures, mutation, support, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, support, system_state, PatternInputGenerator};
+use crate::fuzz::UtilityProfile;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, GeneratedCase, SymlinkSpec};
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -11,7 +13,12 @@ use std::path::PathBuf;
 
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
-        .with_mutator(mutation::regenerate_argv);
+        .with_mutator(mutations::regenerate_argv)
+        .with_cwd_policy(CwdPolicy::Root)
+        .with_profile(UtilityProfile {
+            requires_path_operand: true,
+            prefers_existing_paths: true,
+        });
 
 const SOURCE: usize = 0;
 const DIRECTORY: usize = 1;
@@ -337,7 +344,7 @@ fn random_rename_target(source: &str, rng: &mut StdRng) -> String {
 }
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::basic_fixture();
+    let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
             argv: vec!["a.txt".to_string(), "renamed.txt".to_string()],

@@ -1,5 +1,5 @@
 #[cfg(test)]
-use super::fixture::reset_dir;
+use super::system_state_concretizer::reset_dir;
 use super::{ResolvedPaths, ResolvedTarget};
 #[cfg(test)]
 use crate::utils::cli::WorkdirMode;

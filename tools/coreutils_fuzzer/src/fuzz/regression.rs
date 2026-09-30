@@ -1,18 +1,16 @@
 use super::case_source::{load_case_set, CaseOrigin, CaseSetV1};
+use super::comparison::evaluation::CaseVerdict;
 use super::container::CommandCaseExecutor;
-use super::fixture::current_read_only_time_anchor;
 use super::metrics::{
-    case_fingerprint, duration_ns, error_outcome, CampaignMode, CaseMetricsV1, MetricsRecorder,
-    StageDurations,
+    case_fingerprint, duration_ns, error_outcome, CampaignMode, CaseMetricsV1, CommonMetricsConfig,
+    MetricsRecorder, StageDurations,
 };
-use super::repro::save_case_evaluation;
 use super::runtime::resolve_fuzz_paths;
 use super::shrink::evaluate_case_with_executor;
-use super::time_coverage::CaseVerdict;
 use crate::utils::capabilities::require_fuzz_capability;
-use crate::utils::chmod_campaign::{current_process_umask, selected_chmod_umask};
 use crate::utils::cli::{CampaignArgs, FuzzArgs, RegressionArgs, WorkdirMode};
-use crate::{fuzzer_outcome_marker, INCOMPLETE_COVERAGE, REGRESSION_FAILURE};
+use crate::utils::execution_context::selected_process_umask;
+use crate::{fuzzer_outcome_marker, REGRESSION_FAILURE};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fs;
@@ -94,13 +92,12 @@ pub(crate) fn run_regression(args: RegressionArgs) -> Result<(), String> {
         shrink_attempts: 0,
         process_timeout_seconds: args.process_timeout_seconds,
         ignore_stderr: args.ignore_stderr,
-        read_only_time_anchor_seconds: None,
-        process_umask: Some(current_process_umask()?),
+
+        process_umask: None,
+        replay_fixture_times: None,
         container_image_id: None,
+        compose_provenance: Some(Box::new(super::container::compose_provenance()?)),
     };
-    if matches!(suite.util.as_str(), "ls" | "stat") {
-        fuzz_args.read_only_time_anchor_seconds = Some(current_read_only_time_anchor()?);
-    }
     let fuzz_paths = resolve_fuzz_paths(&fuzz_args)?;
     let mut executor = CommandCaseExecutor::create(&fuzz_args, &fuzz_paths)?;
     fuzz_args.container_image_id = Some(executor.image_id().unwrap_or("local-test").to_string());
@@ -127,18 +124,11 @@ pub(crate) fn run_regression(args: RegressionArgs) -> Result<(), String> {
     metrics.set_configuration("work_root_source", executor.work_root_source());
     metrics.set_configuration("work_root_base", executor.work_root_base().display());
     metrics.set_configuration("work_root_path", executor.work_root_path().display());
-    if let Err(error) = configure_metrics(
-        &mut metrics,
-        &args,
-        &suite,
-        &case_set_path,
-        &fuzz_paths,
-        &fuzz_args,
-    ) {
+    if let Err(error) = configure_metrics(&mut metrics, &args, &suite, &case_set_path, &fuzz_paths)
+    {
         return Err(metrics.finish_preserving_error(error));
     }
     let mut failures = Vec::new();
-    let mut incomplete_coverage = false;
 
     for (iteration, expectation) in suite.expectations.iter().enumerate() {
         let entry = case_set
@@ -165,25 +155,6 @@ pub(crate) fn run_regression(args: RegressionArgs) -> Result<(), String> {
                         comparison = Some(evaluation.comparison.clone());
                         match verdict {
                             CaseVerdict::Match => ("match".to_string(), None),
-                            CaseVerdict::IncompleteCoverage => {
-                                incomplete_coverage = true;
-                                let evidence = match save_case_evaluation(
-                                    &fuzz_args,
-                                    seed,
-                                    iteration,
-                                    &fuzz_paths,
-                                    &evaluation,
-                                ) {
-                                    Ok(path) => {
-                                        format!("raw observation bundle: {}", path.display())
-                                    }
-                                    Err(error) => {
-                                        format!("failed to save raw observation bundle: {error}")
-                                    }
-                                };
-                                (INCOMPLETE_COVERAGE.to_string(), Some(format!(
-                                "case `{}` expected Match but per-execution time evidence is incomplete\n{evidence}", entry.id)))
-                            }
                             CaseVerdict::Mismatch => (
                                 "mismatch".to_string(),
                                 Some(format!(
@@ -239,68 +210,37 @@ pub(crate) fn run_regression(args: RegressionArgs) -> Result<(), String> {
     } else {
         let error = format!(
             "{}\n{}",
-            fuzzer_outcome_marker(if incomplete_coverage {
-                INCOMPLETE_COVERAGE
-            } else {
-                REGRESSION_FAILURE
-            }),
+            fuzzer_outcome_marker(REGRESSION_FAILURE),
             failures.join("\n")
         );
         Err(metrics.finish_preserving_error(error))
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn configure_metrics(
     metrics: &mut MetricsRecorder,
     args: &RegressionArgs,
     suite: &RegressionSuiteV1,
     case_set_path: &Path,
     fuzz_paths: &super::ResolvedPaths,
-    fuzz_args: &FuzzArgs,
 ) -> Result<(), String> {
     if !metrics.is_enabled() {
         return Ok(());
     }
-    metrics.set_target_configuration("reference", &fuzz_paths.reference)?;
-    metrics.set_target_configuration("dut", &fuzz_paths.dut)?;
-    metrics.set_artifact_configuration(
-        "fuzzer_executable",
-        &std::env::current_exe()
-            .map_err(|error| format!("failed to resolve current fuzzer executable: {error}"))?,
-    )?;
     metrics.set_input_file_configuration("regression_suite", &args.suite)?;
     metrics.set_input_file_configuration("case_set", case_set_path)?;
     metrics.set_configuration("option_pool", "[]");
     metrics.set_configuration("ignore_stderr", args.ignore_stderr);
     metrics.set_configuration("shrink_attempts", 0);
-    if suite.util == "chmod" {
-        let schedule: Vec<String> = (0..suite.expectations.len())
-            .map(|iteration| format!("{:#05o}", selected_chmod_umask(1, iteration)))
-            .collect();
-        metrics.set_configuration(
-            "process_umask_schedule",
-            serde_json::to_string(&schedule).map_err(|error| {
-                format!("failed to serialize chmod umask schedule for metrics: {error}")
-            })?,
-        );
-    } else {
-        metrics.set_configuration(
-            "process_umask",
-            fuzz_args
-                .process_umask
-                .map(|value| format!("{value:#05o}"))
-                .unwrap_or_else(|| "unavailable".to_string()),
-        );
-    }
-    metrics.set_configuration(
-        "read_only_time_anchor_seconds",
-        fuzz_args
-            .read_only_time_anchor_seconds
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-    );
-    Ok(())
+    let umask_schedule: Vec<String> = (0..suite.expectations.len())
+        .map(|iteration| format!("{:#05o}", selected_process_umask(1, iteration)))
+        .collect();
+    metrics.configure_common(CommonMetricsConfig {
+        reference: &fuzz_paths.reference,
+        dut: &fuzz_paths.dut,
+
+        umask_schedule: &umask_schedule,
+    })
 }
 
 fn load_suite(path: &Path) -> Result<RegressionSuiteV1, String> {

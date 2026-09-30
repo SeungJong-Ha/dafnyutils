@@ -2,7 +2,9 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueContext, ValueSource,
 };
-use super::super::{mutation, support, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, support, PatternInputGenerator};
+use crate::fuzz::UtilityProfile;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, GeneratedCase};
 use rand::rngs::StdRng;
 use rand::Rng;
@@ -71,7 +73,14 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[
 
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
-        .with_mutator(mutation::regenerate_argv);
+        .with_mutator(mutations::regenerate_argv)
+        .with_system_state(random_system_state)
+        .with_case_normalizer(normalize_case)
+        .with_cwd_policy(CwdPolicy::Root)
+        .with_profile(UtilityProfile {
+            requires_path_operand: true,
+            prefers_existing_paths: true,
+        });
 
 fn comm_left(context: &ValueContext<'_>, rng: &mut StdRng) -> String {
     if rng.random_bool(0.09) {
@@ -115,7 +124,7 @@ fn pick_preferred_file(context: &ValueContext<'_>, preferred: &str, rng: &mut St
 }
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = comm_fixture();
+    let fixture = generate_comm_fixture_blueprint();
     Some(match iteration {
         0 => support::case(vec!["left.txt", "right.txt"], fixture, b""),
         1 => support::case(vec!["-1", "left.txt", "right.txt"], fixture, b""),
@@ -167,7 +176,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
     })
 }
 
-fn comm_fixture() -> FixtureBlueprint {
+fn generate_comm_fixture_blueprint() -> FixtureBlueprint {
     FixtureBlueprint {
         directories: vec![DirSpec {
             relative_path: PathBuf::from("dir"),
@@ -197,5 +206,29 @@ fn comm_fixture() -> FixtureBlueprint {
         ],
         symlinks: Vec::new(),
         hardlinks: Vec::new(),
+    }
+}
+
+fn comm_consumes_stdin(argv: &[String]) -> bool {
+    argv.iter().filter(|arg| arg.as_str() == "-").count() == 1
+}
+
+fn comm_uses_zero_terminated_records(argv: &[String]) -> bool {
+    argv.iter()
+        .any(|arg| arg == "-z" || arg == "--zero-terminated" || arg.starts_with("-z"))
+}
+
+fn random_system_state(_rng: &mut StdRng, _max_fs_entries: usize) -> FixtureBlueprint {
+    generate_comm_fixture_blueprint()
+}
+
+fn normalize_case(case: &mut GeneratedCase) {
+    case.fixture = generate_comm_fixture_blueprint();
+    if comm_consumes_stdin(&case.argv) {
+        case.stdin = if comm_uses_zero_terminated_records(&case.argv) {
+            b"apple\0banana\0banana\0orange\0".to_vec()
+        } else {
+            b"apple\nbanana\nbanana\norange\n".to_vec()
+        };
     }
 }

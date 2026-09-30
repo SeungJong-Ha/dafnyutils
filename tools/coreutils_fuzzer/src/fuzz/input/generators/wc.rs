@@ -1,6 +1,7 @@
 use super::super::pattern::{Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice};
+use super::super::CwdPolicy;
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::GeneratedCase;
 use std::path::PathBuf;
 
@@ -25,10 +26,11 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[
 ])]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_cwd_policy(CwdPolicy::RootOnGeneration);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::basic_fixture();
+    let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
             argv: Vec::new(),
@@ -59,7 +61,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         4 => support::case(vec!["-c", "a.txt"], fixture, b""),
-        5 => support::case(vec!["-m", "payload.bin"], fixtures::line_fixture(), b""),
+        5 => support::case(vec!["-m", "payload.bin"], system_state::line_fixture(), b""),
         6 => support::case(vec!["-w", "-", "missing.txt"], fixture, b"\0\x01"),
         7 => support::case(vec!["-", "-"], fixture, b"only once\n"),
         _ => return None,

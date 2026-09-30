@@ -2,13 +2,17 @@ use super::super::pattern::{
     Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, OptionValue,
     OptionValueForm, ValueSource,
 };
-use super::super::{fixtures, mutation, support, PatternInputGenerator};
+use super::super::CwdPolicy;
+use super::super::{mutations, support, system_state, PatternInputGenerator};
 use crate::fuzz::{FixtureBlueprint, GeneratedCase};
 use rand::rngs::StdRng;
 use rand::Rng;
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case).with_mutator(mutate_argv);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_mutator(mutate_argv)
+        .with_system_state(system_state::line_system_state)
+        .with_cwd_policy(CwdPolicy::Root);
 
 const HEAD_MODES: Element = Element::repeated(
     0,
@@ -83,10 +87,10 @@ fn mutate_argv(
     argv: &mut Vec<String>,
 ) {
     if argv.is_empty() || rng.random_bool(0.35) {
-        mutation::regenerate_argv(util, option_pool, rng, max_args, fixture, argv);
+        mutations::regenerate_argv(util, option_pool, rng, max_args, fixture, argv);
         return;
     }
-    mutation::mutate_existing_argv(
+    mutations::mutate_existing_argv(
         rng,
         max_args,
         fixture,
@@ -97,16 +101,16 @@ fn mutate_argv(
 }
 
 fn random_replacement_value(argv: &[String], idx: usize, rng: &mut StdRng) -> String {
-    let value = mutation::random_argument_value(rng);
+    let value = mutations::random_argument_value(rng);
     let replacing_stdin = argv.get(idx).is_some_and(|arg| arg == "-");
     if value == "-" && !replacing_stdin && argv.iter().any(|arg| arg == "-") {
-        return mutation::random_non_stdin_argument_value(rng);
+        return mutations::random_non_stdin_argument_value(rng);
     }
     value
 }
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec![], fixture, b"0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"),
         1 => support::case(vec!["-n", "2", "a.txt"], fixture, b""),

@@ -1,5 +1,5 @@
+use crate::fuzz::input::mutations::generate_case;
 use crate::fuzz::input::{generate_argv_for_test, mutate_argv, random_chmod_mode_for_test};
-use crate::fuzz::mutation::generate_case;
 use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint};
 use rand::rngs::StdRng;
 use rand::SeedableRng;

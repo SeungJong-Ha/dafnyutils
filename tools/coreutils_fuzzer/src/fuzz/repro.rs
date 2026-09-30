@@ -1,12 +1,12 @@
-use super::compare::{MismatchSignature, ReplayVerdict};
-use super::execution::IdentityTransitionEvidence;
+use super::case_source::{CaseSetV1, ExplicitCaseV1, CASE_SET_SCHEMA_V1};
+use super::comparison::compare::{MismatchSignature, ReplayVerdict};
+use super::comparison::evaluation::{CaseVerdict, EvaluatedComparison};
+use super::comparison::fs_snapshot::IdentityTransitionEvidence;
+use super::comparison::CompareResult;
 use super::shrink::CaseEvaluation;
-use super::time_coverage::{CaseVerdict, EvaluatedComparison};
-use super::{CompareResult, FsSnapshot, GeneratedCase, ResolvedPaths, ResolvedTarget, RunResult};
-use crate::utils::capabilities::require_fuzz_capability;
-use crate::utils::chmod_campaign::current_process_umask;
-use crate::utils::chmod_campaign::{canonical_process_environment, selected_chmod_umask};
+use super::{FsSnapshot, GeneratedCase, ResolvedPaths, ResolvedTarget, RunResult};
 use crate::utils::cli::{ExecKind, FuzzArgs, WorkdirMode};
+use crate::utils::execution_context::{canonical_process_environment, selected_process_umask};
 use crate::utils::paths::sanitize_util_name;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
@@ -15,7 +15,28 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
-pub(crate) const REPRO_SCHEMA_VERSION: u32 = 6;
+pub(crate) const REPRO_SCHEMA_VERSION: u32 = 8;
+const FAILURE_INPUT_SCHEMA_V2: &str = "coreutils-fuzzer.failure-input.v2";
+
+#[derive(Debug, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FailureInputManifestV2 {
+    schema_version: &'static str,
+    tool: ToolProvenance,
+    seed: u64,
+    iteration: usize,
+    util: String,
+    case_id: String,
+    error: String,
+    workdir_mode: WorkdirMode,
+    process_timeout_seconds: u64,
+    ignore_stderr: bool,
+    execution_context: ReproExecutionContext,
+    reference: ReproTarget,
+    dut: ReproTarget,
+    case_set_file: &'static str,
+    reproduce_one_liner: String,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +59,7 @@ pub(crate) struct ReproComparison {
 pub(crate) struct ReproExecutionContext {
     pub(crate) environment: BTreeMap<String, String>,
     pub(crate) umask: u32,
-    pub(crate) read_only_time_anchor_seconds: Option<i64>,
+
     #[serde(
         default,
         deserialize_with = "deserialize_work_root_base",
@@ -47,6 +68,8 @@ pub(crate) struct ReproExecutionContext {
     pub(crate) work_root_base: Option<Option<PathBuf>>,
     pub(crate) container_image: String,
     pub(crate) container_image_id: String,
+    #[serde(default)]
+    pub(crate) compose_provenance: Option<super::container::ComposeProvenance>,
     pub(crate) target_uid: u32,
     pub(crate) target_gid: u32,
 }
@@ -115,7 +138,7 @@ pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<ReproManifest, String> {
     };
     if version.schema_version != REPRO_SCHEMA_VERSION {
         return Err(format!(
-            "unsupported replay schema version {}; supported versions: {REPRO_SCHEMA_VERSION}",
+            "unsupported replay schema version {}; supported versions: {REPRO_SCHEMA_VERSION}; rerun saved inputs through --case-set",
             version.schema_version
         ));
     }
@@ -139,7 +162,7 @@ pub(crate) fn decode_manifest(bytes: &[u8]) -> Result<ReproManifest, String> {
             .is_empty()
     {
         return Err(
-            "invalid version6 replay manifest: container image provenance is empty".to_string(),
+            "invalid version8 replay manifest: container image provenance is empty".to_string(),
         );
     }
     Ok(manifest)
@@ -152,7 +175,7 @@ pub(crate) fn save_case_evaluation(
     paths: &ResolvedPaths,
     evaluation: &CaseEvaluation,
 ) -> io::Result<PathBuf> {
-    save_repro(
+    let path = save_repro(
         args,
         seed,
         iteration,
@@ -160,7 +183,7 @@ pub(crate) fn save_case_evaluation(
         &evaluation.case,
         &evaluation.reference,
         &evaluation.dut,
-        &evaluation.comparison.observable,
+        &evaluation.comparison,
         evaluation.mismatch_signature.as_ref(),
         &evaluation.replay_verdict,
         &evaluation.pre_fs,
@@ -169,7 +192,80 @@ pub(crate) fn save_case_evaluation(
         &evaluation.dut_fs,
         &evaluation.reference_identity,
         &evaluation.dut_identity,
-    )
+    )?;
+    Ok(path)
+}
+
+pub(crate) fn save_failure_input(
+    args: &FuzzArgs,
+    seed: u64,
+    iteration: usize,
+    paths: &ResolvedPaths,
+    case_id: &str,
+    case: &GeneratedCase,
+    error: &str,
+) -> io::Result<PathBuf> {
+    let root = std::env::var_os("FUZZ_REPRO_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp/coreutils-fuzzer-repros"));
+    save_failure_input_at(&root, args, seed, iteration, paths, case_id, case, error)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn save_failure_input_at(
+    root: &Path,
+    args: &FuzzArgs,
+    seed: u64,
+    iteration: usize,
+    paths: &ResolvedPaths,
+    case_id: &str,
+    case: &GeneratedCase,
+    error: &str,
+) -> io::Result<PathBuf> {
+    let execution_context = repro_execution_context(args, seed, iteration)?;
+    let base_name = format!(
+        "{}-seed{}-iter{}-failure-input",
+        sanitize_util_name(&args.common.util),
+        seed,
+        iteration
+    );
+    let path = unique_repro_path(root, &base_name)?;
+    let case_set_path = path.join("case-set.json");
+    let case_set = CaseSetV1 {
+        schema_version: CASE_SET_SCHEMA_V1.to_string(),
+        util: args.common.util.clone(),
+        cases: vec![ExplicitCaseV1 {
+            id: case_id.to_string(),
+            case: case.clone(),
+        }],
+    };
+    let manifest = FailureInputManifestV2 {
+        schema_version: FAILURE_INPUT_SCHEMA_V2,
+        tool: tool_provenance(),
+        seed,
+        iteration,
+        util: args.common.util.clone(),
+        case_id: case_id.to_string(),
+        error: error.to_string(),
+        workdir_mode: args.common.workdir_mode,
+        process_timeout_seconds: args.process_timeout_seconds,
+        ignore_stderr: args.ignore_stderr,
+        execution_context,
+        reference: ReproTarget {
+            kind: paths.reference.kind,
+            path: paths.reference.path.clone(),
+        },
+        dut: ReproTarget {
+            kind: paths.dut.kind,
+            path: paths.dut.path.clone(),
+        },
+        case_set_file: "case-set.json",
+        reproduce_one_liner: build_failure_input_one_liner(args, seed, paths, &case_set_path),
+    };
+    write_json(case_set_path, &case_set)?;
+    write_json(path.join("manifest.json"), &manifest)?;
+    eprintln!("  repro saved to {}", path.display());
+    Ok(path)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -181,7 +277,7 @@ pub(crate) fn save_repro(
     case: &GeneratedCase,
     reference: &RunResult,
     dut: &RunResult,
-    compare: &CompareResult,
+    evaluated: &EvaluatedComparison,
     mismatch_signature: Option<&MismatchSignature>,
     replay_verdict: &ReplayVerdict,
     pre_fs: &FsSnapshot,
@@ -203,7 +299,7 @@ pub(crate) fn save_repro(
         case,
         reference,
         dut,
-        compare,
+        evaluated,
         mismatch_signature,
         replay_verdict,
         pre_fs,
@@ -225,7 +321,7 @@ pub(crate) fn save_repro_at(
     case: &GeneratedCase,
     reference: &RunResult,
     dut: &RunResult,
-    compare: &CompareResult,
+    evaluated: &EvaluatedComparison,
     mismatch_signature: Option<&MismatchSignature>,
     replay_verdict: &ReplayVerdict,
     pre_fs: &FsSnapshot,
@@ -236,24 +332,31 @@ pub(crate) fn save_repro_at(
     dut_identity: &IdentityTransitionEvidence,
 ) -> io::Result<PathBuf> {
     let util = &args.common.util;
-    let evaluated = EvaluatedComparison::without_time_observations(
-        compare.clone(),
-        require_fuzz_capability(util)
-            .map_err(io::Error::other)?
-            .time_coverage,
-    );
     let mismatch_signature = mismatch_signature.copied();
     if evaluated.verdict() == CaseVerdict::Match
-        || (evaluated.verdict() == CaseVerdict::Mismatch && mismatch_signature.is_none())
+        || (evaluated.verdict() == CaseVerdict::Mismatch
+            && mismatch_signature.is_none()
+            && !matches!(evaluated.observable, CompareResult::Match))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "cannot save a replay bundle without a mismatch or incomplete coverage",
+            "cannot save a replay bundle without a mismatch",
         ));
     }
     replay_verdict
         .validate_process_outcome_consistency()
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    if replay_verdict.execution.is_some() {
+        replay_verdict
+            .validate_time_evidence()
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        if evaluated.execution != replay_verdict.execution {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "evaluation and replay execution evidence disagree",
+            ));
+        }
+    }
     let execution_context = repro_execution_context(args, seed, iteration)?;
     let base_name = format!(
         "{}-seed{}-iter{}",
@@ -265,7 +368,7 @@ pub(crate) fn save_repro_at(
 
     let ref_cmd = format_target_command(&paths.reference, &case.argv);
     let dut_cmd = format_target_command(&paths.dut, &case.argv);
-    let diff_summary = render_diff_summary(compare, reference, dut);
+    let diff_summary = render_diff_summary(&evaluated.observable, reference, dut);
     let repro_one_liner = build_repro_one_liner(&path, &execution_context);
     let manifest = ReproManifest {
         schema_version: REPRO_SCHEMA_VERSION,
@@ -288,7 +391,7 @@ pub(crate) fn save_repro_at(
         comparison: ReproComparison {
             ignore_stderr: args.ignore_stderr,
             expected_mismatch_signature: mismatch_signature,
-            evaluated,
+            evaluated: evaluated.clone(),
             expected_replay_verdict: replay_verdict.clone(),
         },
         diff_summary,
@@ -299,7 +402,7 @@ pub(crate) fn save_repro_at(
 
     write_json(path.join("manifest.json"), &manifest)?;
     write_json(path.join("case.json"), case)?;
-    write_json(path.join("compare.json"), compare)?;
+    write_json(path.join("compare.json"), &evaluated.observable)?;
     write_json(path.join("mismatch_signature.json"), &mismatch_signature)?;
     write_json(path.join("pre_fs.json"), pre_fs)?;
     write_json(path.join("dut_pre_fs.json"), dut_pre_fs)?;
@@ -331,13 +434,6 @@ fn repro_execution_context(
     seed: u64,
     iteration: usize,
 ) -> io::Result<ReproExecutionContext> {
-    let is_read_only = matches!(args.common.util.as_str(), "ls" | "stat");
-    if is_read_only != args.read_only_time_anchor_seconds.is_some() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "ls/stat replay evidence requires one captured timestamp anchor, and other utilities must not set one",
-        ));
-    }
     let work_root_base = args.common.work_root.clone().ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -361,18 +457,12 @@ fn repro_execution_context(
         })?;
     Ok(ReproExecutionContext {
         environment: canonical_process_environment(),
-        umask: if args.common.util == "chmod" {
-            selected_chmod_umask(seed, iteration)
-        } else {
-            match args.process_umask {
-                Some(umask) => umask,
-                None => current_process_umask().map_err(io::Error::other)?,
-            }
-        },
-        read_only_time_anchor_seconds: args.read_only_time_anchor_seconds,
+        umask: selected_process_umask(seed, iteration),
+
         work_root_base: Some(Some(work_root_base)),
         container_image: args.common.container_image.clone(),
         container_image_id,
+        compose_provenance: args.compose_provenance.as_deref().cloned(),
         target_uid: args.common.target_uid,
         target_gid: args.common.target_gid,
     })
@@ -381,15 +471,15 @@ fn repro_execution_context(
 fn validate_manifest_work_root(manifest: &ReproManifest) -> Result<(), String> {
     match manifest.execution_context.work_root_base.as_ref() {
         Some(Some(path)) => validate_saved_work_root_path(path),
-        None => Err("invalid version6 replay manifest: missing work-root base".to_string()),
-        Some(None) => Err("invalid version6 replay manifest: null work-root base".to_string()),
+        None => Err("invalid version8 replay manifest: missing work-root base".to_string()),
+        Some(None) => Err("invalid version8 replay manifest: null work-root base".to_string()),
     }
 }
 
 fn validate_saved_work_root_path(path: &Path) -> Result<(), String> {
     if !path.is_absolute() {
         return Err(format!(
-            "invalid version6 replay manifest: work-root base must be absolute: `{}`",
+            "invalid version8 replay manifest: work-root base must be absolute: `{}`",
             path.display()
         ));
     }
@@ -401,7 +491,7 @@ fn validate_saved_work_root_path(path: &Path) -> Result<(), String> {
     }) || path.components().collect::<PathBuf>().as_os_str() != path.as_os_str()
     {
         return Err(format!(
-            "invalid version6 replay manifest: work-root base must be normalized: `{}`",
+            "invalid version8 replay manifest: work-root base must be normalized: `{}`",
             path.display()
         ));
     }
@@ -519,6 +609,80 @@ fn build_repro_one_liner(path: &Path, context: &ReproExecutionContext) -> String
     )
 }
 
+fn build_failure_input_one_liner(
+    args: &FuzzArgs,
+    seed: u64,
+    paths: &ResolvedPaths,
+    case_set: &Path,
+) -> String {
+    shell_join(&build_failure_input_command_parts(
+        args, seed, paths, case_set,
+    ))
+}
+
+fn build_failure_input_command_parts(
+    args: &FuzzArgs,
+    seed: u64,
+    paths: &ResolvedPaths,
+    case_set: &Path,
+) -> Vec<String> {
+    let mut parts = vec![
+        "cargo".to_string(),
+        "run".to_string(),
+        "--manifest-path".to_string(),
+        "tools/coreutils_fuzzer/Cargo.toml".to_string(),
+        "--".to_string(),
+        "fuzz".to_string(),
+        "--util".to_string(),
+        args.common.util.clone(),
+        "--ref-bin".to_string(),
+        paths.reference.path.display().to_string(),
+        "--ref-kind".to_string(),
+        exec_kind_label(paths.reference.kind).to_string(),
+        "--dut-bin".to_string(),
+        paths.dut.path.display().to_string(),
+        "--dut-kind".to_string(),
+        exec_kind_label(paths.dut.kind).to_string(),
+        "--iterations".to_string(),
+        "1".to_string(),
+        "--seed".to_string(),
+        seed.to_string(),
+        "--case-set".to_string(),
+        case_set.display().to_string(),
+        "--workdir-mode".to_string(),
+        workdir_mode_label(args.common.workdir_mode).to_string(),
+        "--process-timeout-seconds".to_string(),
+        args.process_timeout_seconds.to_string(),
+        "--container-image".to_string(),
+        args.container_image_id
+            .as_ref()
+            .unwrap_or(&args.common.container_image)
+            .clone(),
+    ];
+    if args.ignore_stderr {
+        parts.push("--ignore-stderr".to_string());
+    }
+    if let Some(opts) = &args.common.opts {
+        parts.push("--opts".to_string());
+        parts.push(opts.clone());
+    }
+    parts
+}
+
+fn exec_kind_label(kind: ExecKind) -> &'static str {
+    match kind {
+        ExecKind::Native => "native",
+        ExecKind::DotnetDll => "dotnet-dll",
+    }
+}
+
+fn workdir_mode_label(mode: WorkdirMode) -> &'static str {
+    match mode {
+        WorkdirMode::PerIteration => "per-iteration",
+        WorkdirMode::Shared => "shared",
+    }
+}
+
 fn format_target_command(target: &ResolvedTarget, argv: &[String]) -> String {
     match target.kind {
         ExecKind::Native => {
@@ -555,9 +719,88 @@ fn shell_quote(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_repro_one_liner, validate_saved_work_root_path, ReproExecutionContext};
+    use super::{
+        build_failure_input_command_parts, build_failure_input_one_liner, build_repro_one_liner,
+        validate_saved_work_root_path, ReproExecutionContext,
+    };
+    use crate::fuzz::{ResolvedPaths, ResolvedTarget};
+    use crate::utils::cli::{Cli, CliCommand, ExecKind, WorkdirMode};
+    use clap::Parser;
     use std::collections::BTreeMap;
     use std::path::{Path, PathBuf};
+
+    // The saved failure-input command reaches the Rust fuzz CLI with quoted paths and settings.
+    #[test]
+    fn failure_input_command_parses_as_rust_fuzz_invocation() {
+        let cli = Cli::try_parse_from([
+            "coreutils_fuzzer",
+            "fuzz",
+            "--util",
+            "cat",
+            "--ref-bin",
+            "/bin/cat",
+            "--dut-bin",
+            "/bin/cat",
+            "--dut-kind",
+            "native",
+        ])
+        .unwrap();
+        let CliCommand::Fuzz(mut args) = cli.command else {
+            unreachable!()
+        };
+        args.common.opts = Some("-n --debug".to_string());
+        args.common.workdir_mode = WorkdirMode::Shared;
+        args.process_timeout_seconds = 13;
+        args.ignore_stderr = true;
+        args.container_image_id = Some("sha256:image with quote's".to_string());
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: PathBuf::from("/tmp/ref with quote's"),
+                label: "ref",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: PathBuf::from("/tmp/dut"),
+                label: "dut",
+            },
+        };
+        let case_set = Path::new("/tmp/cases with quote's.json");
+        let parts = build_failure_input_command_parts(&args, 41, &paths, case_set);
+        assert_eq!(
+            &parts[..6],
+            [
+                "cargo",
+                "run",
+                "--manifest-path",
+                "tools/coreutils_fuzzer/Cargo.toml",
+                "--",
+                "fuzz",
+            ]
+        );
+        let mut rust_argv = vec!["coreutils_fuzzer".to_string()];
+        rust_argv.extend(parts[5..].iter().cloned());
+        let parsed = Cli::try_parse_from(rust_argv).unwrap();
+        let CliCommand::Fuzz(parsed) = parsed.command else {
+            unreachable!()
+        };
+        assert_eq!(parsed.common.case_set.as_deref(), Some(case_set));
+        assert_eq!(parsed.common.seed, Some(41));
+        assert_eq!(parsed.common.iterations, 1);
+        assert_eq!(parsed.common.opts.as_deref(), Some("-n --debug"));
+        assert_eq!(
+            parsed.common.ref_bin.as_deref(),
+            Some(paths.reference.path.as_path())
+        );
+        assert_eq!(parsed.dut_bin.as_deref(), Some(paths.dut.path.as_path()));
+        assert_eq!(parsed.common.workdir_mode, WorkdirMode::Shared);
+        assert_eq!(parsed.process_timeout_seconds, 13);
+        assert!(parsed.ignore_stderr);
+        assert_eq!(parsed.common.container_image, "sha256:image with quote's");
+        let command = build_failure_input_one_liner(&args, 41, &paths, case_set);
+        assert!(command.contains("/tmp/cases with quote'\"'\"'s.json'"));
+        assert!(command.contains("sha256:image with quote'\"'\"'s'"));
+    }
 
     // Saved provenance accepts a normalized absolute path without requiring it to exist.
     #[test]
@@ -595,10 +838,12 @@ mod tests {
         let context = ReproExecutionContext {
             environment: BTreeMap::new(),
             umask: 0o022,
-            read_only_time_anchor_seconds: None,
+
             work_root_base: Some(Some(PathBuf::from("/fuzz"))),
             container_image: "tag".to_string(),
             container_image_id: "sha256:image with quote's".to_string(),
+            compose_provenance: None,
+
             target_uid: 2001,
             target_gid: 3001,
         };

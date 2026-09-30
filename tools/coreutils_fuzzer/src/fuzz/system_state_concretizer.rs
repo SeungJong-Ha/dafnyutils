@@ -1,7 +1,5 @@
-use super::execution::{
-    control_chmod_fixture_node, restore_path_times, suppress_fixture_atime_updates_for_node,
-    times_from_metadata,
-};
+use super::comparison::fs_snapshot::{restore_path_times, times_from_metadata};
+use super::execution::control_chmod_fixture_node;
 use super::{DirSpec, FixtureBlueprint, FsTimes, HostInodeKeySnapshot};
 use crate::utils::paths::format_path_error;
 use std::collections::{BTreeMap, BTreeSet};
@@ -9,29 +7,6 @@ use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
-
-const READ_ONLY_DAY_SECONDS: i64 = 86_400;
-const READ_ONLY_RECENT_WINDOW_SECONDS: i64 = 15_778_476;
-const READ_ONLY_TIME_PROFILES: [(i64, i64, i64, i64); 3] = [
-    (
-        -READ_ONLY_DAY_SECONDS,
-        123_456_789,
-        -2 * READ_ONLY_RECENT_WINDOW_SECONDS,
-        234_567_890,
-    ),
-    (
-        -2 * READ_ONLY_RECENT_WINDOW_SECONDS - READ_ONLY_DAY_SECONDS,
-        345_678_901,
-        2 * READ_ONLY_DAY_SECONDS,
-        456_789_012,
-    ),
-    (
-        3 * READ_ONLY_DAY_SECONDS,
-        567_890_123,
-        -2 * READ_ONLY_DAY_SECONDS,
-        678_901_234,
-    ),
-];
 
 pub(crate) fn reset_dir(path: &Path) -> Result<(), String> {
     if path.exists() {
@@ -41,6 +16,7 @@ pub(crate) fn reset_dir(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_iteration_dirs(
     work_root: &Path,
     shared_root: Option<&Path>,
@@ -60,67 +36,109 @@ pub(crate) fn prepare_iteration_dirs(
     Ok((ref_dir, dut_dir))
 }
 
-#[cfg(test)]
-pub(crate) fn prepare_read_only_iteration_dirs(
-    work_root: &Path,
-    shared_root: Option<&Path>,
-    iteration: usize,
-    fixture: &FixtureBlueprint,
-) -> Result<(PathBuf, PathBuf), String> {
-    prepare_read_only_iteration_dirs_at(
-        work_root,
-        shared_root,
-        iteration,
-        fixture,
-        current_read_only_time_anchor()?,
-    )
+/// Restores only validated saved atime/mtime inputs onto a fresh fixture clone.
+pub(crate) fn restore_fixture_time_inputs(
+    root: &Path,
+    saved: &BTreeMap<String, FsTimes>,
+) -> Result<(), String> {
+    restore_selected_time_inputs(root, saved, true)
 }
 
-pub(crate) fn prepare_read_only_iteration_dirs_at(
-    work_root: &Path,
-    shared_root: Option<&Path>,
-    iteration: usize,
-    fixture: &FixtureBlueprint,
-    time_anchor_seconds: i64,
-) -> Result<(PathBuf, PathBuf), String> {
-    validate_read_only_time_anchor(time_anchor_seconds)?;
-    let (ref_dir, dut_dir) =
-        stage_iteration_dirs(work_root, shared_root, iteration, fixture, false)?;
-    suppress_fixture_atime_updates(&ref_dir)?;
-    suppress_fixture_atime_updates(&dut_dir)?;
+/// Restores known reference prestate inputs after the cloned DUT has entered cwd.
+pub(crate) fn restore_observed_fixture_times(
+    root: &Path,
+    snapshot: &super::FsSnapshot,
+) -> Result<(), String> {
+    let saved = snapshot
+        .iter()
+        .filter(|(_, node)| node.kind != "inaccessible")
+        .map(|(path, node)| (path.clone(), node.times))
+        .collect();
+    restore_selected_time_inputs(root, &saved, false)
+}
+
+fn restore_selected_time_inputs(
+    root: &Path,
+    saved: &BTreeMap<String, FsTimes>,
+    require_complete: bool,
+) -> Result<(), String> {
     #[cfg(unix)]
-    apply_read_only_time_profiles(&ref_dir, &dut_dir, time_anchor_seconds)?;
-    apply_fixture_modes(&ref_dir, fixture)?;
-    apply_fixture_modes(&dut_dir, fixture)?;
-    Ok((ref_dir, dut_dir))
-}
-
-pub(crate) fn current_read_only_time_anchor() -> Result<i64, String> {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("failed to determine read-only fixture time anchor: {error}"))?;
-    let now = i64::try_from(elapsed.as_secs())
-        .map_err(|error| format!("read-only fixture time anchor is out of range: {error}"))?;
-    Ok(now - now.rem_euclid(READ_ONLY_DAY_SECONDS))
-}
-
-pub(crate) fn validate_read_only_time_anchor(anchor: i64) -> Result<(), String> {
-    if anchor.rem_euclid(READ_ONLY_DAY_SECONDS) != 0 {
-        return Err(format!(
-            "read-only fixture time anchor must be day-aligned: {anchor}"
-        ));
+    {
+        let nodes = if require_complete {
+            collect_fixture_nodes(root)?
+        } else {
+            use std::os::unix::fs::MetadataExt;
+            saved
+                .keys()
+                .map(|name| {
+                    let relative = Path::new(name);
+                    if name != "." && !is_safe_fixture_path(relative) {
+                        return Err(format!("invalid saved fixture time path: {name}"));
+                    }
+                    let path = root.join(relative);
+                    let metadata = fs::symlink_metadata(&path).map_err(|error| {
+                        format_path_error("read fixture time input metadata", &path, error)
+                    })?;
+                    Ok((
+                        relative.to_path_buf(),
+                        times_from_metadata(&metadata),
+                        metadata.file_type().is_symlink(),
+                        HostInodeKeySnapshot {
+                            device: metadata.dev(),
+                            inode: metadata.ino(),
+                        },
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+        let mut aliases = BTreeMap::new();
+        let mut restored = Vec::new();
+        for (relative, _, is_symlink, key) in nodes {
+            let name = if relative.as_os_str().is_empty() {
+                "."
+            } else {
+                relative
+                    .to_str()
+                    .ok_or("replay fixture path is not UTF-8")?
+            };
+            let times = *saved
+                .get(name)
+                .ok_or_else(|| format!("saved fixture time input missing at {name}"))?;
+            if !(0..1_000_000_000).contains(&times.atime_nsec)
+                || !(0..1_000_000_000).contains(&times.mtime_nsec)
+            {
+                return Err(format!("invalid saved fixture timestamp at {name}"));
+            }
+            let values = (
+                times.atime_sec,
+                times.atime_nsec,
+                times.mtime_sec,
+                times.mtime_nsec,
+            );
+            if aliases
+                .insert(key, values)
+                .is_some_and(|previous| previous != values)
+            {
+                return Err(format!(
+                    "saved fixture timestamps disagree across aliases at {name}"
+                ));
+            }
+            restored.push((relative, times, is_symlink));
+        }
+        if restored.len() != saved.len() {
+            return Err("saved fixture time path population differs".into());
+        }
+        // All keys were matched to actual fixture paths before any timestamp writes.
+        for (relative, times, is_symlink) in restored.into_iter().rev() {
+            restore_path_times(&root.join(relative), times, is_symlink)?;
+        }
+        Ok(())
     }
-    for (atime_offset, _, mtime_offset, _) in READ_ONLY_TIME_PROFILES {
-        anchor
-            .checked_add(atime_offset)
-            .ok_or_else(|| format!("read-only fixture time anchor is out of range: {anchor}"))?;
-        anchor
-            .checked_add(mtime_offset)
-            .ok_or_else(|| format!("read-only fixture time anchor is out of range: {anchor}"))?;
+    #[cfg(not(unix))]
+    {
+        let _ = (root, saved, require_complete);
+        Err("replay time input restoration requires Unix".into())
     }
-    Ok(())
 }
 
 pub(crate) fn stage_iteration_dirs(
@@ -228,108 +246,8 @@ fn synchronize_clone_times(reference: &Path, dut: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(unix)]
-fn apply_read_only_time_profiles(reference: &Path, dut: &Path, anchor: i64) -> Result<(), String> {
-    let reference_nodes = collect_fixture_nodes(reference)?;
-    let dut_nodes: BTreeMap<_, _> = collect_fixture_nodes(dut)?
-        .into_iter()
-        .map(|(path, _, is_symlink, host_key)| (path, (is_symlink, host_key)))
-        .collect();
-    if reference_nodes.len() != dut_nodes.len() {
-        return Err("reference and DUT fixture trees differ before time profiling".to_string());
-    }
-
-    let mut reference_to_dut = BTreeMap::new();
-    let mut dut_to_reference = BTreeMap::new();
-    let mut representatives = Vec::new();
-    for (relative_path, _, reference_is_symlink, reference_key) in reference_nodes {
-        let Some((dut_is_symlink, dut_key)) = dut_nodes.get(&relative_path).copied() else {
-            return Err(format!(
-                "DUT fixture is missing `{}` before time profiling",
-                relative_path.display()
-            ));
-        };
-        if reference_is_symlink != dut_is_symlink {
-            return Err(format!(
-                "fixture node kind differs at `{}` before time profiling",
-                relative_path.display()
-            ));
-        }
-        if let Some(mapped) = reference_to_dut.get(&reference_key) {
-            if *mapped != dut_key {
-                return Err(format!(
-                    "DUT fixture splits a hard-link alias at `{}` before time profiling",
-                    relative_path.display()
-                ));
-            }
-        } else {
-            reference_to_dut.insert(reference_key, dut_key);
-            representatives.push((relative_path.clone(), reference_is_symlink));
-        }
-        if let Some(mapped) = dut_to_reference.get(&dut_key) {
-            if *mapped != reference_key {
-                return Err(format!(
-                    "DUT fixture merges distinct inodes at `{}` before time profiling",
-                    relative_path.display()
-                ));
-            }
-        } else {
-            dut_to_reference.insert(dut_key, reference_key);
-        }
-    }
-
-    for (profile_index, (relative_path, is_symlink)) in representatives.into_iter().enumerate() {
-        let (atime_offset, atime_nsec, mtime_offset, mtime_nsec) =
-            READ_ONLY_TIME_PROFILES[profile_index % READ_ONLY_TIME_PROFILES.len()];
-        let times = FsTimes {
-            atime_sec: anchor
-                .checked_add(atime_offset)
-                .ok_or_else(|| "read-only atime profile overflowed".to_string())?,
-            atime_nsec,
-            mtime_sec: anchor
-                .checked_add(mtime_offset)
-                .ok_or_else(|| "read-only mtime profile overflowed".to_string())?,
-            mtime_nsec,
-            // restore_path_times changes only atime and mtime; ctime remains host-controlled.
-            ctime_sec: 0,
-            ctime_nsec: 0,
-        };
-        restore_path_times(&reference.join(&relative_path), times, is_symlink)?;
-        restore_path_times(&dut.join(&relative_path), times, is_symlink)?;
-        for (label, path) in [
-            ("reference", reference.join(&relative_path)),
-            ("DUT", dut.join(&relative_path)),
-        ] {
-            let observed = times_from_metadata(&fs::symlink_metadata(&path).map_err(|error| {
-                format_path_error("verify read-only fixture times", &path, error)
-            })?);
-            if (
-                observed.atime_sec,
-                observed.atime_nsec,
-                observed.mtime_sec,
-                observed.mtime_nsec,
-            ) != (
-                times.atime_sec,
-                times.atime_nsec,
-                times.mtime_sec,
-                times.mtime_nsec,
-            ) {
-                return Err(format!(
-                    "{label} fixture did not preserve the requested time profile at `{}`",
-                    relative_path.display()
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 fn control_chmod_fixture_tree(root: &Path) -> Result<(), String> {
     control_fixture_tree(root, control_chmod_fixture_node)
-}
-
-pub(crate) fn suppress_fixture_atime_updates(root: &Path) -> Result<(), String> {
-    control_fixture_tree(root, suppress_fixture_atime_updates_for_node)
 }
 
 fn control_fixture_tree(
@@ -511,6 +429,19 @@ pub(crate) fn validate_fixture(fixture: &FixtureBlueprint) -> Result<(), String>
                 hardlink.source_relative_path.display()
             ));
         }
+        if let Some(symlink) = fixture
+            .symlinks
+            .iter()
+            .find(|symlink| symlink.relative_path == hardlink.source_relative_path)
+        {
+            if !symlink_target_stays_within_fixture(&hardlink.relative_path, &symlink.target) {
+                return Err(format!(
+                    "fixture hardlink alias of symlink escapes fixture root: `{}` -> `{}`",
+                    hardlink.relative_path.display(),
+                    symlink.target.display()
+                ));
+            }
+        }
         for path in [&hardlink.relative_path, &hardlink.source_relative_path] {
             if path
                 .ancestors()
@@ -553,7 +484,7 @@ pub(crate) fn validate_fixture(fixture: &FixtureBlueprint) -> Result<(), String>
     Ok(())
 }
 
-fn symlink_target_stays_within_fixture(link: &Path, target: &Path) -> bool {
+pub(crate) fn symlink_target_stays_within_fixture(link: &Path, target: &Path) -> bool {
     if target.as_os_str().is_empty() || target.is_absolute() {
         return false;
     }
@@ -599,7 +530,7 @@ fn prepare_iteration_root(
     Ok(root)
 }
 
-fn clone_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn clone_fixture_tree(source: &Path, destination: &Path) -> Result<(), String> {
     reset_dir(destination)?;
     let status = Command::new("cp")
         .arg("-a")
@@ -699,17 +630,44 @@ pub(crate) fn set_fixture_owner(root: &Path, uid: u32, gid: u32) -> Result<(), S
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{
-        apply_fixture_modes, materialize_fixture, prepare_read_only_iteration_dirs,
-        restore_path_times, stage_iteration_dirs, times_from_metadata, validate_fixture,
-        READ_ONLY_RECENT_WINDOW_SECONDS,
-    };
-    use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, FsTimes, HardlinkSpec, SymlinkSpec};
-    use std::collections::BTreeSet;
+    use super::{apply_fixture_modes, materialize_fixture, stage_iteration_dirs, validate_fixture};
+    use crate::fuzz::{DirSpec, FileSpec, FixtureBlueprint, HardlinkSpec, SymlinkSpec};
     use std::fs;
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    // Conflicting saved alias times are rejected before restoring any fixture metadata.
+    #[test]
+    fn replay_time_inputs_reject_conflicting_hardlink_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("a"), b"data").unwrap();
+        fs::hard_link(root.path().join("a"), root.path().join("b")).unwrap();
+        let mut saved: std::collections::BTreeMap<_, _> =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs(root.path())
+                .unwrap()
+                .into_iter()
+                .map(|(path, node)| (path, node.times))
+                .collect();
+        saved.get_mut("b").unwrap().mtime_sec += 1;
+        let error = super::restore_fixture_time_inputs(root.path(), &saved).unwrap_err();
+        assert!(error.contains("disagree across aliases"), "{error}");
+    }
+
+    // A malformed saved subsecond timestamp cannot be used as a replay fixture input.
+    #[test]
+    fn replay_time_inputs_reject_invalid_nanoseconds() {
+        let root = tempfile::tempdir().unwrap();
+        let mut saved: std::collections::BTreeMap<_, _> =
+            crate::fuzz::comparison::fs_snapshot::snapshot_fs(root.path())
+                .unwrap()
+                .into_iter()
+                .map(|(path, node)| (path, node.times))
+                .collect();
+        saved.get_mut(".").unwrap().atime_nsec = 1_000_000_000;
+        assert!(super::restore_fixture_time_inputs(root.path(), &saved)
+            .unwrap_err()
+            .contains("invalid saved fixture timestamp"));
+    }
 
     // Replay fixture validation rejects traversal before an external sentinel can be overwritten.
     #[test]
@@ -777,6 +735,83 @@ mod tests {
         validate_fixture(&fixture).unwrap();
     }
 
+    // A relative symlink hardlink alias must not resolve outside the fixture from its own path.
+    #[test]
+    fn fixture_validation_rejects_escaping_relative_symlink_alias() {
+        let fixture = FixtureBlueprint {
+            directories: vec![DirSpec {
+                relative_path: PathBuf::from("v7bn4r02"),
+                mode: 0o755,
+            }],
+            files: Vec::new(),
+            symlinks: vec![SymlinkSpec {
+                relative_path: PathBuf::from("v7bn4r02/.yb3zcp-sym"),
+                target: PathBuf::from("../qlouf/eqt3ih9-o/.8v2cy-0vp.cfg"),
+            }],
+            hardlinks: vec![HardlinkSpec {
+                relative_path: PathBuf::from("__yd2q.bin"),
+                source_relative_path: PathBuf::from("v7bn4r02/.yb3zcp-sym"),
+            }],
+        };
+
+        let error = validate_fixture(&fixture).unwrap_err();
+
+        assert!(error.contains("hardlink alias of symlink escapes fixture root"));
+    }
+
+    // A valid relative symlink alias resolves from its own parent while staying in the fixture.
+    #[test]
+    fn materialize_fixture_preserves_internal_relative_symlink_alias() {
+        let root = tempfile::tempdir().unwrap();
+        let fixture = FixtureBlueprint {
+            directories: vec![
+                DirSpec {
+                    relative_path: PathBuf::from("nested"),
+                    mode: 0o755,
+                },
+                DirSpec {
+                    relative_path: PathBuf::from("deep/nested"),
+                    mode: 0o755,
+                },
+            ],
+            files: vec![
+                FileSpec {
+                    relative_path: PathBuf::from("target"),
+                    bytes: b"source target".to_vec(),
+                    mode: 0o644,
+                },
+                FileSpec {
+                    relative_path: PathBuf::from("deep/target"),
+                    bytes: b"alias target".to_vec(),
+                    mode: 0o644,
+                },
+            ],
+            symlinks: vec![SymlinkSpec {
+                relative_path: PathBuf::from("nested/link"),
+                target: PathBuf::from("../target"),
+            }],
+            hardlinks: vec![HardlinkSpec {
+                relative_path: PathBuf::from("deep/nested/alias"),
+                source_relative_path: PathBuf::from("nested/link"),
+            }],
+        };
+
+        materialize_fixture(root.path(), &fixture).unwrap();
+
+        assert_eq!(
+            fs::read_link(root.path().join("deep/nested/alias")).unwrap(),
+            PathBuf::from("../target")
+        );
+        assert_eq!(
+            fs::canonicalize(root.path().join("deep/nested/alias")).unwrap(),
+            fs::canonicalize(root.path().join("deep/target")).unwrap()
+        );
+        assert_eq!(
+            fs::read(root.path().join("deep/nested/alias")).unwrap(),
+            b"alias target"
+        );
+    }
+
     // Searchable staging must defer the fixture's exact directory mode until explicit finalization.
     #[test]
     fn staged_iteration_dirs_are_searchable_until_exact_mode_finalization() {
@@ -810,190 +845,6 @@ mod tests {
                     & 0o7777,
                 0o000
             );
-        }
-    }
-
-    // A prepared read-only fixture must preserve regular-file and directory atimes during traversal.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn prepared_read_only_iteration_dirs_preserve_regular_node_atimes() {
-        let root = tempfile::tempdir().unwrap();
-        let fixture = FixtureBlueprint {
-            directories: vec![
-                DirSpec {
-                    relative_path: PathBuf::from("listed"),
-                    mode: 0o700,
-                },
-                DirSpec {
-                    relative_path: PathBuf::from("denied"),
-                    mode: 0o000,
-                },
-            ],
-            files: vec![
-                FileSpec {
-                    relative_path: PathBuf::from("listed/entry"),
-                    bytes: b"entry".to_vec(),
-                    mode: 0o600,
-                },
-                FileSpec {
-                    relative_path: PathBuf::from("unreadable"),
-                    bytes: b"unreadable".to_vec(),
-                    mode: 0o000,
-                },
-            ],
-            symlinks: Vec::new(),
-            hardlinks: Vec::new(),
-        };
-        let (reference, dut) =
-            prepare_read_only_iteration_dirs(root.path(), None, 1, &fixture).unwrap();
-
-        for role_root in [&reference, &dut] {
-            assert_eq!(
-                fs::symlink_metadata(role_root.join("denied"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o7777,
-                0o000
-            );
-            assert_eq!(
-                fs::symlink_metadata(role_root.join("unreadable"))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o7777,
-                0o000
-            );
-
-            let listed = role_root.join("listed");
-            let entry = listed.join("entry");
-            let controlled_atime = (1_600_000_000, 123);
-            let mut before = Vec::new();
-            for path in [&listed, &entry] {
-                let original = times_from_metadata(&fs::symlink_metadata(path).unwrap());
-                restore_path_times(
-                    path,
-                    FsTimes {
-                        atime_sec: controlled_atime.0,
-                        atime_nsec: controlled_atime.1,
-                        mtime_sec: original.mtime_sec,
-                        mtime_nsec: original.mtime_nsec,
-                        ctime_sec: original.ctime_sec,
-                        ctime_nsec: original.ctime_nsec,
-                    },
-                    false,
-                )
-                .unwrap();
-                before.push(times_from_metadata(&fs::symlink_metadata(path).unwrap()));
-            }
-
-            assert_eq!(fs::read_dir(&listed).unwrap().count(), 1);
-            assert_eq!(fs::read(&entry).unwrap(), b"entry");
-
-            for (path, before) in [listed, entry].iter().zip(before) {
-                let after = times_from_metadata(&fs::symlink_metadata(path).unwrap());
-                assert_eq!(
-                    (after.atime_sec, after.atime_nsec),
-                    (before.atime_sec, before.atime_nsec)
-                );
-            }
-        }
-    }
-
-    // A realistic metadata fixture must give both clones varied times without splitting hard-link aliases.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn prepared_read_only_iteration_dirs_assign_inode_time_profiles() {
-        let root = tempfile::tempdir().unwrap();
-        let fixture = FixtureBlueprint {
-            directories: vec![DirSpec {
-                relative_path: PathBuf::from("listed"),
-                mode: 0o700,
-            }],
-            files: vec![
-                FileSpec {
-                    relative_path: PathBuf::from("listed/primary"),
-                    bytes: b"primary".to_vec(),
-                    mode: 0o600,
-                },
-                FileSpec {
-                    relative_path: PathBuf::from("listed/second"),
-                    bytes: b"second".to_vec(),
-                    mode: 0o600,
-                },
-            ],
-            symlinks: vec![SymlinkSpec {
-                relative_path: PathBuf::from("entry-link"),
-                target: PathBuf::from("listed/primary"),
-            }],
-            hardlinks: vec![HardlinkSpec {
-                relative_path: PathBuf::from("listed/primary-hard"),
-                source_relative_path: PathBuf::from("listed/primary"),
-            }],
-        };
-        let (reference, dut) =
-            prepare_read_only_iteration_dirs(root.path(), None, 2, &fixture).unwrap();
-
-        let mut atimes = BTreeSet::new();
-        let mut mtimes = BTreeSet::new();
-        for relative in [
-            ".",
-            "entry-link",
-            "listed",
-            "listed/primary",
-            "listed/primary-hard",
-            "listed/second",
-        ] {
-            let reference_times =
-                times_from_metadata(&fs::symlink_metadata(reference.join(relative)).unwrap());
-            let dut_times = times_from_metadata(&fs::symlink_metadata(dut.join(relative)).unwrap());
-            assert_eq!(
-                (
-                    reference_times.atime_sec,
-                    reference_times.atime_nsec,
-                    reference_times.mtime_sec,
-                    reference_times.mtime_nsec,
-                ),
-                (
-                    dut_times.atime_sec,
-                    dut_times.atime_nsec,
-                    dut_times.mtime_sec,
-                    dut_times.mtime_nsec,
-                ),
-                "{relative}"
-            );
-            atimes.insert((reference_times.atime_sec, reference_times.atime_nsec));
-            mtimes.insert((reference_times.mtime_sec, reference_times.mtime_nsec));
-        }
-
-        assert!(atimes.len() >= 3);
-        assert!(mtimes.len() >= 3);
-        assert!(atimes.iter().any(|(_, nanoseconds)| *nanoseconds != 0));
-        assert!(mtimes.iter().any(|(_, nanoseconds)| *nanoseconds != 0));
-
-        let now = i64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs(),
-        )
-        .unwrap();
-        for observed in [&atimes, &mtimes] {
-            assert!(observed.iter().any(|(seconds, _)| {
-                now - READ_ONLY_RECENT_WINDOW_SECONDS < *seconds && *seconds <= now
-            }));
-            assert!(observed
-                .iter()
-                .any(|(seconds, _)| *seconds <= now - READ_ONLY_RECENT_WINDOW_SECONDS));
-            assert!(observed.iter().any(|(seconds, _)| *seconds > now));
-        }
-
-        for role_root in [&reference, &dut] {
-            let source = fs::symlink_metadata(role_root.join(Path::new("listed/primary"))).unwrap();
-            let alias =
-                fs::symlink_metadata(role_root.join(Path::new("listed/primary-hard"))).unwrap();
-            assert_eq!((source.dev(), source.ino()), (alias.dev(), alias.ino()));
-            assert_eq!(times_from_metadata(&source), times_from_metadata(&alias));
         }
     }
 }

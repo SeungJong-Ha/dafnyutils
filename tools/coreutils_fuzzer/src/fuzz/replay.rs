@@ -1,14 +1,14 @@
-use super::compare::{mismatch_signature, report_mismatch};
+use super::comparison::compare::{mismatch_signature, report_mismatch};
+use super::comparison::evaluation::CaseVerdict;
 use super::container::CommandCaseExecutor;
-use super::fixture::{validate_fixture, validate_read_only_time_anchor};
-use super::repro::{decode_manifest, save_case_evaluation, ReproManifest};
+use super::repro::{decode_manifest, ReproManifest};
 use super::runtime::resolve_fuzz_paths;
 use super::shrink::evaluate_case_with_executor;
-use super::time_coverage::{CaseVerdict, EvaluatedComparison};
+use super::system_state_concretizer::validate_fixture;
 use crate::utils::capabilities::require_fuzz_capability;
-use crate::utils::chmod_campaign::{canonical_process_environment, selected_chmod_umask};
 use crate::utils::cli::{CampaignArgs, FuzzArgs, ReplayArgs};
-use crate::{fuzzer_outcome_marker, INCOMPLETE_COVERAGE, REPLAY_NOT_REPRODUCED, SEMANTIC_MISMATCH};
+use crate::utils::execution_context::{canonical_process_environment, selected_process_umask};
+use crate::{fuzzer_outcome_marker, REPLAY_NOT_REPRODUCED, SEMANTIC_MISMATCH};
 use std::fs;
 use std::path::{Component, Path};
 
@@ -59,9 +59,16 @@ pub(crate) fn run_replay(args: ReplayArgs) -> Result<(), String> {
             .process_timeout_seconds
             .unwrap_or(manifest.process_timeout_seconds),
         ignore_stderr: manifest.comparison.ignore_stderr,
-        read_only_time_anchor_seconds: manifest.execution_context.read_only_time_anchor_seconds,
+
         process_umask: Some(manifest.execution_context.umask),
+        replay_fixture_times: Some(
+            manifest
+                .comparison
+                .expected_replay_verdict
+                .fixture_time_inputs()?,
+        ),
         container_image_id: None,
+        compose_provenance: Some(Box::new(super::container::compose_provenance()?)),
     };
     let paths = resolve_fuzz_paths(&fuzz_args)?;
     let mut executor = CommandCaseExecutor::create(&fuzz_args, &paths)?;
@@ -76,21 +83,6 @@ pub(crate) fn run_replay(args: ReplayArgs) -> Result<(), String> {
         &manifest.case,
     )?;
 
-    if evaluation.comparison.verdict() == CaseVerdict::IncompleteCoverage {
-        let evidence = match save_case_evaluation(
-            &fuzz_args,
-            manifest.seed,
-            manifest.iteration,
-            &paths,
-            &evaluation,
-        ) {
-            Ok(path) => format!("raw observation bundle: {}", path.display()),
-            Err(error) => format!("failed to save raw observation bundle: {error}"),
-        };
-        return Err(format!("{}\nreplay time coverage remains incomplete for util={}: {:?}\noriginal bundle: {}\n{evidence}",
-                fuzzer_outcome_marker(INCOMPLETE_COVERAGE), manifest.util,
-                evaluation.comparison.time_coverage, args.repro.display()));
-    }
     let actual_verdict = evaluation.replay_verdict.clone();
     let scope = format!(
         "replay schema={} original_work_root_base={} container_image_id={}",
@@ -106,12 +98,8 @@ pub(crate) fn run_replay(args: ReplayArgs) -> Result<(), String> {
             ),
         executor.image_id().unwrap_or("local-test"),
     );
-    let actual_comparison = EvaluatedComparison::without_time_observations(
-        actual_verdict.comparison.clone(),
-        require_fuzz_capability(&manifest.util)?.time_coverage,
-    );
+    let actual_comparison = evaluation.comparison.clone();
     match actual_comparison.verdict() {
-        CaseVerdict::IncompleteCoverage => unreachable!("current incomplete coverage returned before replay verdict comparison"),
         CaseVerdict::Match => Err(format!(
             "{}\nreplay did not reproduce the saved {:?} mismatch for util={} seed={} iteration={}\n{scope}",
             fuzzer_outcome_marker(REPLAY_NOT_REPRODUCED),
@@ -122,34 +110,46 @@ pub(crate) fn run_replay(args: ReplayArgs) -> Result<(), String> {
         )),
         CaseVerdict::Mismatch => {
             let compare = actual_verdict.comparison.clone();
-            let actual_signature = mismatch_signature(&compare, &actual_verdict.reference_identity,
-                &actual_verdict.dut_identity).expect("mismatch comparisons have a mismatch signature");
-            if Some(actual_signature) != manifest.comparison.expected_mismatch_signature
-                || actual_verdict != manifest.comparison.expected_replay_verdict
+            let actual_signature = mismatch_signature(
+                &compare,
+                &actual_verdict.reference_identity,
+                &actual_verdict.dut_identity,
+            );
+            let mismatch_kind = actual_signature
+                .map(|signature| format!("{signature:?}"))
+                .unwrap_or_else(|| "Observable".to_string());
+            if actual_signature != manifest.comparison.expected_mismatch_signature
+                || !actual_comparison.reproduces(&manifest.comparison.evaluated)
+                || !actual_verdict.reproduces(&manifest.comparison.expected_replay_verdict)?
             {
                 return Err(format!(
-                    "{}\nreplay produced a different verdict ({:?}), expected {:?}, for util={} seed={} iteration={}\n{scope}",
+                    "{}\nreplay produced a different verdict ({}), expected {:?}, for util={} seed={} iteration={}\n{scope}",
                     fuzzer_outcome_marker(REPLAY_NOT_REPRODUCED),
-                    actual_signature,
+                    mismatch_kind,
                     manifest.comparison.expected_mismatch_signature,
                     manifest.util,
                     manifest.seed,
                     manifest.iteration
                 ));
             }
-            report_mismatch(
-                manifest.seed,
-                manifest.iteration,
-                &manifest.util,
-                &evaluation.case.argv,
-                &evaluation.reference,
-                &evaluation.dut,
-                &compare,
-            );
+            if actual_signature.is_some() {
+                report_mismatch(
+                    manifest.seed,
+                    manifest.iteration,
+                    &manifest.util,
+                    &evaluation.case.argv,
+                    &evaluation.reference,
+                    &evaluation.dut,
+                    &compare,
+                );
+            } else {
+                eprintln!("{}", fuzzer_outcome_marker(SEMANTIC_MISMATCH));
+                eprintln!("Observable mismatch detected");
+            }
             Err(format!(
-                "{}\nreplay reproduced {:?} mismatch for util={} seed={} iteration={}\n{scope}",
+                "{}\nreplay reproduced {} mismatch for util={} seed={} iteration={}\n{scope}",
                 fuzzer_outcome_marker(SEMANTIC_MISMATCH),
-                actual_signature,
+                mismatch_kind,
                 manifest.util,
                 manifest.seed,
                 manifest.iteration
@@ -160,17 +160,16 @@ pub(crate) fn run_replay(args: ReplayArgs) -> Result<(), String> {
 
 fn validate_saved_verdict(manifest: &ReproManifest) -> Result<(), String> {
     let verdict = &manifest.comparison.expected_replay_verdict;
-    let expected = EvaluatedComparison::without_time_observations(
-        verdict.comparison.clone(),
-        require_fuzz_capability(&manifest.util)?.time_coverage,
-    );
-    if manifest.comparison.evaluated != expected {
-        return Err("replay manifest temporal classification disagrees with the current capability and captured evidence".to_string());
+    let evaluated = &manifest.comparison.evaluated;
+    verdict.validate_time_evidence()?;
+    if evaluated.execution != verdict.execution {
+        return Err("saved evaluation execution evidence disagrees with replay".into());
     }
-    if expected.verdict() == CaseVerdict::Match {
-        return Err(
-            "replay manifest expected verdict is neither a mismatch nor incomplete".to_string(),
-        );
+    if evaluated.observable != verdict.comparison {
+        return Err("replay manifest observable comparison disagrees with saved verdict".into());
+    }
+    if evaluated.verdict() == CaseVerdict::Match {
+        return Err("replay manifest expected verdict is not a mismatch".to_string());
     }
     let derived = mismatch_signature(
         &verdict.comparison,
@@ -193,24 +192,12 @@ fn validate_replay_context(manifest: &ReproManifest) -> Result<(), String> {
                 .to_string(),
         );
     }
-    crate::utils::chmod_campaign::validate_process_umask(manifest.execution_context.umask)?;
-    let expected_umask =
-        (manifest.util == "chmod").then(|| selected_chmod_umask(manifest.seed, manifest.iteration));
-    if expected_umask.is_some_and(|expected| manifest.execution_context.umask != expected) {
+    crate::utils::execution_context::validate_process_umask(manifest.execution_context.umask)?;
+    let expected_umask = selected_process_umask(manifest.seed, manifest.iteration);
+    if manifest.execution_context.umask != expected_umask {
         return Err(format!(
             "replay manifest umask {:?} does not match expected {:?}",
             manifest.execution_context.umask, expected_umask
-        ));
-    }
-    let anchor = manifest.execution_context.read_only_time_anchor_seconds;
-    if matches!(manifest.util.as_str(), "ls" | "stat") {
-        validate_read_only_time_anchor(anchor.ok_or_else(|| {
-            "ls/stat replay manifest is missing its timestamp anchor".to_string()
-        })?)?;
-    } else if anchor.is_some() {
-        return Err(format!(
-            "{} replay manifest must not set a read-only timestamp anchor",
-            manifest.util
         ));
     }
     Ok(())
@@ -309,7 +296,7 @@ mod tests {
             &evaluation.case,
             &evaluation.reference,
             &evaluation.dut,
-            &evaluation.comparison.observable,
+            &evaluation.comparison,
             evaluation.mismatch_signature.as_ref(),
             &evaluation.replay_verdict,
             &evaluation.pre_fs,
@@ -396,7 +383,7 @@ mod tests {
             &evaluation.case,
             &evaluation.reference,
             &evaluation.dut,
-            &evaluation.comparison.observable,
+            &evaluation.comparison,
             evaluation.mismatch_signature.as_ref(),
             &evaluation.replay_verdict,
             &evaluation.pre_fs,
@@ -419,6 +406,7 @@ mod tests {
         );
         assert!(error.contains("replay reproduced ProcessOutcome mismatch"));
         assert_eq!(manifest.schema_version, REPRO_SCHEMA_VERSION);
+        assert_eq!(manifest.comparison.evaluated, evaluation.comparison);
         assert_eq!(manifest.case, evaluation.case);
         assert_eq!(
             fs::read(bundle.join("stdin.bin")).unwrap(),
@@ -593,6 +581,72 @@ mod tests {
         assert!(error.contains("different verdict (ProcessOutcome)"));
     }
 
+    // Changed version bytes cannot reproduce a saved stdout mismatch with the same category.
+    #[cfg(unix)]
+    #[test]
+    fn replay_rejects_changed_version_bytes_with_same_stdout_signature() {
+        use crate::fuzz::comparison::compare::{MismatchSignature, ReplayStreamEvidence};
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let reference = root.path().join("reference.sh");
+        let dut = root.path().join("dut.sh");
+        fs::write(
+            &reference,
+            b"#!/bin/sh\nprintf 'cat (GNU coreutils) 9.4\\n'\n",
+        )
+        .unwrap();
+        fs::write(&dut, b"#!/bin/sh\nprintf 'cat (GNU coreutils) 9.3\\n'\n").unwrap();
+        fs::set_permissions(&reference, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&dut, fs::Permissions::from_mode(0o755)).unwrap();
+        let args = mismatch_args(reference.clone(), dut.clone());
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: reference,
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: dut.clone(),
+                label: "dut",
+            },
+        };
+        let case = GeneratedCase {
+            argv: vec!["--version".to_string()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: PathBuf::from("."),
+        };
+        let bundle = save_case_bundle(root.path(), &args, &paths, &case);
+        let manifest: ReproManifest =
+            serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest.comparison.expected_mismatch_signature,
+            Some(MismatchSignature::Stdout)
+        );
+        assert_eq!(
+            manifest.comparison.expected_replay_verdict.dut_stdout,
+            ReplayStreamEvidence::RawBytes(b"cat (GNU coreutils) 9.3\n".to_vec())
+        );
+        fs::write(&dut, b"#!/bin/sh\nprintf 'cat (GNU coreutils) 9.2\\n'\n").unwrap();
+
+        let error = run_replay(parse_replay(&bundle)).unwrap_err();
+
+        assert!(
+            error.contains(&format!(
+                "{FUZZER_OUTCOME_MARKER_PREFIX}{REPLAY_NOT_REPRODUCED}"
+            )),
+            "{error}"
+        );
+        assert!(error.contains("different verdict (Stdout)"), "{error}");
+    }
+
     // A different same-path filesystem mutation cannot satisfy the saved coarse fs category.
     #[cfg(unix)]
     #[test]
@@ -693,6 +747,38 @@ mod tests {
         assert!(error.contains("environment does not match"));
     }
 
+    // A saved non-chmod mask outside its seed/iteration schedule is rejected before replay.
+    #[test]
+    fn replay_rejects_changed_non_chmod_schedule_umask() {
+        let root = tempfile::tempdir().unwrap();
+        let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
+        let case = GeneratedCase {
+            argv: Vec::new(),
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: b"saved stdin\n".to_vec(),
+            cwd: ".".into(),
+        };
+        let bundle = save_case_bundle(root.path(), &args, &native_paths(), &case);
+        let manifest_path = bundle.join("manifest.json");
+        let mut manifest: ReproManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.execution_context.umask = 0o077;
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = run_replay(parse_replay(&bundle)).unwrap_err();
+
+        assert!(error.contains("does not match expected"), "{error}");
+    }
+
     // The redundant leading signature cannot disagree with the structured saved verdict.
     #[test]
     fn replay_rejects_inconsistent_saved_signature() {
@@ -714,7 +800,7 @@ mod tests {
         let mut manifest: ReproManifest =
             serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
         manifest.comparison.expected_mismatch_signature =
-            Some(crate::fuzz::compare::MismatchSignature::Stderr);
+            Some(crate::fuzz::comparison::compare::MismatchSignature::Stderr);
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&manifest).unwrap(),
@@ -726,54 +812,28 @@ mod tests {
         assert!(error.contains("disagrees with saved verdict"));
     }
 
-    // A non-read-only utility cannot smuggle an unrelated wall-clock anchor into replay.
-    #[test]
-    fn replay_rejects_unexpected_timestamp_anchor() {
-        let root = tempfile::tempdir().unwrap();
-        let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
-        let case = GeneratedCase {
-            argv: Vec::new(),
-            fixture: FixtureBlueprint {
-                directories: Vec::new(),
-                files: Vec::new(),
-                symlinks: Vec::new(),
-                hardlinks: Vec::new(),
-            },
-            stdin: b"saved stdin\n".to_vec(),
-            cwd: PathBuf::from("."),
-        };
-        let bundle = save_case_bundle(root.path(), &args, &native_paths(), &case);
-        let manifest_path = bundle.join("manifest.json");
-        let mut manifest: ReproManifest =
-            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
-        manifest.execution_context.read_only_time_anchor_seconds = Some(1_699_920_000);
-        fs::write(
-            &manifest_path,
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
-        let error = run_replay(parse_replay(&bundle)).unwrap_err();
-
-        assert!(error.contains("must not set a read-only timestamp anchor"));
-    }
-
-    // Replay applies the saved normal-target umask even when it differs from the host default.
+    // Replay recreates a normal-target file with the saved seed/iteration schedule umask.
     #[cfg(unix)]
     #[test]
-    fn replay_reuses_saved_normal_process_umask() {
+    fn replay_reuses_saved_scheduled_process_umask() {
         use std::os::unix::fs::PermissionsExt;
 
         let root = tempfile::tempdir().unwrap();
         let creator = root.path().join("create.sh");
-        fs::write(&creator, b"#!/bin/sh\n: > created\nexit 1\n").unwrap();
+        fs::write(&creator, b"#!/bin/sh\nsleep 0.02\n: > created\nexit 1\n").unwrap();
+        let reference_creator = root.path().join("reference-create.sh");
+        fs::write(
+            &reference_creator,
+            b"#!/bin/sh\nsleep 0.02\n: > created\nexit 0\n",
+        )
+        .unwrap();
+        fs::set_permissions(&reference_creator, fs::Permissions::from_mode(0o755)).unwrap();
         fs::set_permissions(&creator, fs::Permissions::from_mode(0o755)).unwrap();
-        let mut args = mismatch_args(PathBuf::from("/bin/true"), creator.clone());
-        args.process_umask = Some(0o077);
+        let args = mismatch_args(reference_creator.clone(), creator.clone());
         let paths = ResolvedPaths {
             reference: ResolvedTarget {
                 kind: ExecKind::Native,
-                path: PathBuf::from("/bin/true"),
+                path: reference_creator,
                 label: "reference",
             },
             dut: ResolvedTarget {
@@ -797,12 +857,15 @@ mod tests {
 
         let error = run_replay(parse_replay(&bundle)).unwrap_err();
 
-        assert!(error.contains(&format!(
-            "{FUZZER_OUTCOME_MARKER_PREFIX}{SEMANTIC_MISMATCH}"
-        )));
+        assert!(
+            error.contains(&format!(
+                "{FUZZER_OUTCOME_MARKER_PREFIX}{SEMANTIC_MISMATCH}"
+            )),
+            "{error}"
+        );
         let manifest: ReproManifest =
             serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(manifest.execution_context.umask, 0o077);
+        assert_eq!(manifest.execution_context.umask, 0o005);
         let created = manifest
             .comparison
             .expected_replay_verdict
@@ -810,7 +873,7 @@ mod tests {
             .nodes
             .get("created")
             .unwrap();
-        assert_eq!(created.mode_octal, "0600");
+        assert_eq!(created.mode_octal, "0662");
     }
 
     // Replay validates every fixture path before a malicious bundle can overwrite external data.
@@ -857,7 +920,26 @@ mod tests {
     #[test]
     fn replay_restores_complete_case_inputs() {
         let root = tempfile::tempdir().unwrap();
-        let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
+        use std::os::unix::fs::PermissionsExt;
+        let reference = root.path().join("reference-cat");
+        let dut = root.path().join("dut-cat");
+        fs::write(&reference, b"#!/bin/sh\nsleep 0.02\n/bin/cat \"$@\"\n").unwrap();
+        fs::write(&dut, b"#!/bin/sh\nsleep 0.02\n/bin/cat \"$@\"\nexit 1\n").unwrap();
+        fs::set_permissions(&reference, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&dut, fs::Permissions::from_mode(0o755)).unwrap();
+        let args = mismatch_args(reference.clone(), dut.clone());
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: reference,
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: dut,
+                label: "dut",
+            },
+        };
         let case = GeneratedCase {
             argv: vec!["-".to_string(), "link".to_string(), "../alias".to_string()],
             fixture: FixtureBlueprint {
@@ -882,7 +964,7 @@ mod tests {
             stdin: b"saved stdin\n".to_vec(),
             cwd: PathBuf::from("work"),
         };
-        let bundle = save_case_bundle(root.path(), &args, &native_paths(), &case);
+        let bundle = save_case_bundle(root.path(), &args, &paths, &case);
 
         let error = run_replay(parse_replay(&bundle)).unwrap_err();
 
@@ -897,91 +979,6 @@ mod tests {
         assert_eq!(manifest.case, case);
     }
 
-    // Read-only utility replay reuses the saved timestamp anchor instead of wall-clock time.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn fresh_v6_incomplete_persists_before_scope_validation() {
-        let root = tempfile::tempdir().unwrap();
-        let mut args = mismatch_args(PathBuf::from("/bin/ls"), PathBuf::from("/bin/false"));
-        args.common.util = "ls".to_string();
-        args.read_only_time_anchor_seconds = Some(1_699_920_000);
-        let paths = ResolvedPaths {
-            reference: ResolvedTarget {
-                kind: ExecKind::Native,
-                path: PathBuf::from("/bin/ls"),
-                label: "reference",
-            },
-            dut: ResolvedTarget {
-                kind: ExecKind::Native,
-                path: PathBuf::from("/bin/false"),
-                label: "dut",
-            },
-        };
-        let case = GeneratedCase {
-            argv: vec![
-                "-n".to_string(),
-                "--time-style=+%s".to_string(),
-                ".".to_string(),
-            ],
-            fixture: FixtureBlueprint {
-                directories: vec![DirSpec {
-                    relative_path: PathBuf::from("nested"),
-                    mode: 0o755,
-                }],
-                files: vec![FileSpec {
-                    relative_path: PathBuf::from("nested/data"),
-                    bytes: b"metadata\n".to_vec(),
-                    mode: 0o640,
-                }],
-                symlinks: vec![SymlinkSpec {
-                    relative_path: PathBuf::from("link"),
-                    target: PathBuf::from("nested/data"),
-                }],
-                hardlinks: vec![HardlinkSpec {
-                    relative_path: PathBuf::from("alias"),
-                    source_relative_path: PathBuf::from("nested/data"),
-                }],
-            },
-            stdin: Vec::new(),
-            cwd: PathBuf::from("."),
-        };
-        let bundle = save_case_bundle(root.path(), &args, &paths, &case);
-
-        let error = run_replay(parse_replay(&bundle)).unwrap_err();
-
-        assert!(
-            error.contains(&format!(
-                "{FUZZER_OUTCOME_MARKER_PREFIX}{}",
-                crate::INCOMPLETE_COVERAGE
-            )),
-            "{error}"
-        );
-        let manifest: ReproManifest =
-            serde_json::from_slice(&fs::read(bundle.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(
-            manifest.execution_context.read_only_time_anchor_seconds,
-            Some(1_699_920_000)
-        );
-        let fresh_bundle = PathBuf::from(
-            error
-                .lines()
-                .find_map(|line| line.strip_prefix("raw observation bundle: "))
-                .expect("incomplete replay saves fresh raw evidence"),
-        );
-        let fresh: serde_json::Value =
-            serde_json::from_slice(&fs::read(fresh_bundle.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!(fresh["schema_version"], REPRO_SCHEMA_VERSION);
-        assert!(
-            fresh["comparison"]["expected_replay_verdict"]["reference_process_outcome"].is_object()
-        );
-        assert!(
-            fresh["comparison"]["expected_replay_verdict"]["reference_pre_fs"]["nodes"]
-                .as_object()
-                .unwrap()
-                .values()
-                .all(|node| node.get("raw_stat_metadata").is_some())
-        );
-    }
     fn metadata_manifest_fixture() -> serde_json::Value {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
@@ -1127,9 +1124,9 @@ mod tests {
         assert!(error.contains("unknown variant `ExitCode`"), "{error}");
     }
 
-    // Current schema6 requires placement provenance instead of treating absence as a default.
+    // Current schema8 requires placement provenance instead of treating absence as a default.
     #[test]
-    fn schema6_rejects_missing_work_root_base() {
+    fn schema8_rejects_missing_work_root_base() {
         let mut value = metadata_manifest_fixture();
         value["execution_context"]
             .as_object_mut()
@@ -1139,9 +1136,9 @@ mod tests {
         assert!(error.contains("missing work-root base"), "{error}");
     }
 
-    // Current schema6 rejects explicit null separately from an absent placement field.
+    // Current schema8 rejects explicit null separately from an absent placement field.
     #[test]
-    fn schema6_rejects_null_work_root_base() {
+    fn schema8_rejects_null_work_root_base() {
         let mut value = metadata_manifest_fixture();
         value["execution_context"]["work_root_base"] = serde_json::Value::Null;
         let error = super::decode_manifest(&serde_json::to_vec(&value).unwrap()).unwrap_err();
@@ -1150,7 +1147,7 @@ mod tests {
 
     // Duplicate placement fields are rejected directly from original manifest bytes.
     #[test]
-    fn schema6_rejects_duplicate_work_root_base() {
+    fn schema8_rejects_duplicate_work_root_base() {
         let value = metadata_manifest_fixture();
         let encoded = String::from_utf8(serde_json::to_vec(&value).unwrap()).unwrap();
         let duplicated = encoded.replacen(
@@ -1166,9 +1163,9 @@ mod tests {
         );
     }
 
-    // Current schema6 requires the configured container image as replay provenance.
+    // Current schema8 requires the configured container image as replay provenance.
     #[test]
-    fn schema6_rejects_missing_container_image() {
+    fn schema8_rejects_missing_container_image() {
         let mut value = metadata_manifest_fixture();
         value["execution_context"]
             .as_object_mut()
@@ -1178,9 +1175,9 @@ mod tests {
         assert!(error.contains("missing field `container_image`"), "{error}");
     }
 
-    // Current schema6 requires the numeric target UID rather than adopting the replay host UID.
+    // Current schema8 requires the numeric target UID rather than adopting the replay host UID.
     #[test]
-    fn schema6_rejects_missing_target_uid() {
+    fn schema8_rejects_missing_target_uid() {
         let mut value = metadata_manifest_fixture();
         value["execution_context"]
             .as_object_mut()
@@ -1193,13 +1190,14 @@ mod tests {
     // Unknown versions are diagnosed before attempting the current version's required fields.
     #[test]
     fn replay_reports_unsupported_version_before_payload_shape() {
-        for version in [1, 2, 3, 4, 5, 999] {
+        for version in [1, 2, 3, 4, 5, 6, 7, 999] {
             let bytes = format!(r#"{{"schema_version":{version}}}"#);
             let error = super::decode_manifest(bytes.as_bytes()).unwrap_err();
             assert!(
                 error.contains(&format!("unsupported replay schema version {version}")),
                 "{error}"
             );
+            assert!(error.contains("--case-set"), "{error}");
         }
     }
 }

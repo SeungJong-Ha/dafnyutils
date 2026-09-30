@@ -1,7 +1,7 @@
 use super::corpus::InterestingCorpus;
-use super::fixture::validate_fixture;
+use super::input::mutations::{generate_case, mutate_case_from_corpus};
 use super::input::scenario_case;
-use super::mutation::{generate_case, mutate_case_from_corpus};
+use super::system_state_concretizer::validate_fixture;
 use super::GeneratedCase;
 use rand::rngs::StdRng;
 use rand::Rng;

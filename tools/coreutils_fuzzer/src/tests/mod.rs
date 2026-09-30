@@ -1,15 +1,18 @@
 use super::*;
-use crate::fuzz::coverage::extract_used_options;
-use crate::fuzz::execution::{
-    restore_path_times, run_variant, snapshot_fs, times_from_metadata, IdentityTransitionEvidence,
+use crate::fuzz::comparison::compare::{compare_results_with_roots, render_text_diff};
+use crate::fuzz::comparison::fs_snapshot::{
+    restore_path_times, snapshot_fs, times_from_metadata, IdentityTransitionEvidence,
 };
-use crate::fuzz::fixture::stage_iteration_dirs;
+use crate::fuzz::comparison::CompareResult;
+use crate::fuzz::coverage::extract_used_options;
+use crate::fuzz::execution::run_variant;
 use crate::fuzz::shrink::evaluate_case;
 use crate::fuzz::shrink::reduce_fixture;
+use crate::fuzz::system_state_concretizer::stage_iteration_dirs;
 use crate::fuzz::{
-    CompareResult, DirSpec, FileSpec, FixtureBlueprint, FsNodeSnapshot, FsSnapshot, FsTimes,
-    GeneratedCase, HardlinkSpec, HostInodeKeySnapshot, ResolvedPaths, ResolvedTarget, RunResult,
-    SymlinkSpec, VariantKind,
+    DirSpec, FileSpec, FixtureBlueprint, FsNodeSnapshot, FsSnapshot, FsTimes, GeneratedCase,
+    HardlinkSpec, HostInodeKeySnapshot, ResolvedPaths, ResolvedTarget, RunResult, SymlinkSpec,
+    VariantKind,
 };
 use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
@@ -49,9 +52,9 @@ fn compare_results(
     .unwrap()
 }
 
-fn observed_process_outcome(code: i32) -> crate::fuzz::compare::ProcessOutcomeEvidence {
-    crate::fuzz::compare::ProcessOutcomeEvidence::Observed(
-        crate::fuzz::process_outcome::Termination::test_exit(code),
+fn observed_process_outcome(code: i32) -> crate::fuzz::comparison::compare::ProcessOutcomeEvidence {
+    crate::fuzz::comparison::compare::ProcessOutcomeEvidence::Observed(
+        crate::fuzz::comparison::process_outcome::Termination::test_exit(code),
     )
 }
 

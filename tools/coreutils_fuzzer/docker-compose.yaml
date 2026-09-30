@@ -19,6 +19,7 @@ services:
       - DAC_OVERRIDE
       - DAC_READ_SEARCH
       - FOWNER
+      - KILL
       - SETGID
       - SETUID
     tmpfs:

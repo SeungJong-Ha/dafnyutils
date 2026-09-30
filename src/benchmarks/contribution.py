@@ -143,7 +143,7 @@ def validate_pytest_report(report_path: Path) -> None:
 def validate_fuzzer_capabilities(definition: BenchmarkDefinition, raw: str) -> None:
     try:
         payload = json.loads(raw)
-        if payload.get("schema_version") != 3 or not isinstance(payload.get("utilities"), list):
+        if payload.get("schema_version") != 4 or not isinstance(payload.get("utilities"), list):
             raise ValueError("unsupported capability schema")
         matches = [
             item for item in payload["utilities"] if item.get("utility") == definition.task_id
@@ -153,8 +153,13 @@ def validate_fuzzer_capabilities(definition: BenchmarkDefinition, raw: str) -> N
         capability = matches[0]
         if capability.get("fuzz_strategy") not in {"generic", "custom"}:
             raise ValueError("task has no supported fuzz strategy")
-        if capability.get("time_coverage") not in {"none", "exact_per_execution"}:
-            raise ValueError("task has no supported time-coverage requirement")
+        limitations = payload.get("limitations")
+        if (
+            not isinstance(limitations, list)
+            or not limitations
+            or any(not isinstance(item, str) or not item.strip() for item in limitations)
+        ):
+            raise ValueError("capability limitations must be a nonempty list of text")
     except (AttributeError, json.JSONDecodeError, TypeError, ValueError) as exc:
         raise RuntimeError(
             f"invalid fuzzer capability result for {definition.task_id}: {exc}"

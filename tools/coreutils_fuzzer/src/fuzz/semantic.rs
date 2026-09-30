@@ -1,6 +1,7 @@
 use super::{FsNodeSnapshot, FsSnapshot, GeneratedCase, RunResult};
 use crate::utils::arg_semantics::path_operand_args;
 use crate::utils::arg_semantics::should_consume_stdin_from_argv;
+use crate::utils::capabilities::capability_for;
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 
@@ -120,7 +121,7 @@ fn classify_args(
         }
         // Reaching the shell-quoting branches is the point of the trigger
         // generator, so record it rather than assuming it happened.
-        if super::mutation::contains_quote_trigger(operand) {
+        if super::input::system_state::contains_quote_trigger(operand) {
             buckets.insert("operand:quote-trigger".to_string());
         }
         let key = path_key(&case.cwd, operand);
@@ -252,7 +253,7 @@ fn classify_fs_effects(
 }
 
 fn semantic_timestamps_matter(util: &str) -> bool {
-    matches!(util, "touch")
+    capability_for(util).is_some_and(|capability| capability.coverage_time_buckets)
 }
 
 fn node_is_file(node: Option<&FsNodeSnapshot>) -> bool {

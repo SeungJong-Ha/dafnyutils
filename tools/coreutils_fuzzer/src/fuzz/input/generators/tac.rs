@@ -1,6 +1,7 @@
 use super::super::pattern::{Alternative, ArgvPattern, Atom, Element, OperandSource};
+use super::super::CwdPolicy;
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::GeneratedCase;
 
 static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[Element::repeated(
@@ -15,10 +16,12 @@ static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[Alternative::new(&[Element
 )])]);
 
 pub(crate) static GENERATOR: PatternInputGenerator =
-    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
+    PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
+        .with_system_state(system_state::line_system_state)
+        .with_cwd_policy(CwdPolicy::Root);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let fixture = fixtures::line_fixture();
+    let fixture = system_state::line_fixture();
     Some(match iteration {
         0 => support::case(vec![], fixture, b"a\nb\nc\n"),
         1 => support::case(vec!["a.txt"], fixture, b""),
