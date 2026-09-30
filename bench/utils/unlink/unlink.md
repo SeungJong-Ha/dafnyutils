@@ -41,7 +41,7 @@ No options are excluded by `IO.dfy`.
 - **Observation:** Output streams, exit status, and modeled filesystem. Help,
   version, and operand errors leave files unchanged. A failed `UnlinkPathSpec`
   does not guarantee filesystem preservation; maintainer review is pending.
-- **Trusted API:** Shared parser, `UnlinkPathSpec`, errno text, and stream append
+- **Trusted API:** Shared parser, `UnlinkPathSpec`, errno text, argument/path quoting, and stream append
   contracts in `bench/core` revision `4ac0d9b34816c54c822bd9870794aafae1df3c13`.
 - **Proof:** `Unlink.RunCore` ensures `UnlinkSpec.Spec` through `UnlinkProof`.
   `Decode` terminates; whole-process termination is not proved.
@@ -50,9 +50,3 @@ No options are excluded by `IO.dfy`.
 
 The supported command exits with status 0 after a successful removal or a help
 or version request. Operand, option, and deletion errors exit with status 1.
-
-### Known Limitation
-
-The extra-operand and deletion-error diagnostics insert path text literally.
-An operand containing a quote or control byte can therefore differ from GNU's
-quoted diagnostic.

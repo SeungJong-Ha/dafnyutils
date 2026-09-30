@@ -107,18 +107,18 @@ module UnlinkSpec {
     + "Try 'unlink --help' for more information.\n"
   }
 
-  function ExtraOperandText(operand: string): BenchWorld.Bytes
+  function ExtraOperandText(quotedOperand: BenchWorld.Bytes): BenchWorld.Bytes
   {
-    "unlink: extra operand '" + Utf8.Encode(operand) + "'\n"
+    "unlink: extra operand " + quotedOperand + "\n"
     + "Try 'unlink --help' for more information.\n"
   }
 
   function CannotUnlinkText(
-    path: BenchWorld.Path,
+    quotedPath: BenchWorld.Bytes,
     reason: string
   ): BenchWorld.Bytes
   {
-    "unlink: cannot unlink '" + Utf8.Encode(path) + "': "
+    "unlink: cannot unlink " + quotedPath + ": "
     + Utf8.Encode(reason) + "\n"
   }
 
@@ -141,7 +141,7 @@ module UnlinkSpec {
         io.fs() == old(io.fs()) &&
         io.stdout() == old(io.stdout()) &&
         io.stderr() == old(io.stderr()) +
-          ExtraOperandText(operand) &&
+          ExtraOperandText(C.QuoteArgumentResult(Utf8.Encode(operand))) &&
         exit == 1
       case _ => false
     else if |raw.operands| == 0 then
@@ -157,7 +157,7 @@ module UnlinkSpec {
           io.stderr() == old(io.stderr()) && exit == 0
         else
           io.stderr() == old(io.stderr()) +
-            CannotUnlinkText(raw.operands[0], C.CLocaleErrnoTextResult(err)) &&
+            CannotUnlinkText(C.QuoteafPathResult(raw.operands[0]), C.CLocaleErrnoTextResult(err)) &&
           exit == 1)
   }
 }

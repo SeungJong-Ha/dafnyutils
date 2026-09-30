@@ -7,6 +7,7 @@ module UnlinkCore {
   import Schema = UnlinkSchema
   import Spec = UnlinkSpec
   import C = IOContract
+  import Utf8 = Utf8Semantics
 
   twostate predicate CoreSummary(raw: Schema.UnlinkCmdRaw, io: BenchIO.IO, exit: int)
     reads io.Footprint()
@@ -27,7 +28,7 @@ module UnlinkCore {
         io.fs() == old(io.fs()) &&
         io.stdout() == old(io.stdout()) &&
         io.stderr() == old(io.stderr()) +
-          Spec.ExtraOperandText(operand) &&
+          Spec.ExtraOperandText(C.QuoteArgumentResult(Utf8.Encode(operand))) &&
         exit == 1
       case _ => false
     else if |raw.operands| == 0 then
@@ -43,7 +44,7 @@ module UnlinkCore {
           io.stderr() == old(io.stderr()) && exit == 0
         else
           io.stderr() == old(io.stderr()) +
-            Spec.CannotUnlinkText(raw.operands[0], C.CLocaleErrnoTextResult(err)) &&
+            Spec.CannotUnlinkText(C.QuoteafPathResult(raw.operands[0]), C.CLocaleErrnoTextResult(err)) &&
           exit == 1)
   }
 
@@ -58,7 +59,8 @@ module UnlinkCore {
       io.AppendStdout(Spec.VersionTextSpec());
       exit := 0;
     } else if raw.mode.ModeExtraOperand? {
-      io.AppendStderr(Spec.ExtraOperandText(raw.mode.operand));
+      var quotedOperand := io.QuoteArgument(Utf8.Encode(raw.mode.operand));
+      io.AppendStderr(Spec.ExtraOperandText(quotedOperand));
       exit := 1;
     } else if |raw.operands| == 0 {
       io.AppendStderr(Spec.MissingOperandText());
@@ -71,7 +73,8 @@ module UnlinkCore {
         exit := 0;
       } else {
         var reason := io.GetCLocaleErrnoText(err);
-        io.AppendStderr(Spec.CannotUnlinkText(raw.operands[0], reason));
+        var quotedPath := io.QuoteafPath(raw.operands[0]);
+        io.AppendStderr(Spec.CannotUnlinkText(quotedPath, reason));
         exit := 1;
 
         assert C.GetCLocaleErrnoTextSpec(err, reason);
