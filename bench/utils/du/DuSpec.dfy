@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "DuSchema.dfy"
 
 module DuSpec {
@@ -8,6 +9,8 @@ module DuSpec {
   import BenchWorld
   import IOContract
   import Schema = DuSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
@@ -63,7 +66,8 @@ module DuSpec {
 
   function ErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "du: cannot access '" + path + "': " + ErrnoText(err) + "\n"
+    "du: cannot access " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+    ": " + Utf8.Encode(ErrnoText(err)) + "\n"
   }
 
   function DigitChar(d: nat): char
@@ -92,18 +96,18 @@ module DuSpec {
 
   function CountLineSpec(size: nat, path: BenchWorld.Path): BenchWorld.Bytes
   {
-    NatText(size) + "\t" + path + "\n"
+    NatText(size) + "\t" + Utf8.Encode(path) + "\n"
   }
 
   ghost predicate FileObservationRelation(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>
   )
   {
     (forall i: nat :: i in observations.Keys <==> i < |cmd.operands|) &&
     forall i: nat | i < |cmd.operands| ::
-      observations[i] == IOContract.ReadFileResultFields(preFs, cmd.operands[i])
+      observations[i] == IOContract.ObservedReadFileResultFields(preFs, preStreams, cmd.operands[i])
   }
 
   function OutputPieceSpec(path: BenchWorld.Path, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
@@ -153,7 +157,7 @@ module DuSpec {
 
   ghost predicate RunRelation(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     output: BenchWorld.Bytes,
     errors: BenchWorld.Bytes,
     exit: int
@@ -164,7 +168,7 @@ module DuSpec {
       outputCuts: seq<nat>,
       errorPieces: seq<BenchWorld.Bytes>,
       errorCuts: seq<nat> ::
-      FileObservationRelation(cmd, preFs, observations) &&
+      FileObservationRelation(cmd, preFs, preStreams, observations) &&
       PieceSequencesRelation(cmd, observations, outputPieces, errorPieces) &&
       FragmentsConcatenate(outputPieces, output, outputCuts) &&
       FragmentsConcatenate(errorPieces, errors, errorCuts) &&
@@ -193,7 +197,7 @@ module DuSpec {
       exit == 1
     else
       exists output: BenchWorld.Bytes, errors: BenchWorld.Bytes ::
-        RunRelation(cmd, old(io.fs()), output, errors, exit) &&
+        RunRelation(cmd, old(io.fs()), old(io.trustedStreams()), output, errors, exit) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errors
   }

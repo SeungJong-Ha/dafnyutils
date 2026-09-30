@@ -240,7 +240,8 @@ module FoldProof {
             io.stdin(),
             stdoutPart,
             stderrPart,
-            hadError
+            hadError,
+            old(io.trustedStreams())
           ) &&
           io.stdout() == old(io.stdout()) + stdoutPart &&
           io.stderr() == old(io.stderr()) + stderrPart &&

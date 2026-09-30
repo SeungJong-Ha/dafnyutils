@@ -51,6 +51,7 @@ include "/workspace/dafnyutils/bench/core/IO.dfy"
 
 module StreamCopy {
   import BenchIO
+  import BW = BenchWorld
 
   method CopyInput(io: BenchIO.IO) returns (readErr: int, writeErr: int)
     modifies io.stdinRegion, io.stdoutRegion
@@ -58,9 +59,9 @@ module StreamCopy {
       io.stdin() == [] && io.stdout() == old(io.stdout()) + old(io.stdin())
   {
     var data;
-    data, readErr := io.ReadStdinWithOutcome();
+    data, readErr := io.ReadStdin(BW.ReturnError);
     var committed;
-    committed, writeErr := io.WriteStdoutWithOutcome(data);
+    committed, writeErr := io.WriteStdout(data, BW.ReturnError);
   }
 
   method {:main} Main()
@@ -136,34 +137,53 @@ Specs use `reads` and IO methods use `modifies` to express invariance.
 
 ## Streams
 
-The four outcome methods expose partial progress and errno:
+The stream methods expose partial progress and errno:
 
 | Call shape | Result / observable relation |
 | --- | --- |
-| `ReadFileWithOutcome(path)` → `(data: Bytes, err: int)` | Successfully read prefix; zero errno means the whole modeled file was read. Native open/read/close failures are reported through errno. |
-| `ReadStdinWithOutcome()` → `(data: Bytes, err: int)` | `data + remaining == previous stdin`; zero errno means no remaining input. |
-| `WriteStdoutWithOutcome(data)` → `(committed: nat, err: int)` | Append exactly `data[..committed]`; zero errno iff all requested bytes were committed. |
-| `WriteStderrWithOutcome(data)` → `(committed: nat, err: int)` | Same prefix/errno relation for stderr. |
+| `ReadFile(path, FromStart)` → `(data: Bytes, err: int, stage: FileReadStage)` | Successfully read prefix; zero errno means the whole modeled file was read. Native open/read/close failures are reported through errno and stage. A Linux EISDIR error (21) identifies a modeled directory. |
+| `ReadFile(path, AfterSeekEnd)` → `(data: Bytes, err: int, stage: FileReadStage)` | For a modeled directory, attempt `lseek(fd, 0, SEEK_END)` before native `read` and report its errno with the failed operation stage. This mode requires `ModeledReadFileResultFields(fs(), path) == Err(IsDirectory)`; it preserves filesystem state. |
+| `ReadStdin(ReturnError)` → `(data: Bytes, err: int)` | `data + remaining == previous stdin`; zero errno means no remaining input. |
+| `WriteStdout(data, ReturnError)` → `(committed: nat, err: int)` | Append exactly `data[..committed]`; zero errno guarantees all requested bytes were committed. |
+| `WriteStderr(data, ReturnError)` → `(committed: nat, err: int)` | Same prefix/errno relation for stderr. |
 
 A nonzero read errno can accompany the complete data (for example a close
 failure). Callers must inspect errno even when the returned length looks right.
+An empty write can report a nonzero errno with zero bytes committed when its
+standard descriptor is unavailable. The committed count alone does not prove
+success.
+`ReadSucceeded` means zero errno; failures report `OpenFailed`, `ReadFailed`, or
+`CloseFailed`. `FileReadResultFromOutcome(data, err)` converts an ordinary file
+read to `Result<Bytes>` for all-or-nothing consumers: it keeps data only on zero
+errno, classifies errno 21 as `IsDirectory` and 13 as `PermissionDenied`, and
+uses `NoSuchFile` for other errors. `ObservedReadFileResultFields` applies the
+same projection to a request-bound stream observation. The modeled file helper
+validates the read prefix and path domain; it does not claim that every regular
+file read succeeds.
+Classification uses the read errno directly. The removed whole-file wrapper
+queried `IsDirectory` after a failed read; for example, a read-permission failure
+on a regular file whose metadata query succeeded fell back to `NoSuchFile`.
+The current projection reports `PermissionDenied` for that EACCES outcome.
 Read outcomes are tied to the typed request, including the current file or stdin
 state. Write requests include the previous output and requested bytes. These
 observations are logical library results, not raw syscall traces.
 
-The four legacy methods below expose whole-buffer behavior. In particular,
-`AppendStdout` and `AppendStderr` provide no returned write error.
+`StreamErrorPolicy` selects how stdin and standard-output methods handle a
+positive errno. `ReturnError` returns the partial result and errno. With
+`ThrowOnError`, a positive errno raises `IOException`; a normal return therefore
+means stdin was fully consumed or all requested output was committed. Dafny
+callers that discard write results still bind both outputs, for example
+`var _, _ := io.WriteStdout(data, ThrowOnError)`. The native adapter writes
+through the standard file descriptors; the former `AppendStdout` adapter also
+flushed its .NET stream after writing. Descriptor writes are unbuffered at this
+boundary, and the old flush call is no longer used.
 
 | Method | Contract / relation | Modified region |
 | --- | --- | --- |
-| `ReadFileWithOutcome` | `ReadFileWithOutcomeSpec` | `none` |
-| `ReadStdinWithOutcome` | `ReadStdinWithOutcomeSpec` | `stdinRegion` |
-| `WriteStdoutWithOutcome` | `WriteStdoutWithOutcomeSpec` | `stdoutRegion` |
-| `WriteStderrWithOutcome` | `WriteStderrWithOutcomeSpec` | `stderrRegion` |
 | `ReadFile` | `ReadFileSpec` | `none` |
-| `ReadStdinAll` | `ReadStdinAllSpec` | `stdinRegion` |
-| `AppendStdout` | `AppendStdoutSpec` | `stdoutRegion` |
-| `AppendStderr` | `AppendStderrSpec` | `stderrRegion` |
+| `ReadStdin` | `ReadStdinSpec` | `stdinRegion` |
+| `WriteStdout` | `WriteStdoutSpec` | `stdoutRegion` |
+| `WriteStderr` | `WriteStderrSpec` | `stderrRegion` |
 
 ## Diagnostics and process context
 
@@ -202,8 +222,8 @@ on this library contract; it does not verify the parser implementation.
 Queries returning `(ok, ..., err)` require callers to branch on `ok` and retain
 the specified error behavior. `FileStatus` includes inode identity, link count,
 kind, mode, ownership, size/storage and times. Identity is meaningful for aliases.
-`IsDirectoryStrict` has a stronger modeled-success contract than `IsDirectory`;
-do not substitute it solely to avoid handling a failure.
+`IsDirectory` requires a successful result for modeled paths and still reports
+native errors for paths outside that modeled domain.
 
 | Method | Contract / relation | Modified region |
 | --- | --- | --- |
@@ -212,7 +232,6 @@ do not substitute it solely to avoid handling a failure.
 | `GetFileMode` | `GetFileModeSpec` | `none` |
 | `GetFileStatus` | `GetFileStatusSpec` | `none` |
 | `IsDirectory` | `IsDirectorySpec` | `none` |
-| `IsDirectoryStrict` | `IsDirectoryStrictSpec` | `none` |
 | `IsSymlink` | `IsSymlinkSpec` | `none` |
 | `ResolvePathIdentity` | `ResolvePathIdentitySpec` | `none` |
 | `GetFileTimes` | `GetFileTimesSpec` | `none` |
@@ -236,7 +255,8 @@ device privileges or every filesystem configuration.
 | --- | --- | --- |
 | `CreateFile` | `CreateFileSpec` | `fsRegion` |
 | `WriteFile` | `WriteFileSpec` | `fsRegion` |
-| `CreateSymlink` | `CreateSymlinkSpec` | `fsRegion` |
+| `AppendFile` | `AppendFileSpec` | `fsRegion` |
+| `CreateSymlink` | `CreateSymlinkSpec`; an empty destination returns native ENOENT (2) | `fsRegion` |
 | `DeletePath` | `DeletePathSpec` | `fsRegion` |
 | `CreateDirectory` | `CreateDirectorySpec` | `fsRegion` |
 | `RemoveDirectory` | `RemoveDirectorySpec` | `fsRegion` |
@@ -268,15 +288,39 @@ other timestamp. Current time comes from the modeled `now()` observation.
 
 ## Directory iteration
 
-`OpenDir(path)` returns `(ok, handle, err)`. `ReadDir(handle)` returns
-`(hasMore, name, isDir, isSymlink, err)` and advances the logical handle;
+`OpenDir(path, includeDots)` returns `(ok, handle, err)`. `ReadDir(handle)`
+returns `(hasMore, name, kind, err)` and advances the logical handle;
 `CloseDir(handle)` removes it. Treat the handle as opaque. These calls do not
 supply recursive traversal or a utility's ordering and filtering policy.
+
+`BenchWorld.DirectoryEntryKind` distinguishes regular files,
+directories, symlinks, FIFOs, block devices, character devices and sockets.
+`UnknownDirentKind` explicitly means that the entry type is unavailable; it
+must not be treated as a regular file or guessed from its name. EOF and invalid
+handle results also return this unknown kind.
+
+For utilities whose observable behavior depends on the positions of `.` and
+`..`, use `OpenDir(path, true)`. The handle retains dots in its directory stream
+and logical inventory; `OpenDir(path, false)` omits them. `ReadDir` infers the
+mode from the handle and returns entries in the native stream order. Dots carry semantic directory
+kind from their authenticated special identity, without a metadata lookup.
+Non-dot entries retain the exact known or unknown native kind.
+
+After a successful open, `GetOpenDirectoryStatus(handle)` returns
+`(ok, status, err)` for that opened directory. This provides identity for cycle
+detection without requiring a separate child-path status before the open.
+Success consumes exactly the next ordered status observation at the handle's
+resolved path, with follow enabled, and advances the status cursor by one.
+Failure returns a positive errno without consuming a status observation. A
+failed open and a failed opened-directory status are distinct outcomes; callers
+choose the corresponding diagnostic. The status call leaves the directory
+handle available for iteration or close.
 
 | Method | Contract / relation | Modified region |
 | --- | --- | --- |
 | `OpenDir` | `OpenDirSpec` | `dirHandlesRegion` |
 | `ReadDir` | `ReadDirSpec` | `dirHandlesRegion` |
+| `GetOpenDirectoryStatus` | `GetOpenDirectoryStatusSpec` | `statusObservationsRegion` |
 | `CloseDir` | `CloseDirSpec` | `dirHandlesRegion` |
 
 ## CLI and pure helpers
@@ -297,7 +341,8 @@ supply recursive traversal or a utility's ordering and filtering policy.
 
 Treat the exact `IO.dfy` declarations and `IOContract.dfy` predicates as authoritative. The summaries above cannot strengthen a precondition, frame or result relation.
 
-- Stream contracts constrain the consumed/committed prefix and errno. They do not provide incremental stdin reads or distinguish open/read/close failure phases.
+- Stream contracts constrain the consumed/committed prefix and errno. `FileReadStage` distinguishes successful file reads from open, read and close failures; the contracts do not expose individual syscalls or provide incremental stdin reads.
+- The `ReadFile(path, AfterSeekEnd)` directory mode and `AppendFile` bind their outcomes to native observations. `AppendFile` preserves an existing regular file on empty input, appends exact bytes to its referent on success, and frames unrelated inodes; host-specific mode and timestamp effects remain within the native boundary.
 - `TrustedFilesystemEffectContractFields` binds the typed request, pre-filesystem and complete supplied result. By itself it does not impose POSIX insertion/removal laws. Do not replace this binding with just `ok <==> err == 0` or choose a different resulting state to make the proof pass.
 - Environment enumeration permits more than one order for the same map. Ghost credentials are not executable UID/GID or name-service queries.
 - `TruncateFile` does not create a missing file. Path-targeted `Sync` lacks GNU's write-only-open retry and separate failure phases.

@@ -349,3 +349,23 @@ def test_deferred_head_regressions_inventory() -> None:
 def test_head_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Invalid counts use GNU's C-locale byte quoting.
+@pytest.mark.parametrize("value", ["x'y", "é"])
+def test_escape_audit_invalid_count(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_head(["-n", value], cwd)
+        bench = run_bench_head(["-n", value], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# File-open errors use GNU's always-quoted shell rendering.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_head([path], cwd)
+        bench = run_bench_head([path], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "FactorSchema.dfy"
 
 module FactorSpec {
@@ -8,6 +9,8 @@ module FactorSpec {
   import BenchWorld
   import IOContract
   import Schema = FactorSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
 
 
@@ -238,12 +241,13 @@ module FactorSpec {
 
   function InvalidTokenMessage(token: string): BenchWorld.Bytes
   {
-    "factor: " + QuoteDiagnosticToken(token) + " is not a valid positive integer\n"
+    "factor: " + SE.SpecLocaleQuoteBytes(token) + " is not a valid positive integer\n"
   }
 
-  function QuoteDiagnosticToken(token: string): BenchWorld.Bytes
+  function InvalidArgvTokenMessage(token: string): BenchWorld.Bytes
   {
-    "'" + EscapeDiagnosticToken(token) + "'"
+    "factor: " + SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) +
+    " is not a valid positive integer\n"
   }
 
   function OctalDigit(d: int): char
@@ -292,21 +296,6 @@ module FactorSpec {
       []
   }
 
-  function EscapeDiagnosticToken(token: string): BenchWorld.Bytes
-    decreases |token|
-  {
-    if |token| == 0 then
-      []
-    else if HasNamedEscape(token[0]) then
-      NamedEscape(token[0]) + EscapeDiagnosticToken(token[1..])
-    else if ShouldOctalEscape(token[0]) then
-      OctalEscape(token[0]) + EscapeDiagnosticToken(token[1..])
-    else if token[0] == "\\"[0] || token[0] == "'"[0] then
-      "\\" + [token[0]] + EscapeDiagnosticToken(token[1..])
-    else
-      [token[0]] + EscapeDiagnosticToken(token[1..])
-  }
-
   ghost predicate DigitsFrom(text: string, start: nat)
   {
     start < |text| &&
@@ -316,6 +305,7 @@ module FactorSpec {
   ghost predicate TokenRelation(
     token: string,
     exponents: bool,
+    fromArgv: bool,
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool
@@ -325,13 +315,13 @@ module FactorSpec {
       TrimmedTokenRelation(token, trimmed) &&
       if |trimmed| == 0 || trimmed[0] == '-' then
         output == [] &&
-        errorOutput == InvalidTokenMessage(trimmed) &&
+        errorOutput == (if fromArgv then InvalidArgvTokenMessage(token) else InvalidTokenMessage(token)) &&
         hadError
       else
         var start: nat := if trimmed[0] == '+' then 1 else 0;
         if !DigitsFrom(trimmed, start) then
           output == [] &&
-          errorOutput == InvalidTokenMessage(trimmed) &&
+          errorOutput == (if fromArgv then InvalidArgvTokenMessage(token) else InvalidTokenMessage(token)) &&
           hadError
         else
           exists value: int ::
@@ -434,6 +424,7 @@ module FactorSpec {
   ghost predicate RunRelation(
     tokens: seq<string>,
     exponents: bool,
+    fromArgv: bool,
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool
@@ -450,11 +441,11 @@ module FactorSpec {
         tailError: BenchWorld.Bytes,
         tailHadError: bool ::
         TokenRelation(
-          tokens[0], exponents,
+          tokens[0], exponents, fromArgv,
           headOutput, headError, headHadError
         ) &&
         RunRelation(
-          tokens[1..], exponents,
+          tokens[1..], exponents, fromArgv,
           tailOutput, tailError, tailHadError
         ) &&
         output == headOutput + tailOutput &&
@@ -476,6 +467,7 @@ module FactorSpec {
       io.stderr() == old(io.stderr()) &&
       exit == 0
     else
+      var fromArgv := |raw.operands| > 0;
       io.stdin() ==
       (if |raw.operands| > 0
        then old(io.stdin())
@@ -483,11 +475,12 @@ module FactorSpec {
       exists tokens: seq<string>,
         output: BenchWorld.Bytes,
         errorOutput: BenchWorld.Bytes,
-        hadError: bool ::
+        hadError: bool
+        {:trigger RunRelation(tokens, raw.seenExponents, fromArgv, output, errorOutput, hadError)} ::
         (if |raw.operands| > 0
          then tokens == raw.operands
          else InputTokensRelation(old(io.stdin()), tokens)) &&
-        RunRelation(tokens, raw.seenExponents, output, errorOutput, hadError) &&
+        RunRelation(tokens, raw.seenExponents, fromArgv, output, errorOutput, hadError) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errorOutput &&
         exit == (if hadError then 1 else 0)

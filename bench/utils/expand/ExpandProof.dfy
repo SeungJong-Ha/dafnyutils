@@ -622,13 +622,16 @@ module ExpandProof {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires Core.ReadStepSummary(
-               input, preFs, stdinBefore, stdinAfter, result
+               input, preFs, stdinBefore, stdinAfter, result,
+               preStreams
              )
     ensures Spec.ReadStepRelation(
-              input, preFs, stdinBefore, stdinAfter, result
+              input, preFs, stdinBefore, stdinAfter, result,
+              preStreams
             )
   {
   }
@@ -701,17 +704,20 @@ module ExpandProof {
     errorFlags: seq<bool>,
     columns: seq<nat>,
     leadings: seq<bool>,
-    stdinStates: seq<BenchWorld.Bytes>
+    stdinStates: seq<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires Core.InputTracePrefixSummary(
                cmd, preFs, preStdin, count, currentStdin,
                output, errorOutput, hadError, results, outputPieces,
-               errorPieces, errorFlags, columns, leadings, stdinStates
+               errorPieces, errorFlags, columns, leadings, stdinStates,
+               preStreams
              )
     ensures Spec.InputTracePrefixWitnessRelation(
               cmd, preFs, preStdin, count, currentStdin,
               output, errorOutput, hadError, results, outputPieces,
-              errorPieces, errorFlags, columns, leadings, stdinStates
+              errorPieces, errorFlags, columns, leadings, stdinStates,
+              preStreams
             )
   {
     reveal Core.InputTracePrefixSummary();
@@ -719,7 +725,8 @@ module ExpandProof {
     forall i: nat | i < count
       ensures Spec.ReadStepRelation(
                 cmd.inputs[i], preFs,
-                stdinStates[i], stdinStates[i + 1], results[i]
+                stdinStates[i], stdinStates[i + 1], results[i],
+                preStreams
               ) &&
               Spec.InputPieceRelation(
                 cmd, results[i], columns[i], leadings[i],
@@ -732,7 +739,8 @@ module ExpandProof {
     {
       ReadStepSummaryImpliesRelation(
         cmd.inputs[i], preFs,
-        stdinStates[i], stdinStates[i + 1], results[i]
+        stdinStates[i], stdinStates[i + 1], results[i],
+        preStreams
       );
       InputPieceSummaryImpliesRelation(
         cmd, results[i], columns[i], leadings[i],
@@ -754,15 +762,18 @@ module ExpandProof {
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires Core.InputTraceSummary(
                cmd, preFs, preStdin, postStdin,
-               output, errorOutput, hadError
+               output, errorOutput, hadError,
+               preStreams
              )
     ensures Spec.InputTraceRelation(
               cmd, preFs, preStdin, postStdin,
-              output, errorOutput, hadError
+              output, errorOutput, hadError,
+              preStreams
             )
   {
     reveal Core.InputTraceSummary();
@@ -777,18 +788,21 @@ module ExpandProof {
       Core.InputTracePrefixSummary(
         cmd, preFs, preStdin, |cmd.inputs|, postStdin,
         output, errorOutput, hadError, results, outputPieces,
-        errorPieces, errorFlags, columns, leadings, stdinStates
+        errorPieces, errorFlags, columns, leadings, stdinStates,
+        preStreams
       );
     InputTracePrefixSummaryImpliesRelation(
       cmd, preFs, preStdin, |cmd.inputs|, postStdin,
       output, errorOutput, hadError, results, outputPieces,
-      errorPieces, errorFlags, columns, leadings, stdinStates
+      errorPieces, errorFlags, columns, leadings, stdinStates,
+      preStreams
     );
     reveal Spec.InputTraceWitnessRelation();
     assert Spec.InputTraceWitnessRelation(
         cmd, preFs, preStdin, postStdin,
         output, errorOutput, hadError, results, outputPieces,
-        errorPieces, errorFlags, columns, leadings, stdinStates
+        errorPieces, errorFlags, columns, leadings, stdinStates,
+        preStreams
       );
     reveal Spec.InputTraceRelation();
     assert exists
@@ -803,7 +817,8 @@ module ExpandProof {
           cmd, preFs, preStdin, postStdin,
           output, errorOutput, hadError, traceResults,
           traceOutputPieces, traceErrorPieces, traceErrorFlags,
-          traceColumns, traceLeadings, traceStdinStates
+          traceColumns, traceLeadings, traceStdinStates,
+          preStreams
         );
   }
 
@@ -824,14 +839,16 @@ module ExpandProof {
                 errorOutput: BenchWorld.Bytes, hadError: bool :|
         Core.InputTraceSummary(
           cmd, old(io.fs()), old(io.stdin()), io.stdin(),
-          output, errorOutput, hadError
+          output, errorOutput, hadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errorOutput &&
         exit == (if hadError then 1 else 0);
       InputTraceSummaryImpliesRelation(
         cmd, old(io.fs()), old(io.stdin()), io.stdin(),
-        output, errorOutput, hadError
+        output, errorOutput, hadError,
+        old(io.trustedStreams())
       );
     }
   }

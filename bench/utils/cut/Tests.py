@@ -280,3 +280,17 @@ def test_deferred_cut_regressions_placeholder() -> None:
 def test_cut_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Invalid positions use C-locale byte quoting.
+@pytest.mark.parametrize("value", ["1,'2", "é"])
+def test_escape_audit_invalid_position(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_cut_diagnostic_parity(["-b", value], Path(tmp_dir), input_data=b"a\n")
+
+
+# File errors use GNU's colon-forced shell quoting.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_cut_diagnostic_parity(["-b", "1", path], Path(tmp_dir))

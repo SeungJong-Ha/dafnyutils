@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "LsSchema.dfy"
 include "LsTime.dfy"
 
@@ -11,6 +12,15 @@ module LsSpec {
   import IOContract
   import Schema = LsSchema
   import Time = LsTime
+  import SE = StringEscaping
+
+  datatype DirentKindEvidence =
+    KnownDirectory | KnownSymlink | KnownNonDirectory | UnknownDirentKind
+
+  datatype EntryEvidenceSource =
+    StatusEntryEvidence(ordinal: nat) |
+    DirentEntryEvidence(entry: BenchWorld.DirEntry, kind: DirentKindEvidence) |
+    ImpliedDotEntryEvidence
 
   datatype EntryObservation = EntryObservation(
     displayName: string,
@@ -19,7 +29,10 @@ module LsSpec {
     followSymlink: bool,
     ok: bool,
     status: BenchWorld.FileStatus,
-    err: int
+    err: int,
+    entryKind: BenchWorld.DirectoryEntryKind,
+    ghost statusOrdinal: nat,
+    ghost source: EntryEvidenceSource
   )
 
   datatype OperandClass = AccessFailure | DirectOperand | ExpandedDirectory
@@ -27,6 +40,7 @@ module LsSpec {
   datatype OperandObservation = OperandObservation(
     index: nat,
     operand: BenchWorld.Path,
+    renderName: string,
     path: BenchWorld.Path,
     ok: bool,
     status: BenchWorld.FileStatus,
@@ -36,7 +50,10 @@ module LsSpec {
     body: BenchWorld.Bytes,
     accessErrors: BenchWorld.Bytes,
     sectionErrors: BenchWorld.Bytes,
-    failed: bool
+    failed: bool,
+    hasCycle: bool,
+    ghost firstStatus: nat,
+    ghost afterStatus: nat
   )
 
   datatype OutputGroup = OutputGroup(
@@ -55,8 +72,32 @@ module LsSpec {
     cycles: set<nat>,
     output: BenchWorld.Bytes,
     errors: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    openOk: bool,
+    openErr: int,
+    statusOk: bool,
+    openedStatus: BenchWorld.FileStatus,
+    statusErr: int,
+    cycle: bool,
+    ghost firstStatus: nat,
+    ghost listingFirstStatus: nat,
+    ghost listingAfterStatus: nat,
+    ghost afterStatus: nat
   )
+
+  ghost predicate RecursiveHasCycle(tree: RecursiveWitness)
+    decreases tree
+  {
+    tree.cycle || tree.cycles != {} ||
+    exists i: nat :: i in tree.children && RecursiveHasCycle(tree.children[i])
+  }
+
+  function RecursiveEntryEligible(observation: EntryObservation): bool
+  {
+    observation.displayName != "." && observation.displayName != ".." &&
+    (observation.entryKind == BenchWorld.DirectoryDirentKind ||
+     (observation.ok && observation.status.kind == BenchWorld.DirectoryKind))
+  }
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
@@ -114,35 +155,58 @@ module LsSpec {
 
   function AccessErrorMessageSpec(path: BenchWorld.Path, err: int): BenchWorld.Bytes
   {
-    "ls: cannot access '" + path + "': " + ErrnoTextSpec(err) + "\n"
+    "ls: cannot access " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+    ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function ReadDirectoryErrorMessageSpec(path: BenchWorld.Path, err: int): BenchWorld.Bytes
   {
-    "ls: reading directory '" + path + "': " + ErrnoTextSpec(err) + "\n"
+    "ls: reading directory " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+    ": " + ErrnoTextSpec(err) + "\n"
+  }
+
+  function OpenDirectoryErrorMessageSpec(displayPath: BenchWorld.Path, err: int): BenchWorld.Bytes
+  {
+    "ls: cannot open directory " + SE.SpecQuoteAfBytes(Utf8.Encode(displayPath)) +
+    ": " + ErrnoTextSpec(err) + "\n"
+  }
+
+  function DirectoryIdentityErrorMessageSpec(displayPath: BenchWorld.Path, err: int): BenchWorld.Bytes
+  {
+    "ls: cannot determine device and inode of " +
+    SE.SpecQuoteAfBytes(Utf8.Encode(displayPath)) +
+    ": " + ErrnoTextSpec(err) + "\n"
+  }
+
+  opaque function DirectoryHeaderSpec(displayPath: BenchWorld.Path): BenchWorld.Bytes
+  {
+    Utf8.Encode(displayPath) + ":\n"
   }
 
   function InvalidModeMessageSpec(mode: Schema.LsMode): BenchWorld.Bytes
   {
     match mode
     case ModeInvalidBlockSize(value) =>
-      "ls: invalid --block-size argument '" + value + "'\n"
+      Utf8.Encode("ls: invalid --block-size argument '") + Utf8.Encode(value) + "'\n"
     case ModeInvalidTime(value) =>
-      "ls: invalid argument '" + value + "' for '--time'\n" +
-      "Valid arguments are:\n" +
-      "  - 'atime', 'access', 'use'\n" +
-      "  - 'ctime', 'status'\n" +
-      "  - 'mtime', 'modification'\n" +
-      "Try 'ls --help' for more information.\n"
+      Utf8.Encode("ls: invalid argument ") + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+      Utf8.Encode(" for '--time'\n" +
+                  "Valid arguments are:\n" +
+                  "  - 'atime', 'access', 'use'\n" +
+                  "  - 'ctime', 'status'\n" +
+                  "  - 'mtime', 'modification'\n" +
+                  "  - 'birth', 'creation'\n" +
+                  "Try 'ls --help' for more information.\n")
     case ModeInvalidTimeStyle(value) =>
-      "ls: invalid argument '" + value + "' for 'time style'\n" +
-      "Valid arguments are:\n" +
-      "  - [posix-]full-iso\n" +
-      "  - [posix-]long-iso\n" +
-      "  - [posix-]iso\n" +
-      "  - [posix-]locale\n" +
-      "  - +FORMAT (e.g., +%H:%M) for a 'date'-style format\n" +
-      "Try 'ls --help' for more information.\n"
+      Utf8.Encode("ls: invalid argument ") + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+      Utf8.Encode(" for 'time style'\n" +
+                  "Valid arguments are:\n" +
+                  "  - [posix-]full-iso\n" +
+                  "  - [posix-]long-iso\n" +
+                  "  - [posix-]iso\n" +
+                  "  - [posix-]locale\n" +
+                  "  - +FORMAT (e.g., +%H:%M) for a 'date'-style format\n" +
+                  "Try 'ls --help' for more information.\n")
     case _ => []
   }
 
@@ -275,27 +339,173 @@ module LsSpec {
      ExecuteCharSpec(status.mode, 1 as bv32, 512 as bv32, 't', 'T')]
   }
 
-  function RenderEntrySpec(
+  datatype ColumnWidths = ColumnWidths(blocks: nat, links: nat, owner: nat, group: nat, size: nat)
+
+  lemma MaximumExists(values: set<nat>)
+    requires values != {}
+    ensures exists maximum: nat :: maximum in values && (forall value: nat | value in values :: value <= maximum)
+    decreases |values|
+  {
+    ghost var member :| member in values;
+    ghost var remaining := values - {member};
+    if remaining == {} {
+      assert values == {member};
+      assert forall value: nat | value in values :: value <= member;
+    } else {
+      MaximumExists(remaining);
+      ghost var tail: nat :| tail in remaining &&
+        forall value: nat | value in remaining :: value <= tail;
+      ghost var maximum := if member > tail then member else tail;
+      assert forall value: nat | value in values :: value <= maximum by {
+        forall value: nat | value in values
+          ensures value <= maximum
+        {
+          if value != member { assert value in remaining; }
+        }
+      }
+      assert maximum in values;
+    }
+  }
+
+  function MaximumWidth(values: set<nat>): (maximum: nat)
+    ensures values == {} ==> maximum == 0
+    ensures values != {} ==> maximum in values
+    ensures forall value: nat | value in values :: value <= maximum
+  {
+    if values == {} then 0
+    else
+      MaximumExists(values);
+      var maximum: nat :| maximum in values &&
+        forall value: nat | value in values :: value <= maximum;
+      maximum
+  }
+
+  function PadColumn(text: string, width: nat, right: bool): string
+  {
+    var blanks := seq((if width > |text| then width - |text| else 0), i => ' ');
+    if right then blanks + text else text + blanks
+  }
+
+  function StatusWidthsSpec(cmd: Schema.LsCmd, statuses: set<BenchWorld.FileStatus>): ColumnWidths
+  {
+    ColumnWidths(
+      MaximumWidth(set status <- statuses :: |NatTextSpec(DisplayedBlocksSpec(status.storage.allocatedBlocks, cmd.cliBlockSize))|),
+      MaximumWidth(set status <- statuses :: |NatTextSpec(status.linkCount)|),
+      MaximumWidth(set status <- statuses :: |NatTextSpec(status.ownership.uid)|),
+      MaximumWidth(set status <- statuses :: |NatTextSpec(status.ownership.gid)|),
+      MaximumWidth(set status <- statuses :: |NatTextSpec(DisplayedFileSizeSpec(status.storage.size, cmd.fileSizeBlockSize))|))
+  }
+
+  function ObservationWidthsSpec(cmd: Schema.LsCmd, observations: seq<EntryObservation>): ColumnWidths
+  {
+    StatusWidthsSpec(cmd, set i: nat | i < |observations| && observations[i].ok :: observations[i].status)
+  }
+
+  function OperandWidthsSpec(cmd: Schema.LsCmd, observations: seq<OperandObservation>): ColumnWidths
+  {
+    StatusWidthsSpec(cmd, set i: nat | i < |observations| && observations[i].ok :: observations[i].status)
+  }
+
+  function RenderOperandSpec(cmd: Schema.LsCmd, observations: seq<OperandObservation>, index: nat): BenchWorld.Bytes
+    requires index < |observations|
+  {
+    RenderAlignedEntrySpec(cmd, observations[index].renderName, observations[index].status,
+                          OperandWidthsSpec(cmd, observations))
+  }
+
+  function RenderEntrySpec(cmd: Schema.LsCmd, displayName: string, status: BenchWorld.FileStatus): BenchWorld.Bytes
+  {
+    RenderAlignedEntrySpec(cmd, displayName, status, ColumnWidths(0, 0, 0, 0, 0))
+  }
+
+  function RenderAlignedEntrySpec(
     cmd: Schema.LsCmd,
     displayName: string,
-    status: BenchWorld.FileStatus
+    status: BenchWorld.FileStatus,
+    widths: ColumnWidths
   ): BenchWorld.Bytes
   {
     var blockPrefix := if cmd.showBlocks then
-                         NatTextSpec(DisplayedBlocksSpec(status.storage.allocatedBlocks, cmd.cliBlockSize)) + " "
+                         PadColumn(NatTextSpec(DisplayedBlocksSpec(status.storage.allocatedBlocks, cmd.cliBlockSize)), widths.blocks, true) + " "
                        else "";
     Utf8.Encode(blockPrefix + if !cmd.numericLong then
       displayName + "\n"
     else
       ModeTextSpec(status) + " " +
-      NatTextSpec(status.linkCount) + " " +
-      NatTextSpec(status.ownership.uid) + " " +
-      NatTextSpec(status.ownership.gid) + " " +
-      NatTextSpec(DisplayedFileSizeSpec(
-                    status.storage.size, cmd.fileSizeBlockSize)) + " " +
+      PadColumn(NatTextSpec(status.linkCount), widths.links, true) + " " +
+      PadColumn(NatTextSpec(status.ownership.uid), widths.owner, true) + " " +
+      PadColumn(NatTextSpec(status.ownership.gid), widths.group, true) + " " +
+      PadColumn(NatTextSpec(DisplayedFileSizeSpec(
+                    status.storage.size, cmd.fileSizeBlockSize)), widths.size, true) + " " +
       TimeTextSpec(cmd, SelectedSecondsSpec(cmd, status),
                    SelectedNanosecondsSpec(cmd, status)) + " " +
       displayName + "\n")
+  }
+
+  function ClassifiedDirentKindSpec(kind: BenchWorld.DirectoryEntryKind): DirentKindEvidence
+  {
+    match kind
+    case UnknownDirentKind => UnknownDirentKind
+    case DirectoryDirentKind => KnownDirectory
+    case SymlinkDirentKind => KnownSymlink
+    case _ => KnownNonDirectory
+  }
+
+  function DirectoryEntryKindCharSpec(kind: BenchWorld.DirectoryEntryKind): char
+  {
+    match kind
+    case UnknownDirentKind => '?'
+    case RegularDirentKind => '-'
+    case DirectoryDirentKind => 'd'
+    case SymlinkDirentKind => 'l'
+    case FifoDirentKind => 'p'
+    case BlockDeviceDirentKind => 'b'
+    case CharacterDeviceDirentKind => 'c'
+    case SocketDirentKind => 's'
+  }
+
+  function FailedTimeWidthSpec(cmd: Schema.LsCmd): nat
+  {
+    match cmd.timeStyle
+    case DefaultC => 12
+    case FullIso => 35
+    case LongIso => 16
+    case Iso => 11
+    case EpochSeconds => 1
+  }
+
+  function RenderFailedEntrySpec(
+    cmd: Schema.LsCmd, observation: EntryObservation, widths: ColumnWidths
+  ): BenchWorld.Bytes
+  {
+    var blocks := if cmd.showBlocks then PadColumn("?", widths.blocks, true) + " " else "";
+    Utf8.Encode(blocks + (if cmd.numericLong then
+      [DirectoryEntryKindCharSpec(observation.entryKind)] + "????????? " +
+      PadColumn("?", widths.links, true) + " " +
+      PadColumn("?", widths.owner, false) + " " +
+      PadColumn("?", widths.group, false) + " " +
+      PadColumn("?", widths.size, true) + " " +
+      PadColumn("?", FailedTimeWidthSpec(cmd), true) + " "
+    else "") + observation.displayName + "\n")
+  }
+
+  function EntryDiagnosticPathSpec(displayPath: BenchWorld.Path, name: string): BenchWorld.Path
+  {
+    if displayPath == "." then name
+    else if |displayPath| > 0 && displayPath[|displayPath| - 1] == '/' then displayPath + name
+    else BenchWorld.AppendPath(displayPath, name)
+  }
+
+  function OperandFailureExitSpec(observation: OperandObservation): nat
+  {
+    if !observation.failed then 0
+    else if observation.operandClass == AccessFailure || !observation.sectionAvailable || observation.hasCycle then 2
+    else 1
+  }
+
+  function OperandExitSpec(observations: seq<OperandObservation>): nat
+  {
+    MaximumWidth(set i: nat | i < |observations| :: OperandFailureExitSpec(observations[i]))
   }
 
   function TimeTextSpec(cmd: Schema.LsCmd, seconds: int, nanoseconds: int): string
@@ -328,8 +538,8 @@ module LsSpec {
 
   function MakeAbsoluteSpec(cwd: BenchWorld.Path, path: BenchWorld.Path): BenchWorld.Path
   {
-    if BenchWorld.IsAbsolutePath(path) then BenchWorld.NormalizePath(path)
-    else BenchWorld.NormalizePath(BenchWorld.AppendPath(cwd, path))
+    if path == "" || BenchWorld.IsAbsolutePath(path) then path
+    else BenchWorld.AppendPath(cwd, path)
   }
 
   function VisibleNameSpec(cmd: Schema.LsCmd, name: string): bool
@@ -350,35 +560,89 @@ module LsSpec {
     cmd.sortMode != Schema.SortName || cmd.recursive
   }
 
+  function EntryRenderSortMetadataRequiredSpec(cmd: Schema.LsCmd): bool
+  {
+    cmd.numericLong || cmd.showBlocks || cmd.sortMode != Schema.SortName
+  }
+
+  function EntryStatusRequiredSpec(
+    cmd: Schema.LsCmd, kind: DirentKindEvidence, name: string
+  ): bool
+  {
+    EntryRenderSortMetadataRequiredSpec(cmd) ||
+    (cmd.recursive && name != "." && name != ".." &&
+      (kind == UnknownDirentKind ||
+       (kind == KnownSymlink && cmd.followMode == Schema.FollowAlways)))
+  }
+
+  function DirentKindMatchesEntrySpec(
+    kind: DirentKindEvidence, entry: BenchWorld.DirEntry
+  ): bool
+  {
+    match kind
+    case KnownDirectory => entry.isDir && !entry.isSymlink
+    case KnownSymlink => !entry.isDir && entry.isSymlink
+    case KnownNonDirectory => !entry.isDir && !entry.isSymlink
+    case UnknownDirentKind => true
+  }
+
+  ghost function EntryStatusCallCount(observation: EntryObservation): nat
+  {
+    match observation.source
+    case StatusEntryEvidence(_) => 1
+    case _ => 0
+  }
+
   function ImplicitDirectoryFollowSpec(cmd: Schema.LsCmd): bool
   {
     cmd.followMode == Schema.FollowNever &&
     !cmd.numericLong && !cmd.listDirectories
   }
 
-  function OperandStatusResultSpec(
+  ghost function StatusResultSpec(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
-    path: BenchWorld.Path
+    ordinal: nat,
+    path: BenchWorld.Path,
+    followSymlink: bool
   ): BenchWorld.Result<BenchWorld.FileStatus>
   {
-    if ExplicitCommandLineFollowSpec(cmd) then
-      IOContract.GetFileStatusResultFields(fs, path, true)
+    match cmd.statusContext
+    case UnboundStatusObservations =>
+      IOContract.GetFileStatusResultFields(fs, path, followSymlink)
+    case BoundStatusObservations(observations, _) =>
+      IOContract.ObservedFileStatusResultFields(
+        observations, ordinal, fs, path, followSymlink)
+  }
+
+  ghost function OperandStatusCallCountSpec(
+    cmd: Schema.LsCmd,
+    fs: BenchWorld.FileSystem,
+    path: BenchWorld.Path,
+    firstStatus: nat
+  ): nat
+  {
+    if !ImplicitDirectoryFollowSpec(cmd) then 1
     else
-      match IOContract.GetFileStatusResultFields(fs, path, false)
-      case Err(error) => BenchWorld.Err(error)
+      var first := StatusResultSpec(cmd, fs, firstStatus, path, true);
+      if first.Ok? && first.v.kind == BenchWorld.DirectoryKind then 1 else 2
+  }
+
+  ghost function OperandStatusResultSpec(
+    cmd: Schema.LsCmd,
+    fs: BenchWorld.FileSystem,
+    path: BenchWorld.Path,
+    firstStatus: nat
+  ): BenchWorld.Result<BenchWorld.FileStatus>
+  {
+    if ImplicitDirectoryFollowSpec(cmd) then
+      match StatusResultSpec(cmd, fs, firstStatus, path, true)
       case Ok(status) =>
-        if !ImplicitDirectoryFollowSpec(cmd) ||
-           status.kind != BenchWorld.SymlinkKind then
-          BenchWorld.Ok(status)
-        else
-          match IOContract.GetFileStatusResultFields(fs, path, true)
-          case Ok(targetStatus) =>
-            if targetStatus.kind == BenchWorld.DirectoryKind then
-              BenchWorld.Ok(targetStatus)
-            else
-              BenchWorld.Ok(status)
-          case Err(_) => BenchWorld.Ok(status)
+        if status.kind == BenchWorld.DirectoryKind then BenchWorld.Ok(status)
+        else StatusResultSpec(cmd, fs, firstStatus + 1, path, false)
+      case Err(_) => StatusResultSpec(cmd, fs, firstStatus + 1, path, false)
+    else StatusResultSpec(cmd, fs, firstStatus, path,
+                          ExplicitCommandLineFollowSpec(cmd))
   }
 
   function RenderNameSpec(
@@ -428,17 +692,15 @@ module LsSpec {
     right: EntryObservation
   ): bool
   {
-    if left.ok != right.ok then left.ok
-    else if !left.ok then StringLessSpec(left.displayName, right.displayName)
-    else if cmd.sortMode == Schema.SortSize &&
-            left.status.storage.size != right.status.storage.size then
-      left.status.storage.size > right.status.storage.size
-    else if cmd.sortMode == Schema.SortTime && left.ok && right.ok &&
-            SelectedSecondsSpec(cmd, left.status) != SelectedSecondsSpec(cmd, right.status) then
-      SelectedSecondsSpec(cmd, left.status) > SelectedSecondsSpec(cmd, right.status)
-    else if cmd.sortMode == Schema.SortTime && left.ok && right.ok &&
-            SelectedNanosecondsSpec(cmd, left.status) != SelectedNanosecondsSpec(cmd, right.status) then
-      SelectedNanosecondsSpec(cmd, left.status) > SelectedNanosecondsSpec(cmd, right.status)
+    if cmd.sortMode == Schema.SortSize &&
+            (if left.ok then left.status.storage.size else 0) != (if right.ok then right.status.storage.size else 0) then
+      (if left.ok then left.status.storage.size else 0) > (if right.ok then right.status.storage.size else 0)
+    else if cmd.sortMode == Schema.SortTime &&
+            (if left.ok then SelectedSecondsSpec(cmd, left.status) else 0) != (if right.ok then SelectedSecondsSpec(cmd, right.status) else 0) then
+      (if left.ok then SelectedSecondsSpec(cmd, left.status) else 0) > (if right.ok then SelectedSecondsSpec(cmd, right.status) else 0)
+    else if cmd.sortMode == Schema.SortTime &&
+            (if left.ok then SelectedNanosecondsSpec(cmd, left.status) else 0) != (if right.ok then SelectedNanosecondsSpec(cmd, right.status) else 0) then
+      (if left.ok then SelectedNanosecondsSpec(cmd, left.status) else 0) > (if right.ok then SelectedNanosecondsSpec(cmd, right.status) else 0)
     else
       StringLessSpec(left.displayName, right.displayName)
   }
@@ -469,17 +731,27 @@ module LsSpec {
   }
 
   ghost opaque predicate MetadataObservationRelation(
+    cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     observation: EntryObservation
   )
   {
-    match IOContract.GetFileStatusResultFields(
-        fs, observation.accessPath, observation.followSymlink)
+    match StatusResultSpec(cmd, fs, observation.statusOrdinal,
+                           observation.accessPath, observation.followSymlink)
     case Ok(expected) =>
       observation.ok && observation.status == expected && observation.err == 0
     case Err(error) =>
       !observation.ok && observation.err == IOContract.IOErrorErrno(error) &&
       observation.renderName == observation.displayName
+  }
+
+  ghost predicate CanonicalDirentFields(observation: EntryObservation)
+  {
+    observation.ok &&
+    observation.status == BenchWorld.DEFAULT_FILE_STATUS &&
+    observation.err == 0 &&
+    observation.renderName == observation.displayName &&
+    !observation.followSymlink
   }
 
   ghost predicate DirectorySourceRelation(
@@ -489,20 +761,50 @@ module LsSpec {
     observation: EntryObservation
   )
   {
-    MetadataObservationRelation(fs, observation) &&
-    observation.followSymlink ==
-    (cmd.followMode == Schema.FollowAlways && EntryMetadataRequiredSpec(cmd)) &&
     VisibleNameSpec(cmd, observation.displayName) &&
-    ((cmd.hiddenMode == Schema.All && observation.displayName == "." &&
-      observation.accessPath == BenchWorld.AppendPath(path, ".")) ||
-     (cmd.hiddenMode == Schema.All && observation.displayName == ".." &&
-      observation.accessPath == BenchWorld.AppendPath(path, "..")) ||
-     (observation.accessPath == BenchWorld.AppendPath(path, observation.displayName) &&
-      exists resolved: BenchWorld.Path, entry: BenchWorld.DirEntry ::
+    match observation.source
+    case StatusEntryEvidence(ordinal) =>
+      ordinal == observation.statusOrdinal &&
+      EntryStatusRequiredSpec(
+        cmd, ClassifiedDirentKindSpec(observation.entryKind), observation.displayName) &&
+      MetadataObservationRelation(cmd, fs, observation) &&
+      observation.followSymlink ==
+        (cmd.followMode == Schema.FollowAlways && EntryMetadataRequiredSpec(cmd)) &&
+      ((cmd.hiddenMode == Schema.All && observation.displayName == "." &&
+        observation.accessPath == BenchWorld.AppendPath(path, ".") &&
+        observation.entryKind == BenchWorld.DirectoryDirentKind) ||
+       (cmd.hiddenMode == Schema.All && observation.displayName == ".." &&
+        observation.accessPath == BenchWorld.AppendPath(path, "..") &&
+        observation.entryKind == BenchWorld.DirectoryDirentKind) ||
+       (observation.accessPath == BenchWorld.AppendPath(path, observation.displayName) &&
+        exists resolved: BenchWorld.Path, entry: BenchWorld.DirEntry ::
+          IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved) &&
+          BenchWorld.FsContainsPath(fs, resolved) &&
+          entry in IOContract.DirectoryEntriesForPathFields(fs, resolved) &&
+          entry.name == observation.displayName &&
+          IOContract.DirectoryEntryKindMatchesFilesystemFields(
+            fs, resolved, entry.name, observation.entryKind)))
+    case DirentEntryEvidence(entry, kind) =>
+      kind == ClassifiedDirentKindSpec(observation.entryKind) &&
+      !EntryStatusRequiredSpec(cmd, kind, observation.displayName) &&
+      DirentKindMatchesEntrySpec(kind, entry) &&
+      IOContract.DirectoryEntryKindMatchesEntry(observation.entryKind, entry) &&
+      CanonicalDirentFields(observation) &&
+      observation.accessPath == BenchWorld.AppendPath(path, observation.displayName) &&
+      entry.name == observation.displayName &&
+      (exists resolved: BenchWorld.Path ::
         IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved) &&
         BenchWorld.FsContainsPath(fs, resolved) &&
         entry in IOContract.DirectoryEntriesForPathFields(fs, resolved) &&
-        entry.name == observation.displayName))
+        IOContract.DirectoryEntryKindMatchesFilesystemFields(
+          fs, resolved, entry.name, observation.entryKind))
+    case ImpliedDotEntryEvidence =>
+      observation.entryKind == BenchWorld.DirectoryDirentKind &&
+      !EntryRenderSortMetadataRequiredSpec(cmd) &&
+      CanonicalDirentFields(observation) &&
+      cmd.hiddenMode == Schema.All &&
+      (observation.displayName == "." || observation.displayName == "..") &&
+      observation.accessPath == BenchWorld.AppendPath(path, observation.displayName)
   }
 
   ghost opaque predicate DistinctDisplayNames(observations: seq<EntryObservation>)
@@ -518,10 +820,19 @@ module LsSpec {
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     complete: bool,
     observations: seq<EntryObservation>
   )
   {
+    (exists statusCuts: seq<nat> ::
+      |statusCuts| == |observations| + 1 &&
+      statusCuts[0] == firstStatus &&
+      statusCuts[|observations|] == afterStatus &&
+      (forall i: nat | i < |observations| ::
+        observations[i].statusOrdinal == statusCuts[i] &&
+        statusCuts[i + 1] == statusCuts[i] + EntryStatusCallCount(observations[i]))) &&
     DistinctDisplayNames(observations) &&
     (forall i: nat :: i < |observations| ==>
                         DirectorySourceRelation(cmd, fs, path, observations[i])) &&
@@ -558,27 +869,36 @@ module LsSpec {
   ghost predicate ObservationPiecesRelation(
     cmd: Schema.LsCmd,
     observations: seq<EntryObservation>,
-    outputFragments: seq<BenchWorld.Bytes>,
-    errorFragments: seq<BenchWorld.Bytes>
+    outputFragments: seq<BenchWorld.Bytes>
   )
   {
     |outputFragments| == |observations| &&
-    |errorFragments| == |observations| &&
     forall i: nat | i < |observations| ::
       outputFragments[i] ==
       (if observations[i].ok
-       then RenderEntrySpec(cmd, observations[i].renderName, observations[i].status)
-       else []) &&
-      errorFragments[i] ==
-      (if observations[i].ok
-       then []
-       else AccessErrorMessageSpec(observations[i].displayName, observations[i].err))
+       then RenderAlignedEntrySpec(cmd, observations[i].renderName, observations[i].status, ObservationWidthsSpec(cmd, observations))
+       else RenderFailedEntrySpec(cmd, observations[i], ObservationWidthsSpec(cmd, observations)))
   }
 
-  ghost predicate DirectoryListingRelation(
+  ghost predicate ObservationErrorsRelation(
+    displayPath: BenchWorld.Path,
+    observations: seq<EntryObservation>,
+    errorFragments: seq<BenchWorld.Bytes>
+  )
+  {
+    |errorFragments| == |observations| &&
+    forall i: nat | i < |observations| :: errorFragments[i] ==
+      (if observations[i].ok then [] else
+       AccessErrorMessageSpec(EntryDiagnosticPathSpec(displayPath, observations[i].displayName), observations[i].err))
+  }
+
+  ghost opaque predicate DirectoryListingRelation(
     cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     observations: seq<EntryObservation>,
     readErr: int,
     output: BenchWorld.Bytes,
@@ -590,9 +910,11 @@ module LsSpec {
       outputFragments: seq<BenchWorld.Bytes>, outputCuts: seq<nat>,
       errorFragments: seq<BenchWorld.Bytes>, errorCuts: seq<nat>,
       entryOutput: BenchWorld.Bytes, entryErrors: BenchWorld.Bytes ::
-      DirectoryObservationRelation(cmd, fs, path, readErr == 0, rawObservations) &&
+      DirectoryObservationRelation(cmd, fs, path, firstStatus, afterStatus,
+                                   readErr == 0, rawObservations) &&
       EntrySortingRelation(cmd, rawObservations, observations) &&
-      ObservationPiecesRelation(cmd, observations, outputFragments, errorFragments) &&
+      ObservationPiecesRelation(cmd, observations, outputFragments) &&
+      ObservationErrorsRelation(displayPath, rawObservations, errorFragments) &&
       FragmentsConcatenate(outputFragments, entryOutput, outputCuts) &&
       output == TotalLineSpec(cmd, rawObservations) + entryOutput &&
       FragmentsConcatenate(errorFragments, entryErrors, errorCuts) &&
@@ -604,18 +926,47 @@ module LsSpec {
 
   function ChildDisplayPath(displayPath: BenchWorld.Path, name: string): BenchWorld.Path
   {
-    if displayPath == "." then "./" + name else displayPath + "/" + name
+    TrailingSlashCutExists(displayPath);
+    var cut: nat :| cut <= |displayPath| && TrailingSlashCut(displayPath, cut);
+    displayPath[..cut] + "/" + name
+  }
+
+  predicate TrailingSlashCut(path: string, cut: nat)
+  {
+    cut <= |path| && (cut == 0 || path[cut - 1] != '/') &&
+    (forall j: nat :: cut <= j < |path| ==> path[j] == '/')
+  }
+
+  lemma TrailingSlashCutExists(path: string)
+    ensures exists cut: nat :: TrailingSlashCut(path, cut)
+    decreases |path|
+  {
+    if |path| > 0 && path[|path| - 1] == '/' {
+      TrailingSlashCutExists(path[..|path| - 1]);
+      var cut: nat :| TrailingSlashCut(path[..|path| - 1], cut);
+      assert forall j: nat :: cut <= j < |path| ==> path[j] == '/';
+      assert TrailingSlashCut(path, cut);
+    } else {
+      assert TrailingSlashCut(path, |path|);
+    }
   }
 
   function RecursiveCycleMessageSpec(displayPath: BenchWorld.Path): BenchWorld.Bytes
   {
-    "ls: " + displayPath + ": not listing already-listed directory\n"
+    "ls: " + SE.SpecQuoteFBytes(Utf8.Encode(displayPath)) +
+    ": not listing already-listed directory\n"
+  }
+
+  function RecursiveNodeListed(tree: RecursiveWitness): bool
+  {
+    tree.openOk && tree.statusOk && !tree.cycle
   }
 
   function RecursiveOutputFragments(tree: RecursiveWitness): seq<BenchWorld.Bytes>
   {
     seq(|tree.observations|, i requires i < |tree.observations| =>
-      if i in tree.children then "\n" + tree.children[i].output else [])
+      if i in tree.children && RecursiveNodeListed(tree.children[i])
+      then "\n" + tree.children[i].output else [])
   }
 
   function RecursiveErrorFragments(
@@ -640,43 +991,87 @@ module LsSpec {
   )
     decreases tree
   {
-    DirectoryListingRelation(
-      cmd, fs, accessPath, tree.observations, tree.readErr,
-      tree.listingOutput, tree.listingErrors, tree.listingHadError) &&
-    tree.children.Keys !! tree.cycles &&
-    (forall i: nat :: i in tree.cycles ==> i < |tree.observations|) &&
-    (forall i: nat :: i < |tree.observations| ==>
-                        var observation := tree.observations[i];
-                        var eligible := observation.ok &&
-                                        observation.status.kind == BenchWorld.DirectoryKind &&
-                                        observation.displayName != "." && observation.displayName != "..";
-                        (i in tree.cycles <==> eligible && observation.status.hostKey in ancestors) &&
-                        (i in tree.children <==> eligible && observation.status.hostKey !in ancestors)) &&
-    (forall i: nat :: i in tree.children ==>
-                        i < |tree.observations| &&
-                        RecursiveDirectoryRelation(
-                          cmd, fs,
-                          ChildDisplayPath(displayPath, tree.observations[i].displayName),
-                          tree.observations[i].accessPath,
-                          ancestors + {tree.observations[i].status.hostKey},
-                          tree.children[i])) &&
-    (exists outputCuts: seq<nat>, errorCuts: seq<nat>,
-       childOutput: BenchWorld.Bytes, childErrors: BenchWorld.Bytes ::
-       FragmentsConcatenate(RecursiveOutputFragments(tree), childOutput, outputCuts) &&
-       FragmentsConcatenate(
-         RecursiveErrorFragments(displayPath, tree), childErrors, errorCuts) &&
-       tree.output == displayPath + ":\n" + tree.listingOutput + childOutput &&
-       tree.errors == tree.listingErrors + childErrors) &&
-    tree.hadError ==
-    (tree.listingHadError || |tree.cycles| > 0 ||
-     exists i: nat :: i in tree.children && tree.children[i].hadError)
+    cmd.statusContext.BoundStatusObservations? &&
+    tree.openOk == (IOContract.OpenDirFailureErrFields(fs, accessPath) == 0) &&
+    (if !tree.openOk then
+       tree.openErr == IOContract.OpenDirFailureErrFields(fs, accessPath) &&
+       tree.openErr > 0 && !tree.statusOk && !tree.cycle &&
+       tree.listingFirstStatus == tree.firstStatus &&
+       tree.listingAfterStatus == tree.firstStatus &&
+       tree.afterStatus == tree.firstStatus &&
+       tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+       tree.output == [] &&
+       tree.errors == OpenDirectoryErrorMessageSpec(displayPath, tree.openErr) &&
+       tree.hadError
+     else if !tree.statusOk then
+       tree.openErr == 0 && tree.statusErr > 0 && !tree.cycle &&
+       tree.listingFirstStatus == tree.firstStatus &&
+       tree.listingAfterStatus == tree.firstStatus &&
+       tree.afterStatus == tree.firstStatus &&
+       tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+       tree.output == [] &&
+       tree.errors == DirectoryIdentityErrorMessageSpec(displayPath, tree.statusErr) &&
+       tree.hadError
+     else
+       tree.openErr == 0 && tree.statusErr == 0 &&
+       tree.listingFirstStatus == tree.firstStatus + 1 &&
+       (exists resolved: BenchWorld.Path ::
+         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+         IOContract.ObservedFileStatusContractFields(
+           cmd.statusContext.observations, tree.firstStatus, fs, resolved,
+           true, true, tree.openedStatus, 0)) &&
+       (if tree.cycle then
+          tree.openedStatus.hostKey in ancestors &&
+          tree.listingAfterStatus == tree.listingFirstStatus &&
+          tree.afterStatus == tree.listingFirstStatus &&
+          tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+          tree.output == [] && tree.errors == RecursiveCycleMessageSpec(displayPath) &&
+          tree.hadError
+        else
+          tree.openedStatus.hostKey !in ancestors &&
+          DirectoryListingRelation(
+            cmd, displayPath, fs, accessPath, tree.listingFirstStatus,
+            tree.listingAfterStatus,
+            tree.observations, tree.readErr,
+            tree.listingOutput, tree.listingErrors, tree.listingHadError) &&
+          (exists statusCuts: seq<nat> ::
+            |statusCuts| == |tree.observations| + 1 &&
+            statusCuts[0] == tree.listingAfterStatus &&
+            statusCuts[|tree.observations|] == tree.afterStatus &&
+            (forall i: nat | i < |tree.observations| ::
+              (if i in tree.children then
+                 tree.children[i].firstStatus == statusCuts[i] &&
+                 tree.children[i].afterStatus == statusCuts[i + 1]
+               else statusCuts[i] == statusCuts[i + 1]))) &&
+          tree.cycles <= tree.children.Keys &&
+          (forall i: nat :: i < |tree.observations| ==>
+            (i in tree.children <==> RecursiveEntryEligible(tree.observations[i])) &&
+            (i in tree.cycles <==> i in tree.children && tree.children[i].cycle)) &&
+          (forall i: nat :: i in tree.children ==>
+            i < |tree.observations| &&
+            RecursiveDirectoryRelation(
+              cmd, fs,
+              ChildDisplayPath(displayPath, tree.observations[i].displayName),
+              tree.observations[i].accessPath,
+              ancestors + {tree.openedStatus.hostKey}, tree.children[i])) &&
+          (exists outputCuts: seq<nat>, errorCuts: seq<nat>,
+             childOutput: BenchWorld.Bytes, childErrors: BenchWorld.Bytes ::
+             FragmentsConcatenate(RecursiveOutputFragments(tree), childOutput, outputCuts) &&
+             FragmentsConcatenate(
+               RecursiveErrorFragments(displayPath, tree), childErrors, errorCuts) &&
+             tree.output == DirectoryHeaderSpec(displayPath) + tree.listingOutput + childOutput &&
+             tree.errors == tree.listingErrors + childErrors) &&
+          tree.hadError ==
+            (tree.listingHadError ||
+             exists i: nat :: i in tree.children && tree.children[i].hadError)))
   }
 
   function OperandAsEntry(observation: OperandObservation): EntryObservation
   {
     EntryObservation(
       observation.operand, observation.operand, observation.path, false,
-      observation.ok, observation.status, observation.err)
+      observation.ok, observation.status, observation.err,
+      BenchWorld.UnknownDirentKind, 0, StatusEntryEvidence(0))
   }
 
   function OperandClassRank(kind: OperandClass): nat
@@ -728,15 +1123,18 @@ module LsSpec {
     observation.sectionAvailable ==
     (observation.operandClass == ExpandedDirectory &&
      IOContract.OpenDirFailureErrFields(fs, observation.path) == 0) &&
-    match OperandStatusResultSpec(cmd, fs, observation.path)
+    match OperandStatusResultSpec(cmd, fs, observation.path, observation.firstStatus)
     case Err(error) =>
       !observation.ok &&
       observation.err == IOContract.IOErrorErrno(error) &&
       observation.operandClass == AccessFailure &&
+      observation.afterStatus == observation.firstStatus +
+        OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                   observation.firstStatus) &&
       observation.body == [] &&
       observation.accessErrors == AccessErrorMessageSpec(
         observation.operand, observation.err) &&
-      observation.sectionErrors == [] && observation.failed
+      observation.sectionErrors == [] && observation.failed && !observation.hasCycle
     case Ok(status) =>
       observation.ok && observation.status == status && observation.err == 0 &&
       observation.accessErrors == [] &&
@@ -747,36 +1145,55 @@ module LsSpec {
             exists tree: RecursiveWitness ::
               RecursiveDirectoryRelation(
                 cmd, fs, observation.operand, observation.path,
-                {status.hostKey}, tree) &&
+                {}, tree) &&
+              tree.firstStatus == observation.firstStatus +
+                OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                           observation.firstStatus) &&
+              tree.afterStatus == observation.afterStatus &&
               observation.body == tree.output &&
               observation.sectionErrors == tree.errors &&
-              observation.failed == tree.hadError
+              observation.failed == tree.hadError &&
+              observation.hasCycle == RecursiveHasCycle(tree)
           else
+            !observation.hasCycle &&
             exists entries: seq<EntryObservation>, readErr: int,
-              listingOutput: BenchWorld.Bytes ::
+              listingOutput: BenchWorld.Bytes
+              {:trigger DirectoryListingRelation(
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
+                listingOutput, observation.sectionErrors, observation.failed)} ::
               DirectoryListingRelation(
-                cmd, fs, observation.path, entries, readErr,
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
                 listingOutput, observation.sectionErrors, observation.failed) &&
               observation.body ==
               (if |cmd.operands| > 1
-               then observation.operand + ":\n"
+               then DirectoryHeaderSpec(observation.operand)
                else []) + listingOutput
         else
+          observation.afterStatus == observation.firstStatus +
+            OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                       observation.firstStatus) &&
           observation.body == [] &&
-          observation.sectionErrors == ReadDirectoryErrorMessageSpec(
-            observation.path,
+          observation.sectionErrors == OpenDirectoryErrorMessageSpec(
+            observation.operand,
             IOContract.OpenDirFailureErrFields(fs, observation.path)) &&
-          observation.failed
+          observation.failed && !observation.hasCycle
       else
         observation.operandClass == DirectOperand &&
+        observation.afterStatus == observation.firstStatus +
+          OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                     observation.firstStatus) &&
         !observation.sectionAvailable &&
-        observation.body == RenderEntrySpec(
-          cmd,
-          RenderNameSpec(
+        observation.renderName == RenderNameSpec(
             fs, observation.operand, observation.path,
-            ExplicitCommandLineFollowSpec(cmd), cmd.numericLong, status),
-          status) &&
-        observation.sectionErrors == [] && !observation.failed
+            ExplicitCommandLineFollowSpec(cmd), cmd.numericLong, status) &&
+        observation.body == RenderEntrySpec(cmd, observation.renderName, status) &&
+        observation.sectionErrors == [] && !observation.failed && !observation.hasCycle
   }
 
   ghost predicate DirectPositionRelation(
@@ -802,6 +1219,7 @@ module LsSpec {
   }
 
   ghost predicate OutputGroupsWitnessRelation(
+    cmd: Schema.LsCmd,
     sorted: seq<OperandObservation>, groups: seq<OutputGroup>,
     directPositions: seq<nat>, directoryPositions: seq<nat>,
     directIndices: seq<nat>, directFragments: seq<BenchWorld.Bytes>,
@@ -812,7 +1230,7 @@ module LsSpec {
     DirectoryPositionRelation(sorted, directoryPositions) &&
     |directFragments| == |directPositions| &&
     (forall k: nat :: k < |directPositions| ==>
-                        directFragments[k] == sorted[directPositions[k]].body) &&
+                        directFragments[k] == RenderOperandSpec(cmd, sorted, directPositions[k])) &&
     FragmentsConcatenate(directFragments, directBody, directCuts) &&
     |directIndices| == |directPositions| &&
     (forall k: nat :: k < |directPositions| ==>
@@ -820,7 +1238,12 @@ module LsSpec {
     |groups| == |directoryPositions| + (if |directPositions| == 0 then 0 else 1) &&
     (|directPositions| > 0 ==>
        groups[0] == OutputGroup(
-         directIndices, directBody, false)) &&
+         directIndices,
+         directBody +
+           (if |directoryPositions| == 0 &&
+               (exists i: nat :: i < |sorted| &&
+                 sorted[i].operandClass == ExpandedDirectory)
+            then "\n" else []), false)) &&
     (forall k: nat :: k < |directoryPositions| ==>
                         var offset := if |directPositions| == 0 then 0 else 1;
                         groups[k + offset] == OutputGroup(
@@ -829,6 +1252,7 @@ module LsSpec {
   }
 
   ghost predicate OutputGroupsRelation(
+    cmd: Schema.LsCmd,
     sorted: seq<OperandObservation>,
     groups: seq<OutputGroup>
   )
@@ -838,7 +1262,7 @@ module LsSpec {
       directFragments: seq<BenchWorld.Bytes>, directCuts: seq<nat>,
       directBody: BenchWorld.Bytes ::
       OutputGroupsWitnessRelation(
-        sorted, groups, directPositions, directoryPositions, directIndices,
+        cmd, sorted, groups, directPositions, directoryPositions, directIndices,
         directFragments, directCuts, directBody)
   }
 
@@ -872,49 +1296,83 @@ module LsSpec {
       errors == accessErrors + sectionErrors
   }
 
-  ghost predicate RunRelation(
+  ghost opaque predicate RunRelation(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     output: BenchWorld.Bytes,
     errors: BenchWorld.Bytes,
     exit: int
   )
   {
     exists observations: seq<OperandObservation>,
-      sorted: seq<OperandObservation>, groups: seq<OutputGroup> ::
+      sorted: seq<OperandObservation>, groups: seq<OutputGroup>,
+      statusCuts: seq<nat> ::
       |observations| == |cmd.operands| &&
+      |statusCuts| == |observations| + 1 &&
+      statusCuts[0] == firstStatus &&
+      statusCuts[|observations|] == afterStatus &&
+      (forall i: nat | i < |observations| ::
+        observations[i].firstStatus == statusCuts[i] &&
+        observations[i].afterStatus == statusCuts[i + 1]) &&
       (forall i: nat | i < |observations| ::
          observations[i].index == i &&
          OperandObservationRelation(cmd, fs, cwd, observations[i])) &&
       OperandSortingRelation(cmd, observations, sorted) &&
-      OutputGroupsRelation(sorted, groups) &&
+      OutputGroupsRelation(cmd, sorted, groups) &&
       SeparatedGroupsRelation(groups, output) &&
       OperandErrorsRelation(observations, sorted, errors) &&
-      exit == (if exists i: nat ::
-                    i < |observations| && observations[i].failed then 2 else 0)
+      exit == OperandExitSpec(observations)
   }
 
-  twostate predicate Spec(raw: Schema.LsCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.cwdRegion, io.envRegion, io.nowRegion, io.stdoutRegion, io.stderrRegion
+  // The same observable relation is available to exact execution classifiers.
+  ghost predicate ObservedSpec(
+    raw: Schema.LsCmdRaw,
+    fs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    env: map<string, string>,
+    now: int,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int
+  )
   {
-    var cmd := EffectiveCommandSpec(raw, old(io.env()), old(io.now()));
+    var cmd := Schema.WithStatusObservations(
+      EffectiveCommandSpec(raw, env, now), observations, firstStatus);
+    (cmd.mode != Schema.ModeRun ==> afterStatus == firstStatus) &&
     if cmd.mode == Schema.ModeHelp then
-      io.stdout() == old(io.stdout()) + HelpTextSpec() &&
-      io.stderr() == old(io.stderr()) &&
+      afterStdout == beforeStdout + HelpTextSpec() &&
+      afterStderr == beforeStderr &&
       exit == 0
     else if cmd.mode == Schema.ModeVersion then
-      io.stdout() == old(io.stdout()) + VersionTextSpec() &&
-      io.stderr() == old(io.stderr()) &&
+      afterStdout == beforeStdout + VersionTextSpec() &&
+      afterStderr == beforeStderr &&
       exit == 0
     else if cmd.mode != Schema.ModeRun then
-      io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + InvalidModeMessageSpec(cmd.mode) &&
+      afterStdout == beforeStdout &&
+      afterStderr == beforeStderr + InvalidModeMessageSpec(cmd.mode) &&
       exit == (if cmd.mode.ModeInvalidTime? then 1 else 2)
     else
       exists output: BenchWorld.Bytes, errors: BenchWorld.Bytes ::
-        RunRelation(cmd, old(io.fs()), old(io.cwd()), output, errors, exit) &&
-        io.stdout() == old(io.stdout()) + output &&
-        io.stderr() == old(io.stderr()) + errors
+        RunRelation(cmd, fs, cwd, firstStatus, afterStatus,
+                    output, errors, exit) &&
+        afterStdout == beforeStdout + output &&
+        afterStderr == beforeStderr + errors
+  }
+
+  twostate predicate Spec(raw: Schema.LsCmdRaw, io: BenchIO.IO, exit: int)
+    reads io.fsRegion, io.cwdRegion, io.envRegion, io.nowRegion,
+          io.statusObservationsRegion, io.stdoutRegion, io.stderrRegion
+  {
+    ObservedSpec(raw, old(io.fs()), old(io.cwd()), old(io.env()), old(io.now()),
+                 io.statusObservations(), old(io.statusCursor()), io.statusCursor(),
+                 old(io.stdout()), io.stdout(), old(io.stderr()), io.stderr(), exit)
   }
 }

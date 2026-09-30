@@ -533,14 +533,15 @@ module ExpandCore {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     match input
     case Stdin =>
       result == BenchWorld.Ok(stdinBefore) && stdinAfter == []
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path) &&
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path) &&
       stdinAfter == stdinBefore
   }
 
@@ -597,7 +598,8 @@ module ExpandCore {
     errorFlags: seq<bool>,
     columns: seq<nat>,
     leadings: seq<bool>,
-    stdinStates: seq<BenchWorld.Bytes>
+    stdinStates: seq<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     count <= |cmd.inputs| &&
@@ -615,7 +617,8 @@ module ExpandCore {
     (forall i: nat :: i < count ==>
                         ReadStepSummary(
                           cmd.inputs[i], preFs, stdinStates[i], stdinStates[i + 1],
-                          results[i]
+                          results[i],
+                          preStreams
                         ) &&
                         InputPieceSummary(
                           cmd, results[i], columns[i], leadings[i],
@@ -636,7 +639,8 @@ module ExpandCore {
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     exists
@@ -650,7 +654,8 @@ module ExpandCore {
       InputTracePrefixSummary(
         cmd, preFs, preStdin, |cmd.inputs|, postStdin,
         output, errorOutput, hadError, results, outputPieces,
-        errorPieces, errorFlags, columns, leadings, stdinStates
+        errorPieces, errorFlags, columns, leadings, stdinStates,
+        preStreams
       )
   }
 
@@ -690,16 +695,19 @@ module ExpandCore {
                               errorFlag: bool,
                               nextColumn: nat,
                               nextLeading: bool,
-                              nextStdin: BenchWorld.Bytes
+                              nextStdin: BenchWorld.Bytes,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires InputTracePrefixSummary(
                cmd, preFs, preStdin, count, currentStdin,
                output, errorOutput, hadError, results, outputPieces,
-               errorPieces, errorFlags, columns, leadings, stdinStates
+               errorPieces, errorFlags, columns, leadings, stdinStates,
+               preStreams
              )
     requires count < |cmd.inputs|
     requires ReadStepSummary(
-               cmd.inputs[count], preFs, currentStdin, nextStdin, result
+               cmd.inputs[count], preFs, currentStdin, nextStdin, result,
+               preStreams
              )
     requires InputPieceSummary(
                cmd, result, columns[count], leadings[count],
@@ -714,7 +722,8 @@ module ExpandCore {
               hadError || errorFlag, results + [result],
               outputPieces + [outputPiece], errorPieces + [errorPiece],
               errorFlags + [errorFlag], columns + [nextColumn],
-              leadings + [nextLeading], stdinStates + [nextStdin]
+              leadings + [nextLeading], stdinStates + [nextStdin],
+              preStreams
             )
   {
     reveal InputTracePrefixSummary();
@@ -725,7 +734,8 @@ module ExpandCore {
                                 cmd.inputs[i], preFs,
                                 (stdinStates + [nextStdin])[i],
                                 (stdinStates + [nextStdin])[i + 1],
-                                (results + [result])[i]
+                                (results + [result])[i],
+                                preStreams
                               ) &&
                               InputPieceSummary(
                                 cmd, (results + [result])[i],
@@ -745,7 +755,8 @@ module ExpandCore {
                   cmd.inputs[i], preFs,
                   (stdinStates + [nextStdin])[i],
                   (stdinStates + [nextStdin])[i + 1],
-                  (results + [result])[i]
+                  (results + [result])[i],
+                  preStreams
                 ) &&
                 InputPieceSummary(
                   cmd, (results + [result])[i],
@@ -809,93 +820,107 @@ module ExpandCore {
               tabs, initialOnly, data, column, leading,
               out, nextColumn, nextLeading, pieces, columns, leadings
             )
-    decreases |data|
   {
-    if |data| == 0 {
-      out := [];
-      nextColumn := column;
-      nextLeading := leading;
-      pieces := [];
-      columns := [column];
-      leadings := [leading];
-      reveal DataExpansionWitnessSummary();
-      return;
-    }
-
-    var b := data[0];
-    var piece: BenchWorld.Bytes;
-    var stepColumn: nat;
-    var stepLeading: bool;
-    if initialOnly && !leading {
-      piece := [b];
-      if b == '\n' {
+    out := [];
+    nextColumn := column;
+    nextLeading := leading;
+    pieces := [];
+    columns := [column];
+    leadings := [leading];
+    var i := 0;
+    while i < |data|
+      invariant 0 <= i <= |data|
+      invariant |pieces| == i
+      invariant |columns| == i + 1
+      invariant |leadings| == i + 1
+      invariant columns[0] == column
+      invariant leadings[0] == leading
+      invariant columns[i] == nextColumn
+      invariant leadings[i] == nextLeading
+      invariant forall j: nat :: j < i ==>
+        ByteExpansionSummary(
+          tabs, initialOnly, data[j], columns[j], leadings[j],
+          pieces[j], columns[j + 1], leadings[j + 1]
+        )
+      invariant out == JoinPieces(pieces)
+      decreases |data| - i
+    {
+      var byte := data[i];
+      var piece: BenchWorld.Bytes;
+      var stepColumn: nat;
+      var stepLeading: bool;
+      if initialOnly && !nextLeading {
+        piece := [byte];
+        if byte == '\n' {
+          stepColumn := 0;
+          stepLeading := true;
+        } else {
+          stepColumn := nextColumn;
+          stepLeading := false;
+        }
+      } else if byte == '\t' {
+        var spaces := TabSpaces(tabs, nextColumn);
+        piece := Spaces(spaces);
+        stepColumn := nextColumn + spaces;
+        stepLeading := LeadingAfterByte(byte, nextLeading);
+      } else if byte == '\n' {
+        piece := ['\n'];
         stepColumn := 0;
-        stepLeading := true;
+        stepLeading := LeadingAfterByte(byte, nextLeading);
+      } else if byte == (8 as char) {
+        piece := [(8 as char)];
+        stepColumn := BackspaceColumn(nextColumn);
+        stepLeading := LeadingAfterByte(byte, nextLeading);
       } else {
-        stepColumn := column;
-        stepLeading := false;
+        piece := [byte];
+        stepColumn := nextColumn + 1;
+        stepLeading := LeadingAfterByte(byte, nextLeading);
       }
-    } else if b == '\t' {
-      var spaces := TabSpaces(tabs, column);
-      piece := Spaces(spaces);
-      stepColumn := column + spaces;
-      stepLeading := LeadingAfterByte(b, leading);
-    } else if b == '\n' {
-      piece := ['\n'];
-      stepColumn := 0;
-      stepLeading := LeadingAfterByte(b, leading);
-    } else if b == (8 as char) {
-      piece := [(8 as char)];
-      stepColumn := BackspaceColumn(column);
-      stepLeading := LeadingAfterByte(b, leading);
-    } else {
-      piece := [b];
-      stepColumn := column + 1;
-      stepLeading := LeadingAfterByte(b, leading);
-    }
-    assert ByteExpansionSummary(
-        tabs, initialOnly, b, column, leading,
+      assert ByteExpansionSummary(
+        tabs, initialOnly, byte, nextColumn, nextLeading,
         piece, stepColumn, stepLeading
       );
 
-    var tailOut, tailColumn, tailLeading,
-        tailPieces, tailColumns, tailLeadings :=
-      ExpandDataFromMethod(
-        tabs, initialOnly, data[1..], stepColumn, stepLeading
-      );
-    out := piece + tailOut;
-    nextColumn := tailColumn;
-    nextLeading := tailLeading;
-    pieces := [piece] + tailPieces;
-    columns := [column] + tailColumns;
-    leadings := [leading] + tailLeadings;
-    assert forall i: nat :: i < |data| ==>
-                              ByteExpansionSummary(
-                                tabs, initialOnly, data[i], columns[i], leadings[i],
-                                pieces[i], columns[i + 1], leadings[i + 1]
-                              ) by {
-      forall i: nat | i < |data|
-        ensures ByteExpansionSummary(
-                  tabs, initialOnly, data[i], columns[i], leadings[i],
-                  pieces[i], columns[i + 1], leadings[i + 1]
-                )
-      {
-        if i > 0 {
-          assert data[i] == data[1..][i - 1];
-          assert pieces[i] == tailPieces[i - 1];
-          assert columns[i] == tailColumns[i - 1];
-          assert columns[i + 1] == tailColumns[i];
-          assert leadings[i] == tailLeadings[i - 1];
-          assert leadings[i + 1] == tailLeadings[i];
+      ghost var priorPieces := pieces;
+      ghost var priorColumns := columns;
+      ghost var priorLeadings := leadings;
+      JoinPiecesSnoc(priorPieces, piece);
+      out := out + piece;
+      pieces := priorPieces + [piece];
+      columns := priorColumns + [stepColumn];
+      leadings := priorLeadings + [stepLeading];
+      nextColumn := stepColumn;
+      nextLeading := stepLeading;
+      assert forall j: nat :: j < i + 1 ==>
+        ByteExpansionSummary(
+          tabs, initialOnly, data[j], columns[j], leadings[j],
+          pieces[j], columns[j + 1], leadings[j + 1]
+        ) by {
+        forall j: nat | j < i + 1
+          ensures ByteExpansionSummary(
+            tabs, initialOnly, data[j], columns[j], leadings[j],
+            pieces[j], columns[j + 1], leadings[j + 1]
+          )
+        {
+          if j < i {
+            assert pieces[j] == priorPieces[j];
+            assert columns[j] == priorColumns[j];
+            assert columns[j + 1] == priorColumns[j + 1];
+            assert leadings[j] == priorLeadings[j];
+            assert leadings[j + 1] == priorLeadings[j + 1];
+          } else {
+            assert j == i;
+            assert data[j] == byte;
+            assert pieces[j] == piece;
+            assert columns[j] == priorColumns[i];
+            assert leadings[j] == priorLeadings[i];
+          }
         }
       }
+      assert out == JoinPieces(pieces);
+      i := i + 1;
     }
-    assert JoinPieces(pieces) ==
-           piece + JoinPieces(tailPieces);
-    assert DataExpansionWitnessSummary(
-        tabs, initialOnly, data, column, leading,
-        out, nextColumn, nextLeading, pieces, columns, leadings
-      );
+    reveal DataExpansionWitnessSummary();
   }
 
   method ProcessInputPieceMethod(
@@ -973,7 +998,8 @@ module ExpandCore {
         errorOutput: BenchWorld.Bytes, hadError: bool ::
         InputTraceSummary(
           cmd, old(io.fs()), old(io.stdin()), io.stdin(),
-          output, errorOutput, hadError
+          output, errorOutput, hadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errorOutput &&
@@ -994,15 +1020,15 @@ module ExpandCore {
     match cmd.mode
     case ModeHelp =>
       var help := Spec.HelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
     case ModeVersion =>
       var version := Spec.VersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
     case ModeInvalidTabs =>
       var msg := Spec.InvalidTabsMessage(cmd.invalidTabsValue);
-      io.AppendStderr(msg);
+      var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
       exit := 1;
     case ModeRun =>
       var out: BenchWorld.Bytes := [];
@@ -1030,7 +1056,8 @@ module ExpandCore {
         invariant InputTracePrefixSummary(
                     cmd, preFs, preStdin, i, io.stdin(),
                     out, err, hadError, results, outputPieces,
-                    errorPieces, errorFlags, columns, leadings, stdinStates
+                    errorPieces, errorFlags, columns, leadings, stdinStates,
+                    old(io.trustedStreams())
                   )
         decreases *
       {
@@ -1040,15 +1067,17 @@ module ExpandCore {
         match input {
           case Stdin =>
             ghost var beforeStdin := io.stdin();
-            var data := io.ReadStdinAll();
+            var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
             readResult := BenchWorld.Ok(data);
             assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           case File(path) =>
-            readResult := io.ReadFile(path);
-            assert readResult == IOContract.ReadFileResultFields(preFs, path);
+            var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+            readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+            assert readResult == IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
         }
         assert ReadStepSummary(
-            input, preFs, currentStdin, io.stdin(), readResult
+            input, preFs, currentStdin, io.stdin(), readResult,
+            old(io.trustedStreams())
           );
 
         var outPiece, nextColumn, nextLeading :=
@@ -1059,7 +1088,8 @@ module ExpandCore {
           out, err, hadError, results, outputPieces,
           errorPieces, errorFlags, columns, leadings, stdinStates,
           readResult, outPiece, errPiece, hadPiece,
-          nextColumn, nextLeading, io.stdin()
+          nextColumn, nextLeading, io.stdin(),
+          old(io.trustedStreams())
         );
         out := out + outPiece;
         err := err + errPiece;
@@ -1079,13 +1109,15 @@ module ExpandCore {
         i := next;
       }
       assert InputTraceSummary(
-          cmd, preFs, preStdin, io.stdin(), out, err, hadError
+          cmd, preFs, preStdin, io.stdin(), out, err, hadError,
+          old(io.trustedStreams())
         );
-      io.AppendStdout(out);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := if hadError then 1 else 0;
       assert InputTraceSummary(
-          cmd, preFs, preStdin, io.stdin(), out, err, hadError
+          cmd, preFs, preStdin, io.stdin(), out, err, hadError,
+          old(io.trustedStreams())
         );
       assert exists
           output: BenchWorld.Bytes,
@@ -1093,7 +1125,8 @@ module ExpandCore {
           failed: bool ::
           InputTraceSummary(
             cmd, preFs, preStdin, io.stdin(),
-            output, errorOutput, failed
+            output, errorOutput, failed,
+            old(io.trustedStreams())
           ) &&
           io.stdout() == preStdout + output &&
           io.stderr() == preStderr + errorOutput &&

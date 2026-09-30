@@ -10,6 +10,8 @@ module WcProof {
   import Schema = WcSchema
   import Core = WcCore
   import Spec = WcSpec
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
   ghost function ToSpecObservation(
     observation: Core.InputObservation
@@ -139,7 +141,8 @@ module WcProof {
     cmd: Schema.WcCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires i < |cmd.inputs|
     ensures Spec.ReadResultRelation(
@@ -147,7 +150,8 @@ module WcProof {
               preFs,
               preStdin,
               i,
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStdin, i, preStreams),
+              preStreams
             )
   {
     reveal Spec.ReadResultRelation();
@@ -239,7 +243,8 @@ module WcProof {
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
     i: nat,
-    observation: Core.InputObservation
+    observation: Core.InputObservation,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires i < |cmd.inputs|
     requires Core.InputObservationRelation(
@@ -247,19 +252,21 @@ module WcProof {
                preFs,
                preStdin,
                i,
-               observation
+               observation,
+               preStreams
              )
     ensures Spec.InputObservationRelation(
               cmd,
               preFs,
               preStdin,
               i,
-              ToSpecObservation(observation)
+              ToSpecObservation(observation),
+              preStreams
             )
   {
     reveal Core.InputObservationRelation();
     reveal Spec.InputObservationRelation();
-    ReadResultRefines(cmd, preFs, preStdin, i);
+    ReadResultRefines(cmd, preFs, preStdin, i, preStreams);
     InputStepWitnessRefines(
       cmd.inputs[i],
       observation.result,
@@ -730,7 +737,8 @@ module WcProof {
         ) &&
         Core.RenderCountsLine(cmd, counts, name, width) ==
         output +
-        (if name == "" then [] else [' '] + name) +
+        (if name == "" then [] else
+          [' '] + (if '\n' in name then SE.SpecQuoteFBytes(Utf8.Encode(name)) else Utf8.Encode(name))) +
         ['\n'] by {
       assert valuesOutput ==
              Core.RenderValues(Core.SelectedValues(cmd, counts), width, 0);
@@ -1147,7 +1155,8 @@ module WcProof {
     entryCuts: seq<nat>,
     errorOutput: BW.Bytes,
     errorCuts: seq<nat>,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires Core.InputTraceWitnessRelation(
                cmd,
@@ -1160,7 +1169,8 @@ module WcProof {
                entryCuts,
                errorOutput,
                errorCuts,
-               hadError
+               hadError,
+               preStreams
              )
     ensures Spec.OrderedTraceWitnessRelation(
               cmd,
@@ -1172,7 +1182,8 @@ module WcProof {
               hadError,
               ToSpecObservations(observations),
               entryCuts,
-              errorCuts
+              errorCuts,
+              preStreams
             )
   {
     reveal Core.InputTraceWitnessRelation();
@@ -1184,7 +1195,8 @@ module WcProof {
           preFs,
           preStdin,
           i,
-          ToSpecObservations(observations)[i]
+          ToSpecObservations(observations)[i],
+          preStreams
         ) by {
       forall i: nat | i < |ToSpecObservations(observations)|
         ensures Spec.InputObservationRelation(
@@ -1192,11 +1204,13 @@ module WcProof {
                   preFs,
                   preStdin,
                   i,
-                  ToSpecObservations(observations)[i]
+                  ToSpecObservations(observations)[i],
+                  preStreams
                 )
       {
         InputObservationRefines(
-          cmd, preFs, preStdin, i, observations[i]
+          cmd, preFs, preStdin, i, observations[i],
+          preStreams
         );
       }
     }
@@ -1262,7 +1276,8 @@ module WcProof {
           entryCuts,
           errorOutput,
           errorCuts,
-          hadError
+          hadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() ==
         old(io.stdout()) +
@@ -1279,7 +1294,8 @@ module WcProof {
         entryCuts,
         errorOutput,
         errorCuts,
-        hadError
+        hadError,
+        old(io.trustedStreams())
       );
       reveal Spec.InputTraceRelation();
       assert Spec.InputTraceRelation(
@@ -1289,7 +1305,8 @@ module WcProof {
           io.stdin(),
           Core.ToSpecEntries(coreEntries),
           errorOutput,
-          hadError
+          hadError,
+          old(io.trustedStreams())
         );
       assert Core.EntriesNonnegative(coreEntries);
       RunOutputRelationForCore(cmd, coreEntries);
@@ -1312,7 +1329,8 @@ module WcProof {
               io.stdin(),
               specEntries,
               specErrorOutput,
-              specHadError
+              specHadError,
+              old(io.trustedStreams())
             ) &&
             Spec.OutputRelation(cmd, specEntries, specOutputPart) &&
             io.stdout() ==

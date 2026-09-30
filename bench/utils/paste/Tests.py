@@ -125,6 +125,21 @@ def test_custom_delimiters_and_stdin_operand_match_coreutils() -> None:
         assert_paste_parity(["-d", ",:", "-", "tail.txt"], cwd, input_data=b"a\nb\n")
 
 
+# C-maybe quoting of malformed delimiter lists preserves literal backslashes unless forced.
+@pytest.mark.parametrize(
+    "value", ["a\\", "semi;\\", "apost'\\", "a:b\\", 'a"b\\', "tab\t\\", "é\\"]
+)
+def test_delimiter_backslash_c_maybe_quoting_matches_coreutils(value: str) -> None:
+    # upstream: coreutils/tests/paste/paste.pl
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_result_matches_reference(
+            run_system_paste(["-d", value], cwd),
+            run_bench_paste(["-d", value], cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
 # Zero-terminated parallel mode must preserve final unterminated records.
 def test_zero_terminated_parallel_final_records_match_coreutils() -> None:
     # upstream: coreutils/tests/paste/paste.pl
@@ -277,6 +292,64 @@ def test_backslash_filename_reads_normally(options: list[str]) -> None:
         _ = (cwd / r"cypzqrx0f/0b5p\-406").write_bytes(b"ok\nagain\n")
 
         assert_paste_parity([*options, r"cypzqrx0f/0b5p\-406"], cwd)
+
+
+# Missing shell-sensitive paths must use GNU's conditional shell quoting in both modes.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "cl8;/m805q-jq",
+        "a&b",
+        "can't",
+        "can't;read",
+        "tab\tname",
+        "line\nname",
+        "잘못된 경로",
+        "#leading",
+        "embedded#hash",
+        "~leading",
+        "{",
+        "{embedded}",
+        "",
+    ],
+)
+def test_missing_path_shell_quoting_matches_coreutils(options: list[str], filename: str) -> None:
+    # upstream: coreutils/gnulib-tests/test-quotearg-simple
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = [*options, filename]
+        assert_result_matches_reference(
+            run_system_paste(args, cwd),
+            run_bench_paste(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Directory read errors must use the same shell renderer as missing paths.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+@pytest.mark.parametrize("filename", ["semi;dir", "can't;read"])
+def test_directory_shell_quoting_matches_coreutils(options: list[str], filename: str) -> None:
+    # upstream: coreutils/tests/misc/read-errors.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / filename).mkdir()
+        args = [*options, filename]
+        assert_result_matches_reference(
+            run_system_paste(args, cwd),
+            run_bench_paste(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Quoting shell-sensitive diagnostics must not alter literal readable filename lookup.
+@pytest.mark.parametrize("options", [[], ["-s"]], ids=["parallel", "serial"])
+def test_readable_filename_shell_quoting_preserves_lookup(options: list[str]) -> None:
+    # upstream: coreutils/tests/paste/paste.pl
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "can't;read").write_bytes(b"ok\nagain\n")
+        assert_paste_parity([*options, "can't;read"], cwd)
 
 
 # Serial directory operands must still emit an empty record before the diagnostic.

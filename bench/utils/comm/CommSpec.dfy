@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "CommSchema.dfy"
 include "CommRenderSpec.dfy"
 
@@ -11,6 +12,7 @@ module CommSpec {
   import IOContract
   import Schema = CommSchema
   import Render = CommRenderSpec
+  import SE = StringEscaping
 
 
 
@@ -64,14 +66,9 @@ module CommSpec {
       path[0] == ' ' || path[0] == '\t' || ContainsDiagnosticBlank(path[1..])
   }
 
-  function QuoteIfNeeded(path: string): string
-  {
-    if ContainsDiagnosticBlank(path) then "'" + path + "'" else path
-  }
-
   function FileErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "comm: " + QuoteIfNeeded(path) + ": " + ErrnoText(err) + "\n"
+    "comm: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n"
   }
 
   function InputErrorMessageSpec(input: Schema.CommInput, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -88,13 +85,13 @@ module CommSpec {
 
   function MissingOperandAfterMessageSpec(operand: string): BenchWorld.Bytes
   {
-    "comm: missing operand after '" + operand + "'\n" +
+    "comm: missing operand after " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) + "\n" +
     "Try 'comm --help' for more information.\n"
   }
 
   function ExtraOperandMessageSpec(operand: string): BenchWorld.Bytes
   {
-    "comm: extra operand '" + operand + "'\n" +
+    "comm: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) + "\n" +
     "Try 'comm --help' for more information.\n"
   }
 
@@ -163,15 +160,15 @@ module CommSpec {
     )
   }
 
-  function InputResult(
-    preFs: BenchWorld.FileSystem,
+  ghost function InputResult(
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     input: Schema.CommInput
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     match input
     case Stdin => BenchWorld.Ok(preStdin)
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   function AfterInputRead(preStdin: BenchWorld.Bytes, input: Schema.CommInput): BenchWorld.Bytes
@@ -181,14 +178,14 @@ module CommSpec {
     case File(_) => preStdin
   }
 
-  function ReadFirstResult(
+  ghost function ReadFirstResult(
     cmd: Schema.CommCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
-      InputResult(preFs, preStdin, cmd.input1)
+      InputResult(preFs, preStreams, preStdin, cmd.input1)
     else
       BenchWorld.Ok([])
   }
@@ -198,14 +195,14 @@ module CommSpec {
     if cmd.mode == Schema.ModeRun then AfterInputRead(preStdin, cmd.input1) else preStdin
   }
 
-  function ReadSecondResult(
+  ghost function ReadSecondResult(
     cmd: Schema.CommCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
-      InputResult(preFs, AfterFirstRead(cmd, preStdin), cmd.input2)
+      InputResult(preFs, preStreams, AfterFirstRead(cmd, preStdin), cmd.input2)
     else
       BenchWorld.Ok([])
   }
@@ -259,7 +256,7 @@ module CommSpec {
       io.stderr() == old(io.stderr()) + RepeatedStdinOperandMessageSpec() &&
       exit == 1
     case ModeRun =>
-      var first := ReadFirstResult(cmd, old(io.fs()), old(io.stdin()));
+      var first := ReadFirstResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
       match first
       case Err(err) =>
         io.stdin() == AfterFirstRead(cmd, old(io.stdin())) &&
@@ -267,7 +264,7 @@ module CommSpec {
         io.stderr() == old(io.stderr()) + InputErrorMessageSpec(cmd.input1, err) &&
         exit == 1
       case Ok(leftData) =>
-        var second := ReadSecondResult(cmd, old(io.fs()), old(io.stdin()));
+        var second := ReadSecondResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
         match second
         case Err(err) =>
           io.stdin() == AfterSecondRead(cmd, old(io.stdin())) &&

@@ -318,3 +318,13 @@ def test_deferred_readlink_canonicalize_placeholder() -> None:
 def test_readlink_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     verify_readlink_module(target)
+
+
+# Verbose read errors quote each filename using GNU's shell style.
+@pytest.mark.parametrize("path", ["a'b", "a;b", "a\tb", "é", "a\\b"])
+def test_verbose_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_readlink(["-v", path], cwd)
+        bench = run_bench_readlink(["-v", path], cwd)
+        assert_same_result(ref, bench, check_error_stderr=True)

@@ -2,6 +2,7 @@ include "../../core/World.dfy"
 include "../../core/Utf8.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "NlSchema.dfy"
 
 module NlSpec {
@@ -11,6 +12,7 @@ module NlSpec {
   import BW = BenchWorld
   import Utf8 = Utf8Semantics
   import NlSchema
+  import SE = StringEscaping
 
 
 
@@ -216,7 +218,7 @@ module NlSpec {
 
   function InvalidBodyStyleMessage(value: string): BenchWorld.Bytes
   {
-    "nl: invalid body numbering style: '" + Utf8.Encode(value) + "'\n" + NlSchema.TryHelp()
+    NlSchema.InvalidBodyStyleLine(value) + NlSchema.TryHelp()
   }
 
   // Formal specification gap: pBRE body numbering is part of GNU nl, but this
@@ -234,7 +236,7 @@ module NlSpec {
 
   function InvalidNumberFormatMessage(value: string): BenchWorld.Bytes
   {
-    "nl: invalid line numbering format: '" + Utf8.Encode(value) + "'\n" + NlSchema.TryHelp()
+    NlSchema.InvalidNumberFormatLine(value) + NlSchema.TryHelp()
   }
 
   function ErrnoText(err: BenchWorld.IOError): string
@@ -470,7 +472,8 @@ module NlSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
@@ -482,7 +485,7 @@ module NlSpec {
         else preStdin
       )
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate InputTraceRelation(
@@ -497,14 +500,15 @@ module NlSpec {
     errorOutput: BenchWorld.Bytes,
     errorCuts: seq<nat>,
     hadError: bool,
-    hasDelimiter: bool
+    hasDelimiter: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     |readResults| == |cmd.inputs| &&
     |inputFragments| == |cmd.inputs| &&
     |errorFragments| == |cmd.inputs| &&
     (forall i :: 0 <= i < |cmd.inputs| ==>
-                   ReadResultRelation(cmd, preFs, preStdin, i, readResults[i]) &&
+                   ReadResultRelation(cmd, preFs, preStdin, i, readResults[i], preStreams) &&
                    (match readResults[i]
                     case Ok(data) =>
                       NormalizedInputRelation(data, inputFragments[i])
@@ -526,33 +530,34 @@ module NlSpec {
                     IsLogicalPageDelimiterLine(lines[i])))
   }
 
-  function ModeErrorMessage(mode: NlSchema.NlMode): BenchWorld.Bytes
+  function ModeErrorMessage(cmd: NlSchema.NlCmd): BenchWorld.Bytes
   {
-    match mode
+    match cmd.mode
     case ModeInvalidBodyStyle(value) => InvalidBodyStyleMessage(value)
     case ModeUnsupportedRegexBodyStyle(value) => UnsupportedRegexBodyStyleMessage(value)
     case ModeInvalidNumberFormat(value) => InvalidNumberFormatMessage(value)
+    case ModeInvalidOptions => NlSchema.OptionErrorsText(cmd.optionErrors) + NlSchema.TryHelp()
     case _ => []
   }
 
   twostate predicate Spec(raw: NlSchema.NlCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
+    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion, io.trustedStreamsRegion
   {
     var cmd := NlSchema.Command(raw);
     if cmd.mode == NlSchema.ModeHelp then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) + HelpText() &&
-      io.stderr() == old(io.stderr()) &&
+      io.stderr() == old(io.stderr()) + NlSchema.OptionErrorsText(cmd.optionErrors) &&
       exit == 0
     else if cmd.mode == NlSchema.ModeVersion then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) + VersionText() &&
-      io.stderr() == old(io.stderr()) &&
+      io.stderr() == old(io.stderr()) + NlSchema.OptionErrorsText(cmd.optionErrors) &&
       exit == 0
     else if cmd.mode != NlSchema.ModeRun then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + ModeErrorMessage(cmd.mode) &&
+      io.stderr() == old(io.stderr()) + ModeErrorMessage(cmd) &&
       exit == 1
     else
       exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
@@ -568,7 +573,8 @@ module NlSpec {
         InputTraceRelation(
           cmd, old(io.fs()), old(io.stdin()), readResults, inputFragments,
           combined, inputCuts, errorFragments, errorOutput, errorCuts,
-          hadError, hasDelimiter
+          hadError, hasDelimiter,
+          old(io.trustedStreams())
         ) &&
         io.stdin() ==
         (if exists i ::

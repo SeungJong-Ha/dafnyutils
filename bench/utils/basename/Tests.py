@@ -400,3 +400,13 @@ def test_abbreviated_suffix_argument_consumption_precedes_version_recovery() -> 
 def test_basename_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     verify_basename_module(target)
+
+
+# Extra operand diagnostics escape C-locale apostrophes and UTF-8 bytes.
+@pytest.mark.parametrize("operand", ["x'y", "é"])
+def test_escape_audit_extra_operand(operand: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_basename(["a", "b", operand], cwd)
+        bench = run_bench_basename(["a", "b", operand], cwd)
+        assert_same_result(ref, bench, ignore_stderr_when_exit_nonzero=False)

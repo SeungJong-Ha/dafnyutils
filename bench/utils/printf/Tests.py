@@ -90,6 +90,59 @@ def test_literal_and_escape_formats_match_coreutils(args: list[str]) -> None:
         assert_same_result(ref, bench)
 
 
+# Every FORMAT escape class must match pinned GNU bytes and status exactly.
+@pytest.mark.parametrize(
+    "args",
+    [
+        [r"\a\b\e\f\n\r\t\v\\\""],
+        [r"before\q\z\"after"],
+        ["ends with \\"],
+        [r"\0|\07|\077|\0101|\1234|\400|\777"],
+        [r"\x4|\x41f|\xFF|\x00"],
+        [r"\u0041|\u00E9|\u007F|\U0001F600|\U00110000"],
+        [r"%s\x21", "left", "right"],
+    ],
+)
+def test_format_escape_matrix_matches_coreutils(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(run_system_printf(args, cwd), run_bench_printf(args, cwd))
+
+
+# Cancellation and malformed escapes retain GNU's emitted prefix and exit behavior.
+@pytest.mark.parametrize(
+    "args",
+    [
+        [r"prefix\cignored%s", "argument"],
+        [r"%s:prefix\cignored", "first", "second"],
+        [r"prefix\x"],
+        [r"prefix\xQ"],
+        [r"prefix\u123"],
+        [r"prefix\U0011000Z"],
+        [r"prefix\uD800"],
+        [r"prefix\U0000Dabc"],
+        [r"%s:prefix\xQ", "first", "second"],
+    ],
+)
+def test_format_escape_termination_matches_coreutils(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(run_system_printf(args, cwd), run_bench_printf(args, cwd))
+
+
+# Reproduce the saved escaping-audit printf failures on the current executable.
+@pytest.mark.parametrize(
+    "format_text",
+    ["ijb-/c_44mg/g\\fkt97c/_kwg7f3qnoa", "sl\\h/19du7p", "f\\ffgwytu/t{74"],
+)
+def test_saved_format_escape_failures_match_coreutils(format_text: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(
+            run_system_printf([format_text], cwd), run_bench_printf([format_text], cwd)
+        )
+
+
 def test_literal_format_ignores_extra_arguments_with_warning() -> None:
     # upstream: coreutils/tests/printf/printf.sh
     # upstream: coreutils/tests/printf/printf-cov.pl
@@ -98,6 +151,18 @@ def test_literal_format_ignores_extra_arguments_with_warning() -> None:
         ref = run_system_printf(["hello", "ignored"], cwd)
         bench = run_bench_printf(["hello", "ignored"], cwd)
         assert_result_matches_reference(ref, bench, stderr_mode="presence")
+
+
+# Excess argument warnings use GNU's C-locale quotation of the unused operand.
+@pytest.mark.parametrize("operand", ["apost'rophe", "tab\tname", "a\\b", "é"])
+def test_excess_argument_locale_quoting_matches_coreutils(operand: str) -> None:
+    # upstream: coreutils/tests/printf/printf.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(
+            run_system_printf(["literal", operand], cwd),
+            run_bench_printf(["literal", operand], cwd),
+        )
 
 
 @pytest.mark.parametrize(

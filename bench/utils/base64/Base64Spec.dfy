@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "Base64Schema.dfy"
 
 module Base64Spec {
@@ -9,6 +10,7 @@ module Base64Spec {
   import BenchWorld
   import IOContract
   import Schema = Base64Schema
+  import SE = StringEscaping
 
   function HelpText(): BenchWorld.Bytes
   {
@@ -42,7 +44,7 @@ module Base64Spec {
 
   function InvalidWrapMessage(value: string): BenchWorld.Bytes
   {
-    "base64: invalid wrap size: '" + value + "'\n"
+    "base64: invalid wrap size: " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) + "\n"
   }
 
   function InvalidInputMessage(): BenchWorld.Bytes
@@ -52,7 +54,8 @@ module Base64Spec {
 
   function ExtraOperandMessage(operand: string): BenchWorld.Bytes
   {
-    "base64: extra operand '" + operand + "'\nTry 'base64 --help' for more information.\n"
+    "base64: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) +
+    "\nTry 'base64 --help' for more information.\n"
   }
 
   function ErrnoText(err: BenchWorld.IOError): string
@@ -71,7 +74,8 @@ module Base64Spec {
     if err.IsDirectory? then
       "base64: read error: Is a directory\n"
     else
-      Utf8.Encode("base64: " + path + ": " + ErrnoText(err) + "\n")
+      "base64: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+      ": " + Utf8.Encode(ErrnoText(err)) + "\n"
   }
 
   function Alphabet(index: nat): char
@@ -558,7 +562,9 @@ module Base64Spec {
       errorOutput == [] &&
       !hadReadError
     case File(path) =>
-      match IOContract.ReadFileResultFields(old(io.fs()), path)
+      match IOContract.ObservedReadFileResultFields(
+        old(io.fs()), old(io.trustedStreams()), path
+      )
       case Ok(fileData) =>
         data == fileData &&
         errorOutput == [] &&

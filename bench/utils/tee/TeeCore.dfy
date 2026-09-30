@@ -16,27 +16,21 @@ module TeeCore {
     path: BenchWorld.Path,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
   )
   {
     if append then
-      match IOContract.ReadFileResultFields(preFs, path)
-      case Err(err) =>
-        if err == BenchWorld.NoSuchFile then
-          exists ok: bool, writeErr: int ::
-            IOContract.WriteFileContractFields(preFs, preNow, path, input, ok, writeErr, fs2) &&
-            stderr == (if ok then [] else Spec.WriteErrorMessageSpec(path, writeErr)) &&
-            exit == (if ok then 0 else 1)
-        else
-          fs2 == preFs && stderr == Spec.ReadErrorMessageSpec(path, err) && exit == 1
-      case Ok(oldData) =>
-        exists ok: bool, writeErr: int ::
-          IOContract.WriteFileContractFields(preFs, preNow, path, oldData + input, ok, writeErr, fs2) &&
-          stderr == (if ok then [] else Spec.WriteErrorMessageSpec(path, writeErr)) &&
-          exit == (if ok then 0 else 1)
+      exists ok: bool, writeErr: int ::
+        IOContract.AppendFileSpec(preFs, preProps, preNow, preCredentials, preTrustedFilesystem,
+                                  fs2, path, input, ok, writeErr) &&
+        stderr == (if ok then [] else Spec.WriteErrorMessageSpec(path, writeErr)) &&
+        exit == (if ok then 0 else 1)
     else
       exists ok: bool, writeErr: int ::
         IOContract.WriteFileContractFields(preFs, preNow, path, input, ok, writeErr, fs2) &&
@@ -49,7 +43,10 @@ module TeeCore {
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
@@ -61,12 +58,16 @@ module TeeCore {
     else
       exists prefixFs: BenchWorld.FileSystem, prefixErr: BenchWorld.Bytes, prefixExit: int,
         stepErr: BenchWorld.Bytes, stepExit: int
-        {:trigger WriteOutputsSummaryFields(append, outputs[..|outputs| - 1], input, preFs, preNow, prefixFs, prefixErr, prefixExit),
-        WriteOneSummaryFields(append, outputs[|outputs| - 1], input, prefixFs, preNow, fs2, stepErr, stepExit)} ::
+        {:trigger WriteOutputsSummaryFields(append, outputs[..|outputs| - 1], input, preFs, preProps,
+                                             preNow, preCredentials, preTrustedFilesystem, prefixFs, prefixErr, prefixExit),
+        WriteOneSummaryFields(append, outputs[|outputs| - 1], input, prefixFs, preProps,
+                              preNow, preCredentials, preTrustedFilesystem, fs2, stepErr, stepExit)} ::
         WriteOutputsSummaryFields(outputs := outputs[..|outputs| - 1], append := append,
-                                  input := input, preFs := preFs, preNow := preNow,
+                                  input := input, preFs := preFs, preProps := preProps, preNow := preNow,
+                                  preCredentials := preCredentials, preTrustedFilesystem := preTrustedFilesystem,
                                   fs2 := prefixFs, stderr := prefixErr, exit := prefixExit) &&
-        WriteOneSummaryFields(append, outputs[|outputs| - 1], input, prefixFs, preNow, fs2, stepErr, stepExit) &&
+        WriteOneSummaryFields(append, outputs[|outputs| - 1], input, prefixFs, preProps,
+                              preNow, preCredentials, preTrustedFilesystem, fs2, stepErr, stepExit) &&
         stderr == prefixErr + stepErr &&
         exit == (if prefixExit == 0 && stepExit == 0 then 0 else 1)
   }
@@ -110,7 +111,9 @@ module TeeCore {
       exit == 0
     else
       exists errOut: BenchWorld.Bytes, writeExit: int ::
-        WriteOutputsSummaryFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.now()), io.fs(), errOut, writeExit) &&
+        WriteOutputsSummaryFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.props()),
+                                  old(io.now()), old(io.credentials()), old(io.trustedFilesystem()),
+                                  io.fs(), errOut, writeExit) &&
         io.stdin() == IOContract.AfterReadStdinFields(old(io.stdin())) &&
         io.stdout() == old(io.stdout()) + old(io.stdin()) &&
         io.stderr() == old(io.stderr()) + errOut &&
@@ -160,34 +163,18 @@ module TeeCore {
     io: BenchIO.IO
   ) returns (stderr: BenchWorld.Bytes, exit: int)
     modifies io.fsRegion
-    ensures WriteOneSummaryFields(append, path, input, old(io.fs()), old(io.now()), io.fs(), stderr, exit)
+    ensures WriteOneSummaryFields(append, path, input, old(io.fs()), old(io.props()), old(io.now()),
+                                  old(io.credentials()), old(io.trustedFilesystem()), io.fs(), stderr, exit)
   {
     if append {
-      var read := io.ReadFile(path);
-      match read
-      case Ok(oldData) =>
-        var ok, err := io.WriteFile(path, oldData + input);
-        if ok {
-          stderr := [];
-          exit := 0;
-        } else {
-          stderr := GetWriteErrorMessage(path, err);
-          exit := 1;
-        }
-      case Err(readErr) =>
-        if readErr == BenchWorld.NoSuchFile {
-          var ok, err := io.WriteFile(path, input);
-          if ok {
-            stderr := [];
-            exit := 0;
-          } else {
-            stderr := GetWriteErrorMessage(path, err);
-            exit := 1;
-          }
-        } else {
-          stderr := GetReadErrorMessage(path, readErr);
-          exit := 1;
-        }
+      var ok, err := io.AppendFile(path, input);
+      if ok {
+        stderr := [];
+        exit := 0;
+      } else {
+        stderr := GetWriteErrorMessage(path, err);
+        exit := 1;
+      }
     } else {
       var ok, err := io.WriteFile(path, input);
       if ok {
@@ -207,7 +194,8 @@ module TeeCore {
     io: BenchIO.IO
   ) returns (stderr: BenchWorld.Bytes, exit: int)
     modifies io.fsRegion
-    ensures WriteOutputsSummaryFields(append, outputs, input, old(io.fs()), old(io.now()), io.fs(), stderr, exit)
+    ensures WriteOutputsSummaryFields(append, outputs, input, old(io.fs()), old(io.props()), old(io.now()),
+                                      old(io.credentials()), old(io.trustedFilesystem()), io.fs(), stderr, exit)
     decreases |outputs|
   {
     reveal WriteOutputsSummaryFields();
@@ -232,11 +220,14 @@ module TeeCore {
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
     ghost var preNow := io.now();
+    ghost var preProps := io.props();
+    ghost var preCredentials := io.credentials();
+    ghost var preTrustedFilesystem := io.trustedFilesystem();
     var cmd := Command(raw);
     match cmd.mode
     case ModeHelp =>
       var out := GetHelpText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.fs() == preFs;
       assert io.stdin() == preStdin;
@@ -245,7 +236,7 @@ module TeeCore {
       return;
     case ModeVersion =>
       var out := GetVersionText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.fs() == preFs;
       assert io.stdin() == preStdin;
@@ -253,15 +244,16 @@ module TeeCore {
       assert io.stderr() == preStderr;
       return;
     case ModeRun =>
-      var input := io.ReadStdinAll();
+      var input, _ := io.ReadStdin(BenchWorld.ThrowOnError);
       assert IOContract.ReadStdinAllFields(preStdin, io.stdin(), input);
       assert input == preStdin;
       assert io.stdin() == IOContract.AfterReadStdinFields(preStdin);
       var errOut, writeExit := WriteOutputs(cmd.append, cmd.outputs, input, io);
-      io.AppendStdout(input);
-      io.AppendStderr(errOut);
+      var _, _ := io.WriteStdout(input, BenchWorld.ThrowOnError);
+      var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
       exit := writeExit;
-      assert WriteOutputsSummaryFields(cmd.append, cmd.outputs, preStdin, preFs, preNow, io.fs(), errOut, writeExit);
+      assert WriteOutputsSummaryFields(cmd.append, cmd.outputs, preStdin, preFs, preProps, preNow,
+                                       preCredentials, preTrustedFilesystem, io.fs(), errOut, writeExit);
       assert io.stdin() == IOContract.AfterReadStdinFields(preStdin);
       assert io.stdout() == preStdout + preStdin;
       assert io.stderr() == preStderr + errOut;

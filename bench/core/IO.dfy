@@ -10,7 +10,7 @@ module {:verify false} BenchIO {
   // Public trusted-library API: observers, immutable footprints and operations.
   // See ../../docs/core-api.md for the module map, contracts and frames.
   export
-    reveals IO, FsRegion, PropsRegion, CwdRegion, EnvRegion, StdinRegion, StdoutRegion, StderrRegion, DirHandlesRegion, NowRegion, CredentialsRegion, TrustedTimeParsesRegion, TrustedStreamsRegion, TrustedFilesystemRegion, StdoutTimestampRegion
+    reveals IO, FsRegion, PropsRegion, CwdRegion, EnvRegion, StdinRegion, StdoutRegion, StderrRegion, DirHandlesRegion, NowRegion, CredentialsRegion, TrustedTimeParsesRegion, TrustedStreamsRegion, TrustedFilesystemRegion, StdoutTimestampRegion, StatusObservationsRegion
     provides Process, IO.Init
     reveals IO.Footprint
     reveals SecurityRegion, UmaskRegion
@@ -31,24 +31,24 @@ module {:verify false} BenchIO {
     provides IO.trustedStreamsRegion, IO.trustedStreams
     provides IO.trustedFilesystemRegion, IO.trustedFilesystem
     provides IO.stdoutTimestampRegion, IO.stdoutTimestamp
+    provides IO.statusObservationsRegion, IO.statusObservations, IO.statusCursor
     provides IO.credentialsRegion, IO.credentials
-    provides IO.ReadFile, IO.ReadLink, IO.ReadStdinAll
-    provides IO.AppendStdout, IO.AppendStderr
-    provides IO.ReadFileWithOutcome, IO.ReadStdinWithOutcome
-    provides IO.WriteStdoutWithOutcome, IO.WriteStderrWithOutcome
+    provides IO.ReadFile, IO.ReadLink, IO.ReadStdin
+    provides IO.WriteStdout, IO.WriteStderr
     provides IO.GetCLocaleErrnoText, IO.QuoteafPath, IO.QuoteArgument
     provides IO.GetCwd, IO.GetEnv, IO.GetEnvironment, IO.GetLoginName, IO.Now
     provides IO.ParseTimestamp, IO.ParseDate
-    provides IO.PathExists, IO.CreateFile, IO.WriteFile, IO.CreateSymlink, IO.DeletePath
+    provides IO.PathExists, IO.CreateFile, IO.WriteFile, IO.AppendFile, IO.CreateSymlink, IO.DeletePath
     provides IO.CreateDirectory, IO.RemoveDirectory, IO.CreateHardLink, IO.UnlinkPath
     provides IO.TruncateFile, IO.CreateSpecialNode, IO.Sync
     provides IO.SetFileTimesNow, IO.SetFileAccessTimeNow, IO.SetFileModificationTimeNow
     provides IO.GetFileTimes, IO.SetFileTimes
     provides IO.SetStdoutTimesNow, IO.SetStdoutAccessTimeNow, IO.SetStdoutModificationTimeNow
     provides IO.SetStdoutTimes
-    provides IO.GetFileMode, IO.GetFileStatus, IO.SetFileMode, IO.GetUmask
-    provides IO.OpenDir, IO.ResolvePathIdentity, IO.ReadDir, IO.CloseDir
-    provides IO.IsDirectory, IO.IsDirectoryStrict, IO.IsSymlink, IO.RenamePath
+    provides IO.GetFileMode, IO.GetFileStatus, IO.GetOpenDirectoryStatus, IO.SetFileMode, IO.GetUmask
+    provides IO.OpenDir, IO.ResolvePathIdentity
+    provides IO.ReadDir, IO.CloseDir
+    provides IO.IsDirectory, IO.IsSymlink, IO.RenamePath
 
   class SecurityRegion {
     ghost var value: Sec.FilesystemSecurityContext
@@ -213,6 +213,18 @@ module {:verify false} BenchIO {
     }
   }
 
+  class StatusObservationsRegion {
+    ghost const observations: StatusTimeObservations
+    ghost var cursor: nat
+
+    ghost constructor Init(initial: StatusTimeObservations, first: nat)
+      ensures observations == initial && cursor == first
+    {
+      observations := initial;
+      cursor := first;
+    }
+  }
+
   // The representation and its named constructor are not exported.
   class CredentialsRegion {
     ghost var value: ProcessCredentials
@@ -258,6 +270,7 @@ module {:verify false} BenchIO {
     ghost const trustedStreamsRegion: TrustedStreamsRegion
     ghost const trustedFilesystemRegion: TrustedFilesystemRegion
     ghost const stdoutTimestampRegion: StdoutTimestampRegion
+    ghost const statusObservationsRegion: StatusObservationsRegion
     ghost const credentialsRegion: CredentialsRegion
     ghost const securityRegion: SecurityRegion
     ghost const umaskRegion: UmaskRegion
@@ -296,6 +309,8 @@ module {:verify false} BenchIO {
       trustedFilesystemRegion := new TrustedFilesystemRegion.Init(initialTrustedFilesystem);
       ghost var initialStdoutTimestamp: StdoutTimestampState :| true;
       stdoutTimestampRegion := new StdoutTimestampRegion.Init(initialStdoutTimestamp);
+      ghost var initialStatusObservations: StatusTimeObservations :| true;
+      statusObservationsRegion := new StatusObservationsRegion.Init(initialStatusObservations, 0);
       ghost var initialCredentialsRegion: ProcessCredentials :| true;
       credentialsRegion := new CredentialsRegion.Init(initialCredentialsRegion);
       ghost var initialSecurityRegion: Sec.FilesystemSecurityContext :| true;
@@ -306,7 +321,7 @@ module {:verify false} BenchIO {
     // Stable aggregate for predicates that formerly read the entire IO object.
     ghost function Footprint(): set<object>
     {
-      { fsRegion, propsRegion, cwdRegion, envRegion, stdinRegion, stdoutRegion, stderrRegion, dirHandlesRegion, nowRegion, trustedTimeParsesRegion, trustedStreamsRegion, trustedFilesystemRegion, stdoutTimestampRegion, credentialsRegion, securityRegion, umaskRegion }
+      { fsRegion, propsRegion, cwdRegion, envRegion, stdinRegion, stdoutRegion, stderrRegion, dirHandlesRegion, nowRegion, trustedTimeParsesRegion, trustedStreamsRegion, trustedFilesystemRegion, stdoutTimestampRegion, statusObservationsRegion, credentialsRegion, securityRegion, umaskRegion }
     }
 
     ghost function security(): Sec.FilesystemSecurityContext
@@ -401,58 +416,53 @@ module {:verify false} BenchIO {
       stdoutTimestampRegion.value
     }
 
+    ghost function statusObservations(): StatusTimeObservations
+    {
+      statusObservationsRegion.observations
+    }
+
+    ghost function statusCursor(): nat
+      reads statusObservationsRegion
+    {
+      statusObservationsRegion.cursor
+    }
+
     ghost function credentials(): ProcessCredentials
       reads credentialsRegion
     {
       credentialsRegion.value
     }
 
-    // Reads the contents of the file at the given path.
-    method {:extern "ReadFile"} {:axiom} ReadFile(path: Path) returns (r: Result<Bytes>)
-      ensures C.ReadFileSpec(old(fs()), path, r)
-
-    // Reads a file through the trusted stream boundary and preserves any
-    // successfully read prefix when the logical library operation fails.
-    method {:extern "ReadFileWithOutcome"} {:axiom} ReadFileWithOutcome(path: Path)
-      returns (data: Bytes, err: int)
-      ensures C.ReadFileWithOutcomeSpec(old(fs()), old(trustedStreams()), path, data, err)
+    // Reads a file and returns the committed prefix, errno and terminal stage.
+    // AfterSeekEnd is only modeled for directories, as used by tac.
+    method {:extern "ReadFile"} {:axiom} ReadFile(path: Path, mode: BenchWorld.FileReadMode)
+      returns (data: Bytes, err: int, stage: BenchWorld.FileReadStage)
+      requires mode == BenchWorld.FromStart ||
+               C.ModeledReadFileResultFields(fs(), path) == Err(BenchWorld.IsDirectory)
+      ensures C.ReadFileSpec(
+        old(fs()), old(trustedStreams()), path, mode, data, err, stage)
 
     // Reads the raw target of the symbolic link at the given path.
     method {:extern "ReadLink"} {:axiom} ReadLink(path: Path) returns (r: Result<Path>)
       ensures C.ReadLinkSpec(old(fs()), path, r)
 
-    // Reads all stdin bytes and records stdin as consumed.
-    method {:extern "ReadStdinAll"} {:axiom} ReadStdinAll() returns (b: Bytes)
-      modifies stdinRegion
-      ensures C.ReadStdinAllSpec(old(stdin()), stdin(), b)
-
-    // Reads stdin to EOF or an error and retains the unconsumed suffix.
-    method {:extern "ReadStdinWithOutcome"} {:axiom} ReadStdinWithOutcome()
+    // Reads stdin to EOF or an error; ThrowOnError raises on a failed read.
+    method {:extern "ReadStdin"} {:axiom} ReadStdin(policy: BenchWorld.StreamErrorPolicy)
       returns (data: Bytes, err: int)
       modifies stdinRegion
-      ensures C.ReadStdinWithOutcomeSpec(old(stdin()), old(trustedStreams()), stdin(), data, err)
+      ensures C.ReadStdinSpec(old(stdin()), old(trustedStreams()), stdin(), policy, data, err)
 
-    // Appends bytes to stdout.
-    method {:extern "AppendStdout"} {:axiom} AppendStdout(b: Bytes)
-      modifies stdoutRegion
-      ensures C.AppendStdoutSpec(old(stdout()), stdout(), b)
-
-    // Appends bytes to stderr.
-    method {:extern "AppendStderr"} {:axiom} AppendStderr(b: Bytes)
-      modifies stderrRegion
-      ensures C.AppendStderrSpec(old(stderr()), stderr(), b)
-
-    // Attempts to deliver all bytes to stdout and reports the committed prefix.
-    method {:extern "WriteStdoutWithOutcome"} {:axiom} WriteStdoutWithOutcome(b: Bytes)
+    // Writes stdout and reports committed bytes; ThrowOnError raises on failure.
+    method {:extern "WriteStdout"} {:axiom} WriteStdout(b: Bytes, policy: BenchWorld.StreamErrorPolicy)
       returns (committed: nat, err: int)
       modifies stdoutRegion
-      ensures C.WriteStdoutWithOutcomeSpec(old(stdout()), old(trustedStreams()), stdout(), b, committed, err)
+      ensures C.WriteStdoutSpec(old(stdout()), old(trustedStreams()), stdout(), b, policy, committed, err)
 
-    // Attempts to deliver all bytes to stderr and reports the committed prefix.
-    method {:extern "WriteStderrWithOutcome"} {:axiom} WriteStderrWithOutcome(b: Bytes)
+    // Writes stderr and reports committed bytes; ThrowOnError raises on failure.
+    method {:extern "WriteStderr"} {:axiom} WriteStderr(b: Bytes, policy: BenchWorld.StreamErrorPolicy)
       returns (committed: nat, err: int)
       modifies stderrRegion
-      ensures C.WriteStderrWithOutcomeSpec(old(stderr()), old(trustedStreams()), stderr(), b, committed, err)
+      ensures C.WriteStderrSpec(old(stderr()), old(trustedStreams()), stderr(), b, policy, committed, err)
 
     // Returns libc's diagnostic text under the benchmark's C locale.
     method {:extern "GetCLocaleErrnoText"} {:axiom} GetCLocaleErrnoText(err: int)
@@ -522,6 +532,14 @@ module {:verify false} BenchIO {
         data,
         ok,
         err
+      )
+
+    // Opens for append and writes without reading or truncating the referent.
+    method {:extern "AppendFile"} {:axiom} AppendFile(path: Path, data: Bytes) returns (ok: bool, err: int)
+      modifies fsRegion
+      ensures C.AppendFileSpec(
+        old(fs()), old(props()), old(now()), old(credentials()),
+        old(trustedFilesystem()), fs(), path, data, ok, err
       )
 
     // Attempts to create a symbolic link at path with the given raw target.
@@ -745,7 +763,10 @@ module {:verify false} BenchIO {
       path: Path,
       followSymlink: bool
     ) returns (ok: bool, status: FileStatus, err: int)
-      ensures C.GetFileStatusSpec(old(fs()), path, followSymlink, ok, status, err)
+      modifies statusObservationsRegion
+      ensures C.GetFileStatusSpec(
+        statusObservations(), old(statusCursor()), statusCursor(),
+        old(fs()), path, followSymlink, ok, status, err)
 
     // Attempts to set the file mode for the given path.
     method {:extern "SetFileMode"} {:axiom} SetFileMode(path: Path, followSymlink: bool, mode: bv32) returns (ok: bool, err: int)
@@ -756,34 +777,41 @@ module {:verify false} BenchIO {
     method {:extern "GetUmask"} {:axiom} GetUmask() returns (mask: bv32)
       ensures C.GetUmaskSpec(old(props()), mask)
 
-    // Opens a directory and returns a handle for iteration.
-    method {:extern "OpenDir"} {:axiom} OpenDir(path: Path)
+    // Opens a directory with or without dot entries and returns an iteration handle.
+    method {:extern "OpenDir"} {:axiom} OpenDir(path: Path, includeDots: bool)
       returns (ok: bool, handle: int, err: int)
       modifies dirHandlesRegion
-      ensures C.OpenDirSpec(old(fs()), old(dirHandles()), dirHandles(), path, ok, handle, err)
+      ensures C.OpenDirSpec(old(fs()), old(dirHandles()), dirHandles(), path, includeDots, ok, handle, err)
+
+    // Reads metadata from an already opened directory descriptor.
+    method {:extern "GetOpenDirectoryStatus"} {:axiom} GetOpenDirectoryStatus(handle: int)
+      returns (ok: bool, status: FileStatus, err: int)
+      modifies statusObservationsRegion
+      ensures C.GetOpenDirectoryStatusSpec(
+        statusObservations(), old(statusCursor()), statusCursor(),
+        old(fs()), old(dirHandles()), handle, ok, status, err)
 
     // Resolves a path identity without opening or mutating the target.
     method {:extern "ResolvePathIdentity"} {:axiom} ResolvePathIdentity(path: Path)
       returns (ok: bool, resolvedPath: Path, err: int)
       ensures C.ResolvePathIdentitySpec(old(fs()), old(cwd()), path, ok, resolvedPath, err)
 
-    // Reads the next entry from an open directory handle.
-    method {:extern "ReadDir"} {:axiom} ReadDir(handle: int) returns (hasMore: bool, name: string, isDir: bool, isSymlink: bool, err: int)
+    // Reads the next native entry according to the handle's dot-entry mode.
+    method {:extern "ReadDir"} {:axiom} ReadDir(handle: int)
+      returns (hasMore: bool, name: string, kind: DirectoryEntryKind, err: int)
       modifies dirHandlesRegion
-      ensures C.ReadDirSpec(old(dirHandles()), dirHandles(), handle, hasMore, name, isDir, isSymlink, err)
+      ensures C.ReadDirSpec(
+        old(fs()), old(dirHandles()), dirHandles(), handle,
+        hasMore, name, kind, err)
 
     // Closes a directory handle and removes its tracked state.
     method {:extern "CloseDir"} {:axiom} CloseDir(handle: int)
       modifies dirHandlesRegion
       ensures C.CloseDirSpec(old(dirHandles()), dirHandles(), handle)
 
-    // Checks whether a path refers to a directory.
+    // Checks whether a path refers to a directory; modeled paths must succeed.
     method {:extern "IsDirectory"} {:axiom} IsDirectory(path: Path, followSymlink: bool) returns (ok: bool, isDir: bool, err: int)
       ensures C.IsDirectorySpec(old(fs()), path, followSymlink, ok, isDir, err)
-
-    // Checks whether a path refers to a directory, with modeled paths required to succeed.
-    method {:extern "IsDirectoryStrict"} {:axiom} IsDirectoryStrict(path: Path, followSymlink: bool) returns (ok: bool, isDir: bool, err: int)
-      ensures C.IsDirectoryStrictSpec(old(fs()), path, followSymlink, ok, isDir, err)
 
     // Checks whether a path refers to a symlink.
     method {:extern "IsSymlink"} {:axiom} IsSymlink(path: Path) returns (ok: bool, isSymlink: bool, err: int)

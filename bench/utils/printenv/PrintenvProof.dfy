@@ -12,6 +12,7 @@ module PrintenvProof {
   import Schema = PrintenvSchema
   import Core = PrintenvCore
   import Spec = PrintenvSpec
+  import Utf8 = Utf8Semantics
 
   lemma FindEqualsEnvironmentEntry(
     key: string, value: string, i: nat
@@ -144,7 +145,7 @@ module PrintenvProof {
         assert Core.LookupEntry(operands[0], entries) ==
                Core.Found(env[operands[0]]);
         assert Core.LookupOutput(operands, entries, terminator) ==
-               env[operands[0]] + terminator + rest;
+               Utf8.Encode(env[operands[0]]) + terminator + rest;
         assert Core.AnyMissing(operands, entries) ==
                Core.AnyMissing(operands[1..], entries);
         assert exists tailOut: BW.Bytes, tailExit: int ::
@@ -152,7 +153,7 @@ module PrintenvProof {
               env, operands[1..], terminator, tailOut, tailExit
             ) &&
             Core.LookupOutput(operands, entries, terminator) ==
-            env[operands[0]] + terminator + tailOut &&
+            Utf8.Encode(env[operands[0]]) + terminator + tailOut &&
             (if |operands| > 0 && Core.AnyMissing(operands, entries)
              then 1 else 0) == tailExit;
       } else {
@@ -188,7 +189,7 @@ module PrintenvProof {
       assert exists rest: BW.Bytes ::
           Spec.EnvironmentOutputRelation(entries[1..], terminator, rest) &&
           Core.RenderEnvEntries(entries, terminator) ==
-          entries[0] + terminator + rest by {
+          Utf8.Encode(entries[0]) + terminator + rest by {
         ghost var rest := Core.RenderEnvEntries(entries[1..], terminator);
       }
     } else {

@@ -326,22 +326,24 @@ module FactorCore {
       Digits(value) + [':', ' '] + RenderFactors(Factorize(value), exponents) + ['\n']
   }
 
-  function ProcessToken(token: string, exponents: bool): TokenResult
+  function ProcessToken(token: string, exponents: bool, fromArgv: bool): TokenResult
   {
     var trimmed := TrimWhitespace(token);
+    var invalid := if fromArgv then Spec.InvalidArgvTokenMessage(token)
+                   else Spec.InvalidTokenMessage(token);
     if |trimmed| == 0 then
-      TokenErr(Spec.InvalidTokenMessage(trimmed))
+      TokenErr(invalid)
     else if trimmed[0] == '-' then
-      TokenErr(Spec.InvalidTokenMessage(trimmed))
+      TokenErr(invalid)
     else if trimmed[0] == '+' then
       if |trimmed| == 1 || !AllDigits(trimmed, 1) then
-        TokenErr(Spec.InvalidTokenMessage(trimmed))
+        TokenErr(invalid)
       else
         TokenOk(RenderValidValue(ParseDigits(trimmed, 1, 0), exponents))
     else if AllDigits(trimmed, 0) then
       TokenOk(RenderValidValue(ParseDigits(trimmed, 0, 0), exponents))
     else
-      TokenErr(Spec.InvalidTokenMessage(trimmed))
+      TokenErr(invalid)
   }
 
   function SplitWordsFrom(text: BenchWorld.Bytes, i: nat): seq<string>
@@ -442,14 +444,14 @@ module FactorCore {
     SplitWordsFrom(text, 0)
   }
 
-  function RunTokens(tokens: seq<string>, exponents: bool): RunResult
+  function RunTokens(tokens: seq<string>, exponents: bool, fromArgv: bool): RunResult
     decreases |tokens|
   {
     if |tokens| == 0 then
       RunResult([], [], false)
     else
-      var head := ProcessToken(tokens[0], exponents);
-      var tail := RunTokens(tokens[1..], exponents);
+      var head := ProcessToken(tokens[0], exponents, fromArgv);
+      var tail := RunTokens(tokens[1..], exponents, fromArgv);
       match head
       case TokenOk(out) =>
         RunResult(out + tail.stdout, tail.stderr, tail.hadError)
@@ -462,15 +464,15 @@ module FactorCore {
     var hadError := false;
     while cursor < |tokens|
       invariant 0 <= cursor <= |tokens|
-      invariant RunTokens(tokens, exponents).stdout ==
-                output + RunTokens(tokens[cursor..], exponents).stdout
-      invariant RunTokens(tokens, exponents).stderr ==
-                errorOutput + RunTokens(tokens[cursor..], exponents).stderr
-      invariant RunTokens(tokens, exponents).hadError ==
-                (hadError || RunTokens(tokens[cursor..], exponents).hadError)
+      invariant RunTokens(tokens, exponents, fromArgv).stdout ==
+                output + RunTokens(tokens[cursor..], exponents, fromArgv).stdout
+      invariant RunTokens(tokens, exponents, fromArgv).stderr ==
+                errorOutput + RunTokens(tokens[cursor..], exponents, fromArgv).stderr
+      invariant RunTokens(tokens, exponents, fromArgv).hadError ==
+                (hadError || RunTokens(tokens[cursor..], exponents, fromArgv).hadError)
       decreases |tokens| - cursor
     {
-      var result := ProcessToken(tokens[cursor], exponents);
+      var result := ProcessToken(tokens[cursor], exponents, fromArgv);
       if result.TokenOk? {
         output := output + result.out;
       } else {
@@ -497,7 +499,7 @@ module FactorCore {
       exit == 0
     else
       var tokens := if |raw.operands| > 0 then raw.operands else SplitWords(old(io.stdin()));
-      var run := RunTokens(tokens, raw.seenExponents);
+      var run := RunTokens(tokens, raw.seenExponents, |raw.operands| > 0);
       io.stdin() == (if |raw.operands| > 0 then old(io.stdin()) else IOContract.AfterReadStdinFields(old(io.stdin()))) &&
       io.stdout() == old(io.stdout()) + run.stdout &&
       io.stderr() == old(io.stderr()) + run.stderr &&
@@ -513,7 +515,7 @@ module FactorCore {
     var help := HelpSelected(raw);
     if help {
       var out := Spec.HelpTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -521,7 +523,7 @@ module FactorCore {
     var version := VersionSelected(raw);
     if version {
       var out := Spec.VersionTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -531,7 +533,7 @@ module FactorCore {
       tokens := raw.operands;
     } else {
       ghost var beforeStdin := io.stdin();
-      var stdinBytes := io.ReadStdinAll();
+      var stdinBytes, _ := io.ReadStdin(BenchWorld.ThrowOnError);
       assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), stdinBytes);
       assert beforeStdin == preStdin;
       assert stdinBytes == preStdin;
@@ -539,9 +541,9 @@ module FactorCore {
       tokens := SplitWords(stdinBytes);
     }
 
-    var run := RunTokens(tokens, raw.seenExponents);
-    io.AppendStdout(run.stdout);
-    io.AppendStderr(run.stderr);
+    var run := RunTokens(tokens, raw.seenExponents, |raw.operands| > 0);
+    var _, _ := io.WriteStdout(run.stdout, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(run.stderr, BenchWorld.ThrowOnError);
     exit := if run.hadError then 1 else 0;
     if |raw.operands| > 0 {
       assert io.stdin() == preStdin;

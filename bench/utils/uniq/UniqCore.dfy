@@ -56,6 +56,7 @@ module UniqCore {
       !raw.seenRepeated,
       !raw.seenUnique,
       raw.seenIgnoreCase,
+      raw.skipFields,
       InputFromOperands(raw.operands)
     )
   } by method {
@@ -82,6 +83,7 @@ module UniqCore {
         !raw.seenRepeated,
         !raw.seenUnique,
         raw.seenIgnoreCase,
+        raw.skipFields,
         InputFromOperands(raw.operands)
       );
   }
@@ -126,18 +128,61 @@ module UniqCore {
     }
   }
 
+  function IsFieldBlank(ch: BenchWorld.RawByte): bool
+  {
+    ch == ' ' || ch == '\t'
+  }
+
+  function SkipBlanks(line: BenchWorld.Bytes, i: nat): nat
+    requires i <= |line|
+    ensures i <= SkipBlanks(line, i) <= |line|
+    ensures i < |line| && IsFieldBlank(line[i]) ==> i < SkipBlanks(line, i)
+    ensures forall j: nat :: i <= j < SkipBlanks(line, i) ==> IsFieldBlank(line[j])
+    ensures SkipBlanks(line, i) < |line| ==> !IsFieldBlank(line[SkipBlanks(line, i)])
+    decreases |line| - i
+  {
+    if i < |line| && IsFieldBlank(line[i]) then SkipBlanks(line, i + 1) else i
+  }
+
+  function SkipNonBlanks(line: BenchWorld.Bytes, i: nat): nat
+    requires i <= |line|
+    ensures i <= SkipNonBlanks(line, i) <= |line|
+    ensures i < |line| && !IsFieldBlank(line[i]) ==> i < SkipNonBlanks(line, i)
+    ensures forall j: nat :: i <= j < SkipNonBlanks(line, i) ==> !IsFieldBlank(line[j])
+    ensures SkipNonBlanks(line, i) < |line| ==> IsFieldBlank(line[SkipNonBlanks(line, i)])
+    decreases |line| - i
+  {
+    if i < |line| && !IsFieldBlank(line[i]) then SkipNonBlanks(line, i + 1) else i
+  }
+
+  function SkipFieldsIndex(line: BenchWorld.Bytes, start: nat, count: nat): nat
+    requires start <= |line|
+    ensures start <= SkipFieldsIndex(line, start, count) <= |line|
+    decreases count
+  {
+    if count == 0 || start == |line| then start
+    else
+      var afterBlanks := SkipBlanks(line, start);
+      var afterField := SkipNonBlanks(line, afterBlanks);
+      SkipFieldsIndex(line, afterField, count - 1)
+  }
+
   function LinesEqual(
     cmd: UniqSchema.UniqCmd,
     a: BenchWorld.Bytes,
     b: BenchWorld.Bytes
   ): bool
   {
-    if cmd.ignoreCase then EqualFoldAscii(a, b) else a == b
+    var left := a[SkipFieldsIndex(a, 0, cmd.skipFields)..];
+    var right := b[SkipFieldsIndex(b, 0, cmd.skipFields)..];
+    if cmd.ignoreCase then EqualFoldAscii(left, right) else left == right
   } by method {
+    var left := a[SkipFieldsIndex(a, 0, cmd.skipFields)..];
+    var right := b[SkipFieldsIndex(b, 0, cmd.skipFields)..];
     if cmd.ignoreCase {
-      return EqualFoldAscii(a, b);
+      return EqualFoldAscii(left, right);
     } else {
-      return a == b;
+      return left == right;
     }
   }
 
@@ -391,6 +436,7 @@ module UniqCore {
     cmd: UniqSchema.UniqCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
     stdoutPart: BenchWorld.Bytes,
     stderrPart: BenchWorld.Bytes,
@@ -405,7 +451,9 @@ module UniqCore {
       stderrPart == [] &&
       !hadError
     case File(path) =>
-      readResults[0] == IOContract.ReadFileResultFields(preFs, path) &&
+      readResults[0] == IOContract.ObservedReadFileResultFields(
+        preFs, preStreams, path
+      ) &&
       match readResults[0]
       case Ok(data) =>
         OutputRelation(cmd, data, stdoutPart) &&
@@ -463,6 +511,7 @@ module UniqCore {
         cmd,
         old(io.fs()),
         old(io.stdin()),
+        old(io.trustedStreams()),
         readResults,
         stdoutPart,
         stderrPart,
@@ -541,7 +590,7 @@ module UniqCore {
     match cmd.mode {
       case ModeHelp =>
         var help := GetHelpText();
-        io.AppendStdout(help);
+        var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -550,7 +599,7 @@ module UniqCore {
 
       case ModeVersion =>
         var version := GetVersionText();
-        io.AppendStdout(version);
+        var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -559,7 +608,7 @@ module UniqCore {
 
       case ModeUnsupportedOutput(path) =>
         var msg := UnsupportedOutputMessage(path);
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -569,7 +618,7 @@ module UniqCore {
 
       case ModeUnsupportedSkipChars(operand) =>
         var msg := UnsupportedSkipCharsMessage(operand);
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -579,7 +628,7 @@ module UniqCore {
 
       case ModeExtraOperand(operand) =>
         var msg := ExtraOperandMessage(operand);
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -591,10 +640,12 @@ module UniqCore {
         var result: BenchWorld.Result<BenchWorld.Bytes>;
         match cmd.input {
           case Stdin =>
-            var data := io.ReadStdinAll();
+            var data, readErr := io.ReadStdin(BenchWorld.ThrowOnError);
+            assert readErr == 0;
             result := BenchWorld.Ok(data);
           case File(path) =>
-            result := io.ReadFile(path);
+            var data, err, stage := io.ReadFile(path, BenchWorld.FromStart);
+            result := IOContract.FileReadResultFromOutcome(data, err);
         }
 
         var out := OutputForRead(cmd, result);
@@ -604,8 +655,8 @@ module UniqCore {
         stdoutPart := out;
         stderrPart := err;
         hadError := inputHadError;
-        io.AppendStdout(out);
-        io.AppendStderr(err);
+        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := if inputHadError then 1 else 0;
         reveal InputTraceRelation();
                reveal OutputRelation();

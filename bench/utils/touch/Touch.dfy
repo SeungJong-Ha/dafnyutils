@@ -41,18 +41,14 @@ module Touch {
     }
 
     method FormatParseError(err: CliTypes.ParseError) returns (msg: BenchWorld.Bytes)
-      ensures msg == TS.ParseErrorMessageSpec(err)
     {
       msg := TouchSchema.FormatParseError(err);
-      TP.ParseErrorMessageImpliesSpec(err);
     }
 
     method PlanParseFailure(err: CliTypes.ParseError, argv: seq<string>) returns (plan: CliTypes.CliPlan<TouchSchema.TouchCmdRaw>)
-      ensures TS.ParseFailureSpec(err, plan)
       decreases *
     {
       plan := TouchSchema.PlanParseFailure(err, argv);
-      TP.ParseFailurePlanImpliesSpec(err, plan);
     }
 
     method RunCore(raw: TouchSchema.TouchCmdRaw, io: BenchIO.IO) returns (exit: int)

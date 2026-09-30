@@ -54,7 +54,7 @@ module Readlink {
     }
 
     method RunCore(raw: ReadlinkSchema.ReadlinkCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.stdoutRegion, io.stderrRegion
+      modifies io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
       ensures RS.Spec(raw, io, exit)
       decreases *
     {

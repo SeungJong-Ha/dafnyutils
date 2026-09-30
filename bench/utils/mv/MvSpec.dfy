@@ -2,6 +2,7 @@ include "../../core/World.dfy"
 include "../../core/Utf8.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "MvPathSpec.dfy"
 include "MvQuoteSpec.dfy"
 include "MvSchema.dfy"
@@ -15,6 +16,7 @@ module MvSpec {
   import Dirname = MvPathSpec
   import Schema = MvSchema
   import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
 
 
@@ -99,13 +101,14 @@ module MvSpec {
 
   function MissingDestinationMessageSpec(source: string): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: missing destination file operand after '" + source + "'\n")
+    "mv: missing destination file operand after " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) + "\n"
     + "Try 'mv --help' for more information.\n"
   }
 
   function ExtraOperandMessageSpec(operand: string): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: extra operand '" + operand + "'\nTry 'mv --help' for more information.\n")
+    "mv: extra operand " + Quote.SpecQuoteAfBytes(Utf8.Encode(operand)) +
+    "\nTry 'mv --help' for more information.\n"
   }
 
   function TargetDirectoryConflictMessageSpec(): BenchWorld.Bytes
@@ -115,7 +118,8 @@ module MvSpec {
 
   function InvalidBackupArgumentMessageSpec(value: string): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: invalid argument '" + value + "' for 'backup type'\n")
+    "mv: invalid argument " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+    " for 'backup type'\n"
     + "Valid arguments are:\n"
     + "  - 'none', 'off'\n"
     + "  - 'simple', 'never'\n"
@@ -126,7 +130,8 @@ module MvSpec {
 
   function InvalidUpdateArgumentMessageSpec(value: string): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: invalid argument '" + value + "' for '--update'\n")
+    "mv: invalid argument " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+    " for '--update'\n"
     + "Valid arguments are:\n"
     + "  - 'all'\n"
     + "  - 'none'\n"
@@ -138,24 +143,31 @@ module MvSpec {
   function TargetFailureMessageSpec(path: string, explicitTargetDirectory: bool, err: int): BenchWorld.Bytes
   {
     if explicitTargetDirectory then
-      Utf8.Encode("mv: target directory '" + path + "': " + ErrnoTextSpec(err) + "\n")
+      "mv: target directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(path)) +
+      ": " + ErrnoTextSpec(err) + "\n"
     else
-      Utf8.Encode("mv: target '" + path + "': " + ErrnoTextSpec(err) + "\n")
+      "mv: target " + Quote.SpecQuoteAfBytes(Utf8.Encode(path)) +
+      ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function SourceStatFailureMessageSpec(source: string, err: int): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: cannot stat '" + source + "': " + ErrnoTextSpec(err) + "\n")
+    "mv: cannot stat " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
+    ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function RenameFailureMessageSpec(source: string, target: string, err: int): BenchWorld.Bytes
   {
     if err == EISDIR then
-      Utf8.Encode("mv: cannot overwrite directory '" + target + "' with non-directory '" + source + "'\n")
+      "mv: cannot overwrite directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
+      " with non-directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) + "\n"
     else if err == ENOTEMPTY then
-      Utf8.Encode("mv: cannot overwrite '" + target + "': " + ErrnoTextSpec(err) + "\n")
+      "mv: cannot overwrite " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
+      ": " + ErrnoTextSpec(err) + "\n"
     else
-      Utf8.Encode("mv: cannot move '" + source + "' to '" + target + "': " + ErrnoTextSpec(err) + "\n")
+      "mv: cannot move " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
+      " to " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
+      ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function SourceRenameFailureMessageSpec(
@@ -165,7 +177,8 @@ module MvSpec {
   ): BenchWorld.Bytes
   {
     if err == EINVAL then
-      Utf8.Encode("mv: cannot move '" + source + "' to a subdirectory of itself, '" + target + "'\n")
+      "mv: cannot move " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
+      " to a subdirectory of itself, " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) + "\n"
     else
       RenameFailureMessageSpec(source, target, err)
   }
@@ -203,22 +216,25 @@ module MvSpec {
 
   function VerboseRenameMessageSpec(source: string, target: string): BenchWorld.Bytes
   {
-    "renamed '" + source + "' -> '" + target + "'\n"
+    "renamed " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
+    " -> " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) + "\n"
   }
 
   function VerboseRenameWithBackupMessageSpec(source: string, target: string, backup: string): BenchWorld.Bytes
   {
-    "renamed '" + source + "' -> '" + target + "' (backup: '" + backup + "')\n"
+    "renamed " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
+    " -> " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
+    " (backup: " + Quote.SpecQuoteAfBytes(Utf8.Encode(backup)) + ")\n"
   }
 
   function DebugSkipMessageSpec(target: string): BenchWorld.Bytes
   {
-    "skipped '" + target + "'\n"
+    "skipped " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) + "\n"
   }
 
   function NotReplacingMessageSpec(target: string): BenchWorld.Bytes
   {
-    Utf8.Encode("mv: not replacing '" + target + "'\n")
+    "mv: not replacing " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) + "\n"
   }
 
 
@@ -496,6 +512,204 @@ module MvSpec {
     failed: bool
   )
 
+  datatype StatusCallEvidence = StatusCallEvidence(
+    fs: BenchWorld.FileSystem,
+    path: string,
+    followSymlink: bool,
+    ok: bool,
+    status: BenchWorld.FileStatus,
+    err: int
+  )
+
+  ghost predicate StatusCallsFor(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    forall i: nat | i < |calls| ::
+      IOContract.ObservedFileStatusContractFields(
+        observations, first + i, calls[i].fs, calls[i].path,
+        calls[i].followSymlink, calls[i].ok, calls[i].status, calls[i].err
+      )
+  }
+
+  ghost predicate StatusRequest(
+    call: StatusCallEvidence,
+    fs: BenchWorld.FileSystem,
+    path: string,
+    followSymlink: bool
+  )
+  {
+    call.fs == fs && call.path == path && call.followSymlink == followSymlink
+  }
+
+  ghost predicate BackupStatusSuffix(
+    backupMode: Schema.BackupMode,
+    fs: BenchWorld.FileSystem,
+    target: string,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    if backupMode == Schema.BackupOff || backupMode == Schema.BackupSimple then
+      |calls| == 0
+    else if backupMode == Schema.BackupExisting then
+      |calls| >= 1 &&
+      StatusRequest(calls[0], fs, NumberedBackupPathSpec(target, 1), false) &&
+      (if !calls[0].ok then
+         |calls| == 1
+       else
+         |calls| >= 2 &&
+         (forall i: nat | 1 <= i < |calls| ::
+            StatusRequest(calls[i], fs, NumberedBackupPathSpec(target, i), false)) &&
+         (forall i: nat | 1 <= i + 1 < |calls| :: calls[i].ok) &&
+         !calls[|calls| - 1].ok)
+    else
+      |calls| >= 1 &&
+      (forall i: nat | i < |calls| ::
+        StatusRequest(calls[i], fs, NumberedBackupPathSpec(target, i + 1), false)) &&
+      (forall i: nat | i + 1 < |calls| :: calls[i].ok) &&
+      !calls[|calls| - 1].ok
+  }
+
+  ghost predicate ObservedUpdateDecision(
+    cmd: Schema.MvCmd,
+    fs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    source: string,
+    target: string,
+    afterFs: BenchWorld.FileSystem,
+    outcome: MoveOutcome,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    if cmd.updateMode == Schema.UpdateOlder &&
+       cmd.overwriteMode != Schema.OverwriteSkip &&
+       |calls| >= 2 && calls[0].ok && calls[1].ok &&
+       !SameFileMustBeRejected(cmd, fs, cwd, source, target) then
+      |calls| >= 4 &&
+      StatusRequest(calls[2], fs, source, false) &&
+      StatusRequest(calls[3], fs, target, false) &&
+      calls[2].ok && calls[3].ok &&
+      (if !SourceNewerSpec(
+            calls[2].status.times.mtimeSec,
+            calls[2].status.times.mtimeNsec,
+            calls[3].status.times.mtimeSec,
+            calls[3].status.times.mtimeNsec
+          ) then
+         afterFs == fs &&
+         outcome == MoveOutcome(SkipStdoutSpec(target, cmd.debug), [], false)
+       else
+         ExistingTargetRenameEffectRelation(
+           source, target, cmd, fs, cwd, afterFs, outcome
+         ))
+    else
+      true
+  }
+
+  ghost predicate MoveStatusShapeWitness(
+    cmd: Schema.MvCmd,
+    fs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    source: string,
+    target: string,
+    calls: seq<StatusCallEvidence>,
+    sourceParent: string,
+    targetParent: string,
+    sourceLeaf: string,
+    targetLeaf: string,
+    resolveOk: bool,
+    resolvedSource: string,
+    resolveErr: int,
+    afterEntries: nat
+  )
+  {
+    |calls| >= 6 &&
+    calls[2].ok && calls[3].ok &&
+    StatusRequest(calls[2], fs, source, false) &&
+    StatusRequest(calls[3], fs, target, false) &&
+    Dirname.DirnameRelation(source, sourceParent) &&
+    Dirname.DirnameRelation(target, targetParent) &&
+    Basename.BasenameRelation(source, sourceLeaf) &&
+    Basename.BasenameRelation(target, targetLeaf) &&
+    StatusRequest(calls[4], fs, sourceParent, false) &&
+    StatusRequest(calls[5], fs, targetParent, false) &&
+    (if calls[2].status.kind == BenchWorld.SymlinkKind then
+       IOContract.ResolvePathIdentityContractFields(
+         fs, cwd, source, resolveOk, resolvedSource, resolveErr
+       ) &&
+       |calls| >= 7 &&
+       StatusRequest(calls[6], fs, source, true) &&
+       (if resolveOk then
+          exists referentParent: string ::
+            afterEntries == 8 && |calls| >= 8 &&
+            Dirname.DirnameRelation(resolvedSource, referentParent) &&
+            StatusRequest(calls[7], fs, referentParent, false)
+        else
+          afterEntries == 7)
+     else
+       afterEntries == 6) &&
+    (if SameFileMustBeRejected(cmd, fs, cwd, source, target) ||
+        (cmd.updateMode == Schema.UpdateOlder &&
+         !SourceNewerSpec(
+           calls[2].status.times.mtimeSec,
+           calls[2].status.times.mtimeNsec,
+           calls[3].status.times.mtimeSec,
+           calls[3].status.times.mtimeNsec
+         )) then
+       |calls| == afterEntries
+     else
+       var collisionNeeded :=
+         (cmd.backupMode == Schema.BackupSimple ||
+          cmd.backupMode == Schema.BackupExisting) &&
+         sourceLeaf == targetLeaf + cmd.backupSuffix;
+       var afterCollision := afterEntries +
+         (if collisionNeeded then 1 else 0);
+       afterCollision <= |calls| &&
+       (collisionNeeded ==>
+         StatusRequest(
+           calls[afterEntries], fs,
+           SimpleBackupPathSpec(target, cmd.backupSuffix), true
+         )) &&
+       (if collisionNeeded && calls[afterEntries].ok &&
+           calls[afterEntries].status.hostKey == calls[2].status.hostKey then
+          |calls| == afterCollision
+        else
+          BackupStatusSuffix(cmd.backupMode, fs, target, calls[afterCollision..])))
+  }
+
+  ghost predicate MoveStatusShape(
+    cmd: Schema.MvCmd,
+    fs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    source: string,
+    target: string,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    |calls| >= 1 &&
+    StatusRequest(calls[0], fs, source, false) &&
+    (if !calls[0].ok then
+       |calls| == 1
+     else
+       |calls| >= 2 &&
+       StatusRequest(calls[1], fs, target, false) &&
+       (if !calls[1].ok || cmd.overwriteMode == Schema.OverwriteSkip ||
+           cmd.updateMode == Schema.UpdateNone ||
+           cmd.updateMode == Schema.UpdateNoneFail then
+          |calls| == 2
+        else
+          exists sourceParent: string, targetParent: string,
+                 sourceLeaf: string, targetLeaf: string,
+                 resolveOk: bool, resolvedSource: string, resolveErr: int,
+                 afterEntries: nat ::
+            MoveStatusShapeWitness(
+              cmd, fs, cwd, source, target, calls,
+              sourceParent, targetParent, sourceLeaf, targetLeaf,
+              resolveOk, resolvedSource, resolveErr, afterEntries
+            )))
+  }
+
   ghost function ConcatenateFragments(fragments: seq<BenchWorld.Bytes>): BenchWorld.Bytes
     decreases |fragments|
   {
@@ -728,68 +942,20 @@ module MvSpec {
                   [], SameFileMessageSpec(source, target), true
                 )
               else if cmd.updateMode == Schema.UpdateOlder then
-                exists
-                  timeSourceOk: bool,
-                  sourceAtimeSec: int,
-                  sourceAtimeNsec: int,
-                  sourceMtimeSec: int,
-                  sourceMtimeNsec: int,
-                  timeSourceIsDir: bool,
-                  timeSourceIsSymlink: bool,
-                  sourceDevice: int,
-                  sourceInode: int,
-                  sourceLinkCount: int,
-                  timeSourceErr: int,
-                  targetOk: bool,
-                  targetAtimeSec: int,
-                  targetAtimeNsec: int,
-                  targetMtimeSec: int,
-                  targetMtimeNsec: int,
-                  targetIsDir: bool,
-                  targetIsSymlink: bool,
-                  targetDevice: int,
-                  targetInode: int,
-                  targetLinkCount: int,
-                  targetErr: int
-                  ::
-                    IOContract.GetFileTimesContractFields(
-                      beforeFs, source, false, timeSourceOk,
-                      sourceAtimeSec, sourceAtimeNsec,
-                      sourceMtimeSec, sourceMtimeNsec,
-                      timeSourceIsDir, timeSourceIsSymlink,
-                      sourceDevice, sourceInode, sourceLinkCount,
-                      timeSourceErr
-                    ) &&
-                    IOContract.GetFileTimesContractFields(
-                      beforeFs, target, false, targetOk,
-                      targetAtimeSec, targetAtimeNsec,
-                      targetMtimeSec, targetMtimeNsec,
-                      targetIsDir, targetIsSymlink,
-                      targetDevice, targetInode, targetLinkCount,
-                      targetErr
-                    ) &&
-                    if !timeSourceOk || !targetOk then
-                      afterFs == beforeFs &&
-                      outcome == MoveOutcome(
-                        [],
-                        RenameFailureMessageSpec(
-                          source, target,
-                          if !timeSourceOk then timeSourceErr else targetErr
-                        ),
-                        true
-                      )
-                    else if !SourceNewerSpec(
-                              sourceMtimeSec, sourceMtimeNsec,
-                              targetMtimeSec, targetMtimeNsec
-                            ) then
-                      afterFs == beforeFs &&
-                      outcome == MoveOutcome(
-                        SkipStdoutSpec(target, cmd.debug), [], false
-                      )
-                    else
-                      ExistingTargetRenameEffectRelation(
-                        source, target, cmd, beforeFs, preCwd, afterFs, outcome
-                      )
+                exists sourceMtimeSec: int, sourceMtimeNsec: int,
+                       targetMtimeSec: int, targetMtimeNsec: int ::
+                  if !SourceNewerSpec(
+                       sourceMtimeSec, sourceMtimeNsec,
+                       targetMtimeSec, targetMtimeNsec
+                     ) then
+                    afterFs == beforeFs &&
+                    outcome == MoveOutcome(
+                      SkipStdoutSpec(target, cmd.debug), [], false
+                    )
+                  else
+                    ExistingTargetRenameEffectRelation(
+                      source, target, cmd, beforeFs, preCwd, afterFs, outcome
+                    )
               else
                 ExistingTargetRenameEffectRelation(
                   source, target, cmd, beforeFs, preCwd, afterFs, outcome
@@ -1066,6 +1232,176 @@ module MvSpec {
       )
   }
 
+  ghost predicate ObservedStepRelation(
+    source: string,
+    target: string,
+    cmd: Schema.MvCmd,
+    beforeFs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    outcome: MoveOutcome,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    afterStatus == firstStatus + |calls| &&
+    StatusCallsFor(observations, firstStatus, calls) &&
+    MoveEffectRelation(source, target, cmd, beforeFs, cwd, afterFs, outcome) &&
+    MoveStatusShape(cmd, beforeFs, cwd, source, target, calls) &&
+    ObservedUpdateDecision(
+      cmd, beforeFs, cwd, source, target, afterFs, outcome, calls
+    )
+  }
+
+  ghost predicate ObservedBatchRelation(
+    sources: seq<string>,
+    directory: string,
+    cmd: Schema.MvCmd,
+    beforeFs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    hadError: bool,
+    out: BenchWorld.Bytes,
+    err: BenchWorld.Bytes,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    afterStatus == firstStatus + |calls| &&
+    StatusCallsFor(observations, firstStatus, calls) &&
+    exists fsBounds: seq<BenchWorld.FileSystem>,
+           outcomes: seq<MoveOutcome>,
+           stdoutFragments: seq<BenchWorld.Bytes>,
+           stderrFragments: seq<BenchWorld.Bytes>,
+           statusBounds: seq<nat> ::
+      BatchMoveWitnessRelation(
+        sources, directory, cmd, beforeFs, cwd, afterFs,
+        hadError, out, err,
+        fsBounds, outcomes, stdoutFragments, stderrFragments
+      ) &&
+      |statusBounds| == |sources| + 1 &&
+      statusBounds[0] == firstStatus &&
+      statusBounds[|sources|] == afterStatus &&
+      (forall i: nat {:trigger statusBounds[i]} | i < |sources| ::
+        firstStatus <= statusBounds[i] <= statusBounds[i + 1] <= afterStatus &&
+        ObservedStepRelation(
+          NormalizeSourceSpec(sources[i], cmd.stripTrailingSlashes),
+          TargetInDirectorySpec(
+            directory,
+            NormalizeSourceSpec(sources[i], cmd.stripTrailingSlashes)
+          ),
+          cmd,
+          fsBounds[i], cwd, fsBounds[i + 1], outcomes[i],
+          observations, statusBounds[i], statusBounds[i + 1],
+          calls[statusBounds[i] - firstStatus ..
+                statusBounds[i + 1] - firstStatus]
+        ))
+  }
+
+  ghost predicate ObservedStatusSpec(
+    raw: Schema.MvCmdRaw,
+    beforeFs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    calls: seq<StatusCallEvidence>
+  )
+  {
+    var cmd := Schema.Command(raw);
+    afterStatus == firstStatus + |calls| &&
+    StatusCallsFor(observations, firstStatus, calls) &&
+    (if cmd.mode != Schema.ModeRun ||
+        (cmd.targetDirectory != "" && cmd.noTargetDirectory) ||
+        |cmd.operands| == 0 ||
+        (cmd.targetDirectory == "" && |cmd.operands| == 1) ||
+        (cmd.targetDirectory == "" && cmd.noTargetDirectory &&
+         |cmd.operands| > 2) then
+       |calls| == 0
+     else if cmd.targetDirectory != "" then
+       |calls| >= 1 &&
+       StatusRequest(calls[0], beforeFs, cmd.targetDirectory, true) &&
+       (if calls[0].ok &&
+           calls[0].status.kind == BenchWorld.DirectoryKind then
+          exists hadError: bool, out: BenchWorld.Bytes, err: BenchWorld.Bytes
+            {:trigger ObservedBatchRelation(
+              cmd.operands, cmd.targetDirectory, cmd,
+              beforeFs, cwd, afterFs, hadError, out, err,
+              observations, firstStatus + 1, afterStatus, calls[1..])} ::
+            ObservedBatchRelation(
+              cmd.operands, cmd.targetDirectory, cmd,
+              beforeFs, cwd, afterFs, hadError, out, err,
+              observations, firstStatus + 1, afterStatus, calls[1..]
+            ) &&
+            exit == (if hadError then 1 else 0) &&
+            afterStdout == beforeStdout + out &&
+            afterStderr == beforeStderr + err
+        else
+          |calls| == 1)
+     else if |cmd.operands| == 2 then
+       var source := NormalizeSourceSpec(
+         cmd.operands[0], cmd.stripTrailingSlashes
+       );
+       var destination := cmd.operands[1];
+       (if cmd.noTargetDirectory then
+          exists outcome: MoveOutcome ::
+            ObservedStepRelation(
+              source, destination, cmd, beforeFs, cwd, afterFs, outcome,
+              observations, firstStatus, afterStatus, calls
+            ) &&
+            exit == (if outcome.failed then 1 else 0) &&
+            afterStdout == beforeStdout + outcome.stdoutFragment &&
+            afterStderr == beforeStderr + outcome.stderrFragment
+        else
+          |calls| >= 1 &&
+          StatusRequest(calls[0], beforeFs, destination, true) &&
+          var target :=
+            if calls[0].ok &&
+               calls[0].status.kind == BenchWorld.DirectoryKind then
+              TargetInDirectorySpec(destination, source)
+            else destination;
+          exists outcome: MoveOutcome ::
+            ObservedStepRelation(
+              source, target, cmd, beforeFs, cwd, afterFs, outcome,
+              observations, firstStatus + 1, afterStatus, calls[1..]
+            ) &&
+            exit == (if outcome.failed then 1 else 0) &&
+            afterStdout == beforeStdout + outcome.stdoutFragment &&
+            afterStderr == beforeStderr + outcome.stderrFragment)
+     else
+       var directory := cmd.operands[|cmd.operands| - 1];
+       var sources := cmd.operands[..|cmd.operands| - 1];
+       |calls| >= 1 &&
+       StatusRequest(calls[0], beforeFs, directory, true) &&
+       (if calls[0].ok &&
+           calls[0].status.kind == BenchWorld.DirectoryKind then
+          exists hadError: bool, out: BenchWorld.Bytes, err: BenchWorld.Bytes
+            {:trigger ObservedBatchRelation(
+              sources, directory, cmd,
+              beforeFs, cwd, afterFs, hadError, out, err,
+              observations, firstStatus + 1, afterStatus, calls[1..])} ::
+            ObservedBatchRelation(
+              sources, directory, cmd,
+              beforeFs, cwd, afterFs, hadError, out, err,
+              observations, firstStatus + 1, afterStatus, calls[1..]
+            ) &&
+            exit == (if hadError then 1 else 0) &&
+            afterStdout == beforeStdout + out &&
+            afterStderr == beforeStderr + err
+        else
+          |calls| == 1))
+  }
+
   twostate predicate Spec(raw: Schema.MvCmdRaw, io: BenchIO.IO, exit: int)
     reads io.Footprint()
   {
@@ -1077,6 +1413,12 @@ module MvSpec {
       old(io.stderr()),
       io,
       exit
-    )
+    ) &&
+    exists calls: seq<StatusCallEvidence> ::
+      ObservedStatusSpec(
+        raw, old(io.fs()), old(io.cwd()), io.fs(),
+        old(io.stdout()), io.stdout(), old(io.stderr()), io.stderr(), exit,
+        io.statusObservations(), old(io.statusCursor()), io.statusCursor(), calls
+      )
   }
 }

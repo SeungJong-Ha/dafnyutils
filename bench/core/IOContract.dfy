@@ -882,7 +882,7 @@ module IOContract {
     );
   }
 
-  function ReadFileResultFields(fs: FileSystem, path: Path): Result<Bytes>
+  function ModeledReadFileResultFields(fs: FileSystem, path: Path): Result<Bytes>
   {
     match ResolvePathThroughSymlinkComponentsFields(fs, path, true)
     case Ok(resolved) =>
@@ -902,23 +902,51 @@ module IOContract {
     |prefix| <= |whole| && prefix == whole[..|prefix|]
   }
 
-  ghost predicate TrustedReadFileWithOutcomeContractFields(
+  function FileReadResultFromOutcome(data: Bytes, err: int): Result<Bytes>
+  {
+    if err == 0 then Ok(data)
+    else if err == 21 then Err(IsDirectory)
+    else if err == 13 then Err(PermissionDenied)
+    else Err(NoSuchFile)
+  }
+
+  ghost function ObservedReadFileResultFields(
+    fs: FileSystem,
+    observations: (TrustedStreamRequest) -> TrustedStreamResult,
+    path: Path
+  ): Result<Bytes>
+  {
+    match observations(StreamReadFile(fs, path, FromStart))
+    case StreamReadFileResult(data, err, _) => FileReadResultFromOutcome(data, err)
+    case _ => Err(NoSuchFile)
+  }
+
+  ghost predicate TrustedReadFileContractFields(
     observations: (TrustedStreamRequest) -> TrustedStreamResult,
     fs: FileSystem,
     path: Path,
+    mode: FileReadMode,
     data: Bytes,
-    err: int
+    err: int,
+    stage: FileReadStage
   )
   {
-    match observations(StreamReadFile(fs, path))
-    case StreamReadFileResult(observedData, observedErr) =>
-      data == observedData && err == observedErr && 0 <= err &&
-      (match ReadFileResultFields(fs, path)
-       case Ok(contents) =>
-         BytesPrefix(data, contents) && (err == 0 ==> data == contents)
-       case Err(_) => data == [] && err != 0)
-    case StreamReadStdinResult(_, _, _) => false
-    case StreamWriteResult(_, _, _) => false
+    match observations(StreamReadFile(fs, path, mode))
+    case StreamReadFileResult(observedData, observedErr, observedStage) =>
+      data == observedData && err == observedErr && stage == observedStage &&
+      0 <= err && (err == 0 <==> stage == ReadSucceeded) &&
+      (stage == OpenFailed ==> data == []) &&
+      (if mode == AfterSeekEnd then
+         data == [] && err > 0
+       else
+         // The Linux read-only stream reports EISDIR only for a directory.
+         (err == 21 ==>
+           ModeledReadFileResultFields(fs, path) == Err(IsDirectory)) &&
+         match ModeledReadFileResultFields(fs, path)
+         case Ok(contents) =>
+           BytesPrefix(data, contents) && (err == 0 ==> data == contents)
+         case Err(_) => data == [] && err != 0)
+    case _ => false
   }
 
   ghost predicate TrustedReadStdinWithOutcomeContractFields(
@@ -934,7 +962,7 @@ module IOContract {
       data == observedData && afterStdin == observedRemaining && err == observedErr &&
       0 <= err && data + afterStdin == beforeStdin &&
       (err == 0 ==> afterStdin == [])
-    case StreamReadFileResult(_, _) => false
+    case StreamReadFileResult(_, _, _) => false
     case StreamWriteResult(_, _, _) => false
   }
 
@@ -952,8 +980,8 @@ module IOContract {
       committed == observedCommitted && afterOutput == observedOutput && err == observedErr &&
       committed <= |requested| && 0 <= err &&
       afterOutput == beforeOutput + requested[..committed] &&
-      (err == 0 <==> committed == |requested|)
-    case StreamReadFileResult(_, _) => false
+      (err == 0 ==> committed == |requested|)
+    case StreamReadFileResult(_, _, _) => false
     case StreamReadStdinResult(_, _, _) => false
   }
 
@@ -1180,6 +1208,65 @@ module IOContract {
     observed == expected
   }
 
+  function ObservedFileStatusResultFields(
+    observations: StatusTimeObservations,
+    ordinal: nat,
+    fs: FileSystem,
+    path: Path,
+    followSymlink: bool
+  ): Result<FileStatus>
+  {
+    match GetFileStatusResultFields(fs, path, followSymlink)
+    case Err(error) => Err(error)
+    case Ok(status) =>
+      Ok(status.(times := observations(ordinal, fs, path, followSymlink)))
+  }
+
+  predicate ObservedFileStatusContractFields(
+    observations: StatusTimeObservations,
+    ordinal: nat,
+    fs: FileSystem,
+    path: Path,
+    followSymlink: bool,
+    ok: bool,
+    status: FileStatus,
+    err: int
+  )
+  {
+    match ObservedFileStatusResultFields(observations, ordinal, fs, path, followSymlink)
+    case Ok(expected) => ok && status == expected && err == 0
+    case Err(error) => !ok && err == IOErrorErrno(error)
+  }
+
+  // A structural projection never identifies an observed time with a stale
+  // filesystem timestamp. Time-consuming clients use the ordered relation above.
+  predicate FileStatusStructureContractFields(
+    fs: FileSystem, path: Path, followSymlink: bool,
+    ok: bool, status: FileStatus, err: int
+  )
+  {
+    match GetFileStatusResultFields(fs, path, followSymlink)
+    case Ok(expected) =>
+      ok && status.(times := expected.times) == expected && err == 0
+    case Err(error) => !ok && err == IOErrorErrno(error)
+  }
+
+  lemma ObservedFileStatusImpliesStructure(
+    observations: StatusTimeObservations,
+    ordinal: nat,
+    fs: FileSystem,
+    path: Path,
+    followSymlink: bool,
+    ok: bool,
+    status: FileStatus,
+    err: int
+  )
+    requires ObservedFileStatusContractFields(
+      observations, ordinal, fs, path, followSymlink, ok, status, err)
+    ensures FileStatusStructureContractFields(fs, path, followSymlink, ok, status, err)
+  {
+  }
+
   predicate GetFileStatusContractFields(
     fs: FileSystem,
     path: Path,
@@ -1199,7 +1286,9 @@ module IOContract {
     fs: FileSystem, path: Path, followSymlink: bool,
     ok: bool, status: FileStatus, err: int
   )
-    requires GetFileStatusContractFields(fs, path, followSymlink, ok, status, err)
+    requires FileStatusStructureContractFields(
+      fs, path, followSymlink, ok, status, err
+    )
     ensures GetFileModeContractFields(fs, path, followSymlink, ok, status.mode, err)
   {
     var resolved := ResolvePathForMetadataFields(fs, path, followSymlink);
@@ -1207,6 +1296,30 @@ module IOContract {
       var id := FsIdAt(fs, resolved.v);
       assert fs.inodes[id].links.LinkCountKnown?;
       assert FsNodeAt(fs, resolved.v) == fs.inodes[id].node;
+    }
+  }
+
+  // Structural metadata excludes timestamps, which may vary between ordered
+  // observations of the same path.
+  lemma FileStatusStructureImpliesMetadata(
+    fs: FileSystem, path: Path, followSymlink: bool,
+    ok: bool, status: FileStatus, err: int
+  )
+    requires FileStatusStructureContractFields(
+      fs, path, followSymlink, ok, status, err
+    )
+    ensures PathExistsContractFields(fs, path, followSymlink, ok, err)
+    ensures IsDirectoryStrictContractFields(
+              fs, path, followSymlink, ok, status.kind == DirectoryKind, err)
+    ensures !followSymlink ==>
+              IsSymlinkContractFields(fs, path, ok, status.kind == SymlinkKind, err)
+  {
+    var resolved := ResolvePathForMetadataFields(fs, path, followSymlink);
+    if resolved.Ok? {
+      var id := FsIdAt(fs, resolved.v);
+      assert fs.inodes[id].links.LinkCountKnown?;
+      assert FsNodeAt(fs, resolved.v) == fs.inodes[id].node;
+      assert InodeKindConsistent(fs.inodes[id]);
     }
   }
 
@@ -1728,6 +1841,66 @@ module IOContract {
     CreatedRegularModeFields(fs, props, path, ok, fs2)
   }
 
+  // Opening an existing regular file for append does not touch it at EOF when
+  // no bytes are supplied. A nonempty append updates only the referent inode;
+  // the native observation supplies host-specific mode and timestamp effects.
+  ghost predicate ExistingAppendEffectFields(
+    fs: FileSystem,
+    target: Path,
+    data: Bytes,
+    fs2: FileSystem
+  )
+    requires FsContainsPath(fs, target)
+  {
+    if |data| == 0 then
+      fs2 == fs
+    else
+      var id := FsIdAt(fs, target);
+      fs2.namespace == fs.namespace &&
+      fs2.inodes.Keys == fs.inodes.Keys &&
+      (forall other :: other in fs.inodes && other != id ==>
+         fs2.inodes[other] == fs.inodes[other]) &&
+      fs2.inodes[id].hostKey == fs.inodes[id].hostKey &&
+      fs2.inodes[id].links == fs.inodes[id].links &&
+      fs2.inodes[id].ownership == fs.inodes[id].ownership &&
+      fs2.inodes[id].kind == fs.inodes[id].kind &&
+      fs2.inodes[id].storage.size == fs.inodes[id].storage.size + |data| &&
+      (match (fs.inodes[id].node, fs2.inodes[id].node)
+       case (Regular(oldData, _, _, _), Regular(newData, _, _, _)) =>
+         newData == oldData + data
+       case _ => false)
+  }
+
+  ghost predicate AppendFileContractFields(
+    fs: FileSystem,
+    now: int,
+    path: Path,
+    data: Bytes,
+    ok: bool,
+    err: int,
+    fs2: FileSystem
+  )
+  {
+    (if ok then
+       err == 0 && !HasTrailingSlash(path) && !HasRawTerminalSpecialFields(path) &&
+       match ResolvePathForCreateFields(fs, path)
+       case Err(_) => false
+       case Ok(target) =>
+         if FsContainsPath(fs, target) then
+           FsNodeAt(fs, target).Regular? &&
+           ExistingAppendEffectFields(fs, target, data, fs2)
+         else
+           WriteFileContractFields(fs, now, path, data, ok, err, fs2)
+     else
+       fs2 == fs && err > 0 &&
+       (match ResolvePathForCreateFields(fs, path)
+        case Err(_) => err == WriteFileFailureErrFields(fs, path)
+        case Ok(target) =>
+          if FsContainsPath(fs, target) && !FsNodeAt(fs, target).Regular? then
+            err == WriteFileFailureErrFields(fs, path)
+          else true))
+  }
+
   lemma WriteFileWithCredentialsImpliesLegacy(
     fs: FileSystem,
     now: int,
@@ -1753,7 +1926,7 @@ module IOContract {
   ): int
   {
     if path == "" then
-      22
+      2
     else if target == "" then
       2
     else
@@ -2266,10 +2439,21 @@ module IOContract {
     DirectoryEntriesForTreeFields(fs, tree)
   }
 
+  ghost function DirectoryEntriesIncludingDotsForPathFields(
+    fs: FileSystem,
+    path: Path
+  ): set<DirEntry>
+    requires FsContainsPath(fs, path)
+  {
+    DirectoryEntriesForPathFields(fs, path) +
+      {DirEntry(".", true, false), DirEntry("..", true, false)}
+  }
+
   ghost predicate OpenDirContractFields(
     fs: FileSystem,
     dirHandles: map<int, DirHandleState>,
     path: Path,
+    includeDots: bool,
     ok: bool,
     handle: int,
     err: int,
@@ -2286,7 +2470,11 @@ module IOContract {
          FsContainsPath(fs, resolved) &&
          (match FsNodeAt(fs, resolved)
           case Directory(_, _, _) =>
-            dirHandles2 == dirHandles[handle := DirHandleState(resolved, DirectoryEntriesForPathFields(fs, resolved))]
+            dirHandles2 == dirHandles[handle :=
+              if includeDots then
+                DotDirHandleState(resolved, DirectoryEntriesIncludingDotsForPathFields(fs, resolved))
+              else
+                DirHandleState(resolved, DirectoryEntriesForPathFields(fs, resolved))]
           case _ => false)
        case Err(_) => false) &&
     (match ResolvePathForMetadataFields(fs, path, true)
@@ -2322,47 +2510,123 @@ module IOContract {
       IsAbsolutePath(resolved)
   }
 
+  function DirectoryEntryKindForFileKind(kind: FileKind): DirectoryEntryKind
+  {
+    match kind
+    case RegularKind => RegularDirentKind
+    case DirectoryKind => DirectoryDirentKind
+    case SymlinkKind => SymlinkDirentKind
+    case FifoKind => FifoDirentKind
+    case BlockDeviceKind => BlockDeviceDirentKind
+    case CharacterDeviceKind => CharacterDeviceDirentKind
+    case SocketKind => SocketDirentKind
+  }
+
+  predicate DirectoryEntryKindMatchesEntry(kind: DirectoryEntryKind, entry: DirEntry)
+  {
+    kind == UnknownDirentKind ||
+    (entry.isDir == (kind == DirectoryDirentKind) &&
+     entry.isSymlink == (kind == SymlinkDirentKind))
+  }
+
+  ghost predicate DirectoryEntryKindMatchesFilesystemFields(
+    fs: FileSystem,
+    parent: Path,
+    name: string,
+    kind: DirectoryEntryKind
+  )
+  {
+    ValidLeafName(name) &&
+    FsContainsPath(fs, parent) &&
+    FsContainsPath(fs, AppendPath(parent, name)) &&
+    (kind == UnknownDirentKind ||
+     kind == DirectoryEntryKindForFileKind(
+       fs.inodes[FsIdAt(fs, AppendPath(parent, name))].kind))
+  }
+
+  ghost predicate DirectoryDotEntryMatchesFilesystemFields(
+    fs: FileSystem,
+    parent: Path,
+    name: string
+  )
+  {
+    (name == "." || name == "..") &&
+    FsContainsPath(fs, parent) && FsNodeAt(fs, parent).Directory? &&
+    FsContainsPath(fs, ParentPath(parent)) &&
+    FsNodeAt(fs, ParentPath(parent)).Directory?
+  }
+
+  // A handle determines whether dot entries are included. Known native kinds
+  // agree with the filesystem; DT_UNKNOWN remains an explicit result.
   ghost predicate ReadDirContractFields(
+    fs: FileSystem,
     dirHandles: map<int, DirHandleState>,
     handle: int,
     hasMore: bool,
     name: string,
-    isDir: bool,
-    isSymlink: bool,
+    kind: DirectoryEntryKind,
     err: int,
     dirHandles2: map<int, DirHandleState>
   )
   {
     if !(handle in dirHandles) then
-      !hasMore &&
-      err != 0 &&
-      dirHandles2 == dirHandles
+      !hasMore && name == "" && kind == UnknownDirentKind &&
+      err != 0 && dirHandles2 == dirHandles
     else
       var state := dirHandles[handle];
       if err != 0 then
-        !hasMore &&
-        name == "" &&
-        !isDir &&
-        !isSymlink &&
+        !hasMore && name == "" && kind == UnknownDirentKind &&
         dirHandles2 == dirHandles
       else if |state.remaining| == 0 then
-        !hasMore &&
-        err == 0 &&
-        name == "" &&
-        !isDir &&
-        !isSymlink &&
+        !hasMore && name == "" && kind == UnknownDirentKind &&
         dirHandles2 == dirHandles
       else
-        exists entry :: entry in state.remaining &&
-                        hasMore &&
-                        err == 0 &&
-                        name != "" &&
-                        !IsAbsolutePath(name) &&
-                        ValidLeafName(name) &&
-                        name == entry.name &&
-                        isDir == entry.isDir &&
-                        isSymlink == entry.isSymlink &&
-                        dirHandles2 == dirHandles[handle := DirHandleState(state.path, state.remaining - {entry})]
+        exists entry ::
+          entry in state.remaining &&
+          hasMore && err == 0 && name == entry.name &&
+          (if state.DotDirHandleState? && (name == "." || name == "..") then
+             entry == DirEntry(name, true, false) &&
+             kind == DirectoryDirentKind &&
+             DirectoryDotEntryMatchesFilesystemFields(fs, state.path, name)
+           else
+             DirectoryEntryKindMatchesEntry(kind, entry) &&
+             DirectoryEntryKindMatchesFilesystemFields(
+               fs, state.path, name, kind)) &&
+          dirHandles2 == dirHandles[handle :=
+            if state.DotDirHandleState? then
+              DotDirHandleState(state.path, state.remaining - {entry})
+            else
+              DirHandleState(state.path, state.remaining - {entry})]
+  }
+
+  // Inspect the opened directory descriptor, which remains available to the
+  // caller even if fstat fails. A successful result is an ordered status
+  // observation of the path authenticated by that handle.
+  ghost predicate GetOpenDirectoryStatusContractFields(
+    observations: StatusTimeObservations,
+    beforeCursor: nat,
+    afterCursor: nat,
+    fs: FileSystem,
+    dirHandles: map<int, DirHandleState>,
+    handle: int,
+    ok: bool,
+    status: FileStatus,
+    err: int
+  )
+  {
+    if !(handle in dirHandles) then
+      !ok && err == 22 &&
+      afterCursor == beforeCursor
+    else if ok then
+      err == 0 && afterCursor == beforeCursor + 1 &&
+      ObservedFileStatusContractFields(
+        observations, beforeCursor, fs, dirHandles[handle].path,
+        true, true, status, 0) &&
+      FileStatusStructureContractFields(
+        fs, dirHandles[handle].path, true, true, status, 0)
+    else
+      err > 0 &&
+      afterCursor == beforeCursor
   }
 
   ghost predicate CloseDirContractFields(dirHandles: map<int, DirHandleState>, handle: int, dirHandles2: map<int, DirHandleState>) { if handle in dirHandles then dirHandles2 == dirHandles - {handle} else dirHandles2 == dirHandles }
@@ -2695,21 +2959,18 @@ module IOContract {
   ghost function QuoteArgumentResult(value: Bytes): Bytes
 
   // API-specific IO postconditions delegate to the shared contract relations.
-  ghost predicate ReadFileSpec(beforeFs: FileSystem, path: Path, r: Result<Bytes>)
-  {
-    r == ReadFileResultFields(beforeFs, path)
-  }
-
-  ghost predicate ReadFileWithOutcomeSpec(
+  ghost predicate ReadFileSpec(
     beforeFs: FileSystem,
     beforeTrustedStreams: (TrustedStreamRequest) -> TrustedStreamResult,
     path: Path,
+    mode: FileReadMode,
     data: Bytes,
-    err: int
+    err: int,
+    stage: FileReadStage
   )
   {
-    TrustedReadFileWithOutcomeContractFields(
-      beforeTrustedStreams, beforeFs, path, data, err
+    TrustedReadFileContractFields(
+      beforeTrustedStreams, beforeFs, path, mode, data, err, stage
     )
   }
 
@@ -2723,17 +2984,20 @@ module IOContract {
     ReadStdinAllFields(beforeStdin, afterStdin, b)
   }
 
-  ghost predicate ReadStdinWithOutcomeSpec(
+  ghost predicate ReadStdinSpec(
     beforeStdin: Bytes,
     beforeTrustedStreams: (TrustedStreamRequest) -> TrustedStreamResult,
     afterStdin: Bytes,
+    policy: StreamErrorPolicy,
     data: Bytes,
     err: int
   )
   {
     TrustedReadStdinWithOutcomeContractFields(
       beforeTrustedStreams, beforeStdin, afterStdin, data, err
-    )
+    ) &&
+    (policy == ThrowOnError ==>
+      err == 0 && ReadStdinAllFields(beforeStdin, afterStdin, data))
   }
 
   ghost predicate AppendStdoutSpec(beforeStdout: Bytes, afterStdout: Bytes, b: Bytes)
@@ -2746,32 +3010,38 @@ module IOContract {
     AppendStderrFields(beforeStderr, afterStderr, b)
   }
 
-  ghost predicate WriteStdoutWithOutcomeSpec(
+  ghost predicate WriteStdoutSpec(
     beforeStdout: Bytes,
     beforeTrustedStreams: (TrustedStreamRequest) -> TrustedStreamResult,
     afterStdout: Bytes,
     b: Bytes,
+    policy: StreamErrorPolicy,
     committed: nat,
     err: int
   )
   {
     TrustedWriteStdoutWithOutcomeContractFields(
       beforeTrustedStreams, beforeStdout, afterStdout, b, committed, err
-    )
+    ) &&
+    (policy == ThrowOnError ==>
+      err == 0 && AppendStdoutFields(beforeStdout, afterStdout, b))
   }
 
-  ghost predicate WriteStderrWithOutcomeSpec(
+  ghost predicate WriteStderrSpec(
     beforeStderr: Bytes,
     beforeTrustedStreams: (TrustedStreamRequest) -> TrustedStreamResult,
     afterStderr: Bytes,
     b: Bytes,
+    policy: StreamErrorPolicy,
     committed: nat,
     err: int
   )
   {
     TrustedWriteStderrWithOutcomeContractFields(
       beforeTrustedStreams, beforeStderr, afterStderr, b, committed, err
-    )
+    ) &&
+    (policy == ThrowOnError ==>
+      err == 0 && AppendStderrFields(beforeStderr, afterStderr, b))
   }
 
   ghost predicate GetCLocaleErrnoTextSpec(err: int, text: string)
@@ -2887,6 +3157,30 @@ module IOContract {
       path, data, ok, err, afterFs
     ) &&
     WriteFileContractFields(beforeFs, beforeNow, path, data, ok, err, afterFs)
+  }
+
+  ghost predicate AppendFileSpec(
+    beforeFs: FileSystem,
+    beforeProps: map<string, string>,
+    beforeNow: int,
+    beforeCredentials: ProcessCredentials,
+    beforeTrustedFilesystem: (TrustedFilesystemRequest) -> TrustedFilesystemResult,
+    afterFs: FileSystem,
+    path: Path,
+    data: Bytes,
+    ok: bool,
+    err: int
+  )
+  {
+    var observed := beforeTrustedFilesystem(
+      FilesystemAppend(beforeFs, path, data, beforeNow)
+    );
+    ok == observed.ok && err == observed.err && afterFs == observed.postFs &&
+    AppendFileContractFields(
+      beforeFs, beforeNow, path, data, ok, err, afterFs
+    ) &&
+    CreatedRegularOwnershipFields(beforeFs, beforeCredentials, path, ok, afterFs) &&
+    CreatedRegularModeFields(beforeFs, beforeProps, path, ok, afterFs)
   }
 
   ghost predicate CreateSymlinkSpec(
@@ -3290,6 +3584,9 @@ module IOContract {
   }
 
   ghost predicate GetFileStatusSpec(
+    observations: StatusTimeObservations,
+    beforeCursor: nat,
+    afterCursor: nat,
     beforeFs: FileSystem,
     path: Path,
     followSymlink: bool,
@@ -3298,9 +3595,10 @@ module IOContract {
     err: int
   )
   {
-    GetFileStatusContractFields(
-      beforeFs, path, followSymlink, ok, status, err
-    )
+    afterCursor == beforeCursor + 1 &&
+    ObservedFileStatusContractFields(
+      observations, beforeCursor, beforeFs, path, followSymlink, ok, status, err) &&
+    FileStatusStructureContractFields(beforeFs, path, followSymlink, ok, status, err)
   }
 
   ghost predicate SetFileModeSpec(
@@ -3331,13 +3629,14 @@ module IOContract {
     beforeDirHandles: map<int, DirHandleState>,
     afterDirHandles: map<int, DirHandleState>,
     path: Path,
+    includeDots: bool,
     ok: bool,
     handle: int,
     err: int
   )
   {
     OpenDirContractFields(
-      beforeFs, beforeDirHandles, path,
+      beforeFs, beforeDirHandles, path, includeDots,
       ok, handle, err, afterDirHandles
     )
   }
@@ -3357,17 +3656,36 @@ module IOContract {
   }
 
   ghost predicate ReadDirSpec(
+    beforeFs: FileSystem,
     beforeDirHandles: map<int, DirHandleState>,
     afterDirHandles: map<int, DirHandleState>,
     handle: int,
     hasMore: bool,
     name: string,
-    isDir: bool,
-    isSymlink: bool,
+    kind: DirectoryEntryKind,
     err: int
   )
   {
-    ReadDirContractFields(beforeDirHandles, handle, hasMore, name, isDir, isSymlink, err, afterDirHandles)
+    ReadDirContractFields(
+      beforeFs, beforeDirHandles, handle, hasMore, name, kind, err,
+      afterDirHandles)
+  }
+
+  ghost predicate GetOpenDirectoryStatusSpec(
+    observations: StatusTimeObservations,
+    beforeCursor: nat,
+    afterCursor: nat,
+    beforeFs: FileSystem,
+    beforeDirHandles: map<int, DirHandleState>,
+    handle: int,
+    ok: bool,
+    status: FileStatus,
+    err: int
+  )
+  {
+    GetOpenDirectoryStatusContractFields(
+      observations, beforeCursor, afterCursor, beforeFs,
+      beforeDirHandles, handle, ok, status, err)
   }
 
   ghost predicate CloseDirSpec(
@@ -3380,18 +3698,6 @@ module IOContract {
   }
 
   ghost predicate IsDirectorySpec(
-    beforeFs: FileSystem,
-    path: Path,
-    followSymlink: bool,
-    ok: bool,
-    isDir: bool,
-    err: int
-  )
-  {
-    IsDirectoryContractFields(beforeFs, path, followSymlink, ok, isDir, err)
-  }
-
-  ghost predicate IsDirectoryStrictSpec(
     beforeFs: FileSystem,
     path: Path,
     followSymlink: bool,

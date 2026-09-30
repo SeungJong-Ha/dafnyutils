@@ -10,6 +10,40 @@ module ChmodRecursiveRuntime {
   import opened ChmodRecursiveCore
   import Leaf = ChmodRecursiveLeafRuntime
 
+  lemma RuntimeVisitOutcomeIdentitySubstitution(
+    cmd: Schema.ChmodCmd,
+    plan: Base.CoreModePlan,
+    identity: RecursiveIdentity,
+    displayPath: string,
+    accessPath: BenchWorld.Path,
+    isTopLevel: bool,
+    activeSegments: set<seq<string>>,
+    fs0: BenchWorld.FileSystem,
+    stdout0: BenchWorld.Bytes,
+    stderr0: BenchWorld.Bytes,
+    fs1: BenchWorld.FileSystem,
+    stdout1: BenchWorld.Bytes,
+    stderr1: BenchWorld.Bytes,
+    ok: bool,
+    visit: RecursiveVisit,
+    now0: int
+  )
+    requires identity.displayPath == displayPath
+    requires identity.accessPath == accessPath
+    requires identity.isTopLevel == isTopLevel
+    requires RuntimeVisitOutcomeCore(
+               cmd, plan, identity.displayPath, identity.accessPath,
+               identity.isTopLevel, activeSegments, fs0, stdout0, stderr0,
+               fs1, stdout1, stderr1, ok, visit, now0
+             )
+    ensures RuntimeVisitOutcomeCore(
+              cmd, plan, displayPath, accessPath, isTopLevel,
+              activeSegments, fs0, stdout0, stderr0,
+              fs1, stdout1, stderr1, ok, visit, now0
+            )
+  {
+  }
+
   method AppendRuntimeReadFailure(
     cmd: Schema.ChmodCmd,
     displayPath: string,
@@ -28,10 +62,10 @@ module ChmodRecursiveRuntime {
                          )
   {
     if !cmd.silent {
-      io.AppendStderr(ReadDirectoryMessageCore(displayPath, err));
+      var _, _ := io.WriteStderr(ReadDirectoryMessageCore(displayPath, err), BenchWorld.ThrowOnError);
     }
     if cmd.verbose {
-      io.AppendStdout(Base.AccessFailureMessageCore(displayPath));
+      var _, _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
     }
   }
 
@@ -52,7 +86,7 @@ module ChmodRecursiveRuntime {
                universe - activeSegments
     requires entry.name == name
     requires SegmentPaths(io.fs()) == universe
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures io.dirHandles() == old(io.dirHandles())
     ensures SegmentPaths(io.fs()) == universe
     ensures VisitMatchesEntryCore(parent, entry, child)
@@ -160,7 +194,7 @@ module ChmodRecursiveRuntime {
                child,
                io.now()
              )
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures handle in io.dirHandles()
     ensures io.dirHandles().Keys == beforeReadHandles.Keys
     ensures forall h :: h in beforeReadHandles && h != handle ==>
@@ -454,7 +488,7 @@ module ChmodRecursiveRuntime {
                               )
                               ]
     requires SegmentPaths(io.fs()) == universe
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures handle in io.dirHandles()
     ensures io.dirHandles().Keys == initialHandles.Keys
     ensures forall h :: h in initialHandles && h != handle ==>
@@ -554,8 +588,9 @@ module ChmodRecursiveRuntime {
                universe - activeSegments
     requires SegmentPaths(io.fs()) == universe
     requires handle in io.dirHandles()
+    requires io.dirHandles()[handle].DirHandleState?
     requires io.dirHandles()[handle].path == parent.resolvedPath
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures handle in io.dirHandles()
     ensures io.dirHandles().Keys == old(io.dirHandles()).Keys
     ensures forall h :: h in old(io.dirHandles()) && h != handle ==>
@@ -607,7 +642,7 @@ module ChmodRecursiveRuntime {
     ghost var initialStderr := io.stderr();
     ghost var initialHandles := io.dirHandles();
     ghost var initialRemaining := io.dirHandles()[handle].remaining;
-    var hasMore, name, entryIsDir, entryIsSymlink, readErr :=
+    var hasMore, name, kind, readErr :=
       io.ReadDir(handle);
     if readErr != 0 {
       terminal := RecursiveReadError(readErr);
@@ -626,9 +661,12 @@ module ChmodRecursiveRuntime {
       return;
     }
 
-    ghost var entry := BenchWorld.DirEntry(
-      name, entryIsDir, entryIsSymlink
-    );
+    ghost var entry :| entry in initialRemaining && entry.name == name &&
+      io.dirHandles() == initialHandles[handle :=
+        BenchWorld.DirHandleState(
+          initialHandles[handle].path,
+          initialRemaining - {entry}
+        )];
     assert entry in initialRemaining;
     assert io.dirHandles() == initialHandles[handle :=
                             BenchWorld.DirHandleState(
@@ -682,7 +720,7 @@ module ChmodRecursiveRuntime {
     requires BenchWorld.FsNodeAt(
                io.fs(), identity.resolvedPath
              ).Directory?
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures io.dirHandles() == old(io.dirHandles())
     ensures SegmentPaths(io.fs()) == universe
     ensures terminal.RecursiveReadError? ==> terminal.err != 0
@@ -732,7 +770,7 @@ module ChmodRecursiveRuntime {
     ghost var now0 := io.now();
     ghost var startStdout := io.stdout();
     ghost var startStderr := io.stderr();
-    var openOk, handle, openErr := io.OpenDir(identity.accessPath);
+    var openOk, handle, openErr := io.OpenDir(identity.accessPath, false);
     if !openOk {
       assert openErr ==
              IOContract.OpenDirFailureErrFields(
@@ -781,6 +819,7 @@ module ChmodRecursiveRuntime {
 
     assert handle !in baseHandles;
     assert io.dirHandles().Keys == baseHandles.Keys + {handle};
+    assert io.dirHandles()[handle].DirHandleState?;
     if io.fs() != beforeFs {
       IOContract.ResolvePathForMetadataSuccessfulTargetsEqualExceptModeFields(
         beforeFs,
@@ -927,7 +966,7 @@ module ChmodRecursiveRuntime {
              TraversalFollowCore(cmd, identity.isTopLevel)
     requires !(cmd.preserveRoot && identity.resolvedPath == "/")
     requires BenchWorld.PathSegments(identity.resolvedPath) !in activeSegments
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures io.dirHandles() == old(io.dirHandles())
     ensures SegmentPaths(io.fs()) == universe
     ensures RuntimeVisitOutcomeCore(
@@ -1060,7 +1099,7 @@ module ChmodRecursiveRuntime {
     requires activeSegments <= universe
     requires SegmentPaths(io.fs()) == universe
     requires accessPath == "" || BenchWorld.IsAbsolutePath(accessPath)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures io.dirHandles() == old(io.dirHandles())
     ensures SegmentPaths(io.fs()) == universe
     ensures RuntimeVisitOutcomeCore(
@@ -1088,7 +1127,7 @@ module ChmodRecursiveRuntime {
     ghost var stdout0 := io.stdout();
     ghost var stderr0 := io.stderr();
     var rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2 := io.GetFileStatus(accessPath, false);
-    IOContract.FileStatusImpliesMetadata(io.fs(), accessPath, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), accessPath, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
     var linkOk := rawMetadataOk2;
     var isSymlink := rawMetadataStatus2.kind == BenchWorld.SymlinkKind;
     var linkErr := rawMetadataErr2;
@@ -1119,7 +1158,7 @@ module ChmodRecursiveRuntime {
     var followChmod := ChmodFollowCore(cmd, isTopLevel);
     if isSymlink && !followTraversal && !followChmod {
       if cmd.verbose {
-        io.AppendStdout(NeitherChangedMessageCore(displayPath));
+        var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
       }
       ok := true;
       visit := RecursiveSkip(
@@ -1143,7 +1182,7 @@ module ChmodRecursiveRuntime {
          (!followTraversal ||
           Base.CoreIsDanglingSymlinkFailure(isSymlink, identityErr)) {
         if cmd.verbose {
-          io.AppendStdout(NeitherChangedMessageCore(displayPath));
+          var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
         }
         ok := true;
         visit := RecursiveSkip(
@@ -1186,7 +1225,7 @@ module ChmodRecursiveRuntime {
     assert resolvedSegments in universe;
 
     var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(accessPath, true);
-    IOContract.FileStatusImpliesMetadata(io.fs(), accessPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), accessPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
     var dirOk := rawMetadataOk1;
     var isDirectory := rawMetadataStatus1.kind == BenchWorld.DirectoryKind;
     var dirErr := rawMetadataErr1;
@@ -1262,9 +1301,9 @@ module ChmodRecursiveRuntime {
     }
 
     if cmd.preserveRoot && resolvedPath == "/" {
-      io.AppendStderr(
+      var _, _ := io.WriteStderr(
         RootPreserveMessageCore(displayPath, accessPath != "/")
-      );
+      , BenchWorld.ThrowOnError);
       ok := false;
       visit := RecursivePreserveRoot(identity, accessPath != "/");
       reveal ValidVisitCore;
@@ -1339,11 +1378,11 @@ module ChmodRecursiveRuntime {
       activeSegments,
       io
     );
-    assert RuntimeVisitOutcomeCore(
-        cmd, plan, displayPath, accessPath, isTopLevel,
-        activeSegments, fs0, stdout0, stderr0,
-        io.fs(), io.stdout(), io.stderr(), ok, visit, now0
-      );
+    RuntimeVisitOutcomeIdentitySubstitution(
+      cmd, plan, identity, displayPath, accessPath, isTopLevel,
+      activeSegments, fs0, stdout0, stderr0,
+      io.fs(), io.stdout(), io.stderr(), ok, visit, now0
+    );
   }
 
   method ProcessRecursiveFilesRuntime(
@@ -1357,7 +1396,7 @@ module ChmodRecursiveRuntime {
   ) returns (allOk: bool, ghost visits: seq<RecursiveVisit>)
     requires i <= |files|
     requires SegmentPaths(io.fs()) == universe
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures io.dirHandles() == old(io.dirHandles())
     ensures SegmentPaths(io.fs()) == universe
     ensures RuntimeFilesOutcomeCore(
@@ -1467,7 +1506,7 @@ module ChmodRecursiveRuntime {
     io: BenchIO.IO
   ) returns (exit: int)
     requires Schema.Command(raw).recursive
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures RecursiveCoreSummary(raw, io, exit)
   {
     var cmd := Schema.Command(raw);
@@ -1476,7 +1515,7 @@ module ChmodRecursiveRuntime {
       return;
     }
     if cmd.dereferenceMode == 1 && cmd.traversalMode == 0 {
-      io.AppendStderr(RecursiveDereferenceRequirementMessageCore());
+      var _, _ := io.WriteStderr(RecursiveDereferenceRequirementMessageCore(), BenchWorld.ThrowOnError);
       exit := 1;
       return;
     }
@@ -1494,12 +1533,12 @@ module ChmodRecursiveRuntime {
       IOContract.FileStatusImpliesMode(io.fs(), referencePath, true, refOk, rawReferenceStatus, refErr);
       var refMode := rawReferenceStatus.mode;
       if !refOk {
-        io.AppendStderr(
+        var _, _ := io.WriteStderr(
           Base.ReferenceErrorMessageCore(
             cmd.referenceFile,
             Base.ErrnoTextCore(refErr)
           )
-        );
+        , BenchWorld.ThrowOnError);
         exit := 1;
         return;
       }

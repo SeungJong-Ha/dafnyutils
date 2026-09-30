@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "TrSchema.dfy"
 
 module TrSpec {
@@ -8,6 +9,8 @@ module TrSpec {
   import BenchWorld
   import IOContract
   import TrSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
 
 
@@ -27,10 +30,13 @@ module TrSpec {
     squeeze: bool,
     set1: BenchWorld.Bytes,
     set2: BenchWorld.Bytes,
-    squeezeSet: BenchWorld.Bytes
+    squeezeSet: BenchWorld.Bytes,
+    warnings: BenchWorld.Bytes
   )
 
   datatype SetDecode = SetOk(bytes: BenchWorld.Bytes) | SetUnsupported(operand: string)
+  datatype ReverseRange = NoReverseRange |
+    FoundReverseRange(first: BenchWorld.RawByte, last: BenchWorld.RawByte)
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
@@ -43,9 +49,9 @@ module TrSpec {
     + "      --help            display this help and exit\n"
     + "      --version         output version information and exit\n"
     + "\n"
-    + "Benchmark note: only literal ASCII bytes and ordered ASCII ranges like a-z\n"
-    + "are implemented; character classes, escapes, repeats, complements,\n"
-    + "truncate mode, locale behavior, and multibyte characters are deferred.\n"
+    + "Benchmark note: literal UTF-8 bytes and ordered ASCII ranges like a-z\n"
+    + "and escaped bytes are implemented; character classes, repeats, complements,\n"
+    + "truncate mode and locale-dependent collation are deferred.\n"
   }
 
   function VersionTextSpec(): BenchWorld.Bytes
@@ -64,19 +70,36 @@ module TrSpec {
     "tr: missing operand\nTry 'tr --help' for more information.\n"
   }
 
-  function MissingSet2MessageSpec(): BenchWorld.Bytes
+  function MissingSet2MessageSpec(operand: string, deleteAndSqueeze: bool): BenchWorld.Bytes
   {
-    "tr: missing operand after set1\nTry 'tr --help' for more information.\n"
+    "tr: missing operand after " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) +
+      (if deleteAndSqueeze then
+         "\nTwo strings must be given when both deleting and squeezing repeats.\n"
+       else
+         "\nTwo strings must be given when translating.\n") +
+      "Try 'tr --help' for more information.\n"
   }
 
-  function ExtraOperandMessageSpec(operand: string): BenchWorld.Bytes
+  function ExtraOperandMessageSpec(operand: string, explainDeleteLimit: bool): BenchWorld.Bytes
   {
-    "tr: extra operand '" + operand + "'\nTry 'tr --help' for more information.\n"
+    "tr: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) +
+      (if explainDeleteLimit then
+         "\nOnly one string may be given when deleting without squeezing repeats.\n"
+       else
+         "\n") +
+      "Try 'tr --help' for more information.\n"
   }
 
   function UnsupportedSetMessageSpec(operand: string): BenchWorld.Bytes
   {
-    "tr: unsupported set syntax '" + operand + "' in this benchmark\n"
+    match FirstReverseRangeFrom(operand, 0)
+    case FoundReverseRange(first, last) =>
+      "tr: range-endpoints of '" + DisplayRangeByte(first) + "-" +
+      DisplayRangeByte(last) +
+      "' are in reverse collating sequence order\n"
+    case NoReverseRange =>
+      "tr: unsupported set syntax '" + Utf8.Encode(operand) +
+      "' in this benchmark\n"
   }
 
   function EmptySet2MessageSpec(): BenchWorld.Bytes
@@ -84,14 +107,125 @@ module TrSpec {
     "tr: when not deleting, string2 must be non-empty in this benchmark\n"
   }
 
-  function IsAscii(ch: char): bool
+  function FirstReverseRangeFrom(text: string, i: nat): ReverseRange
+    requires i <= |text|
+    decreases |text| - i
   {
-    0 <= ch as int < 128
+    if i == |text| then
+      NoReverseRange
+    else
+      var first := AtomBytes(text, i);
+      var next := AtomNext(text, i);
+      if next + 1 < |text| && text[next] == '-' && |first| == 1 then
+        var last := AtomBytes(text, next + 1);
+        if |last| == 1 && first[0] as int > last[0] as int then
+          FoundReverseRange(first[0], last[0])
+        else
+          FirstReverseRangeFrom(text, next)
+      else
+        FirstReverseRangeFrom(text, next)
   }
 
-  function IsSetSyntaxMarker(ch: char): bool
+  function DisplayRangeByte(ch: BenchWorld.RawByte): BenchWorld.Bytes
   {
-    ch == '\\'
+    if ch as int < 32 || ch as int >= 127 then
+      ['\\',
+       ((('0' as int) + (ch as int / 64)) as char),
+       ((('0' as int) + (ch as int / 8) % 8) as char),
+       ((('0' as int) + (ch as int % 8)) as char)]
+    else [ch]
+  }
+
+  function IsOctal(ch: char): bool
+  {
+    '0' <= ch <= '7'
+  }
+
+  function OctalValue(ch: char): int
+    requires IsOctal(ch)
+  {
+    ch as int - '0' as int
+  }
+
+  function SimpleEscape(ch: char): char
+  {
+    if ch == 'a' then 7 as char
+    else if ch == 'b' then 8 as char
+    else if ch == 'f' then 12 as char
+    else if ch == 'n' then '\n'
+    else if ch == 'r' then '\r'
+    else if ch == 't' then '\t'
+    else if ch == 'v' then 11 as char
+    else ch
+  }
+
+  function AtomNext(text: string, i: nat): nat
+    requires i < |text|
+    ensures i < AtomNext(text, i) <= |text|
+  {
+    if text[i] != '\\' || i + 1 == |text| then i + 1
+    else if IsOctal(text[i + 1]) then
+      if i + 2 < |text| && IsOctal(text[i + 2]) then
+        if i + 3 < |text| && IsOctal(text[i + 3]) &&
+           OctalValue(text[i + 1]) < 4 then i + 4
+        else i + 3
+      else i + 2
+    else i + 2
+  }
+
+  function AtomBytes(text: string, i: nat): BenchWorld.Bytes
+    requires i < |text|
+  {
+    if text[i] != '\\' then Utf8.EncodeChar(text[i])
+    else if i + 1 == |text| then ['\\']
+    else if IsOctal(text[i + 1]) then
+      if i + 2 < |text| && IsOctal(text[i + 2]) then
+        if i + 3 < |text| && IsOctal(text[i + 3]) &&
+           OctalValue(text[i + 1]) < 4 then
+          [((OctalValue(text[i + 1]) * 64 +
+             OctalValue(text[i + 2]) * 8 +
+             OctalValue(text[i + 3])) as char)]
+        else
+          [((OctalValue(text[i + 1]) * 8 +
+             OctalValue(text[i + 2])) as char)]
+      else [(OctalValue(text[i + 1]) as char)]
+    else EscapeBytes(text[i + 1])
+  }
+
+  function AmbiguousOctalWarningSpec(text: string, i: nat): BenchWorld.Bytes
+    requires i + 3 < |text|
+  {
+    "tr: warning: the ambiguous octal escape \\" +
+    Utf8.Encode(text[i + 1..i + 4]) +
+    " is being\n\tinterpreted as the 2-byte sequence \\0" +
+    Utf8.Encode(text[i + 1..i + 3]) + ", " +
+    Utf8.EncodeChar(text[i + 3]) + "\n"
+  }
+
+  function TrailingBackslashWarningSpec(): BenchWorld.Bytes
+  {
+    "tr: warning: an unescaped backslash at end of string is not portable\n"
+  }
+
+  function WarningAtSpec(text: string, i: nat): BenchWorld.Bytes
+    requires i < |text|
+  {
+    if text[i] != '\\' then []
+    else if i + 1 == |text| then TrailingBackslashWarningSpec()
+    else if i + 3 < |text| && IsOctal(text[i + 1]) &&
+            IsOctal(text[i + 2]) && IsOctal(text[i + 3]) &&
+            OctalValue(text[i + 1]) >= 4 then
+      AmbiguousOctalWarningSpec(text, i)
+    else []
+  }
+
+  function EscapeBytes(ch: char): BenchWorld.Bytes
+  {
+    if ch == 'a' || ch == 'b' || ch == 'f' || ch == 'n' ||
+       ch == 'r' || ch == 't' || ch == 'v' then
+      [SimpleEscape(ch)]
+    else
+      Utf8.EncodeChar(ch)
   }
 
   // Ghost, so the adjacent-pair test can be the existential it actually is and
@@ -111,20 +245,48 @@ module TrSpec {
     )
   }
 
-  // Formal specification gap: GNU bracket classes, escapes, repeats,
-  // complement/truncate modes, locale behavior, and multibyte characters are
-  // intentionally rejected by this relation until modeled explicitly.
+  // Formal specification gap: GNU bracket classes, repeats,
+  // complement/truncate modes and locale-dependent collation are intentionally
+  // rejected by this relation until modeled explicitly.
   ghost predicate RangeExpansion(lo: char, hi: char, bytes: BenchWorld.Bytes)
   {
-    IsAscii(lo) &&
-    IsAscii(hi) &&
+    0 <= lo as int < 256 &&
+    0 <= hi as int < 256 &&
     lo as int <= hi as int &&
     |bytes| == (hi as int) - (lo as int) + 1 &&
     forall i :: 0 <= i < |bytes| ==>
                   bytes[i] as int == lo as int + i
   }
 
-  ghost predicate SetUnitRelation(
+  ghost predicate SetAtomRelation(
+    text: string, lo: nat, hi: nat, bytes: BenchWorld.Bytes
+  )
+  {
+    lo < |text| &&
+    if text[lo] != '\\' then
+      hi == lo + 1 && bytes == Utf8.EncodeChar(text[lo])
+    else if lo + 1 == |text| then
+      hi == lo + 1 && bytes == ['\\']
+    else if IsOctal(text[lo + 1]) then
+      if lo + 2 < |text| && IsOctal(text[lo + 2]) then
+        if lo + 3 < |text| && IsOctal(text[lo + 3]) &&
+           OctalValue(text[lo + 1]) < 4 then
+          hi == lo + 4 &&
+          bytes == [((OctalValue(text[lo + 1]) * 64 +
+                      OctalValue(text[lo + 2]) * 8 +
+                      OctalValue(text[lo + 3])) as char)]
+        else
+          hi == lo + 3 &&
+          bytes == [((OctalValue(text[lo + 1]) * 8 +
+                      OctalValue(text[lo + 2])) as char)]
+      else
+        hi == lo + 2 &&
+        bytes == [(OctalValue(text[lo + 1]) as char)]
+    else
+      hi == lo + 2 && bytes == EscapeBytes(text[lo + 1])
+  }
+
+  opaque ghost predicate SetUnitRelation(
     text: string,
     lo: nat,
     hi: nat,
@@ -133,14 +295,18 @@ module TrSpec {
   {
     lo < |text| &&
     !StartsUnsupportedConstruct(text[lo..]) &&
-    !IsSetSyntaxMarker(text[lo]) &&
-    if lo + 2 < |text| && text[lo + 1] == '-' then
-      hi == lo + 3 &&
-      RangeExpansion(text[lo], text[lo + 2], bytes)
-    else
-      hi == lo + 1 &&
-      IsAscii(text[lo]) &&
-      bytes == [text[lo]]
+    exists atomEnd: nat, atomBytes: BenchWorld.Bytes ::
+      SetAtomRelation(text, lo, atomEnd, atomBytes) &&
+      if atomEnd < |text| && text[atomEnd] == '-' &&
+         atomEnd + 1 < |text| then
+        exists endEnd: nat, endBytes: BenchWorld.Bytes
+          {:trigger SetAtomRelation(text, atomEnd + 1, endEnd, endBytes)} ::
+          SetAtomRelation(text, atomEnd + 1, endEnd, endBytes) &&
+          |atomBytes| == 1 && |endBytes| == 1 &&
+          hi == endEnd &&
+          RangeExpansion(atomBytes[0], endBytes[0], bytes)
+      else
+        hi == atomEnd && bytes == atomBytes
   }
 
   ghost predicate SetPartitionFrom(
@@ -186,6 +352,59 @@ module TrSpec {
   {
     exists inputCuts: seq<nat>, outputCuts: seq<nat> ::
       SetPartition(text, bytes, inputCuts, outputCuts)
+  }
+
+  ghost predicate WarningPartitionFrom(
+    text: string,
+    start: nat,
+    warnings: BenchWorld.Bytes,
+    inputCuts: seq<nat>,
+    outputCuts: seq<nat>
+  )
+  {
+    |inputCuts| == |outputCuts| &&
+    0 < |inputCuts| &&
+    start <= |text| &&
+    inputCuts[0] == start &&
+    outputCuts[0] == 0 &&
+    inputCuts[|inputCuts| - 1] == |text| &&
+    outputCuts[|outputCuts| - 1] == |warnings| &&
+    forall i
+      {:trigger inputCuts[i], inputCuts[i + 1]}
+      {:trigger warnings[outputCuts[i]..outputCuts[i + 1]]} ::
+      0 <= i && i + 1 < |inputCuts| ==>
+        inputCuts[i] < inputCuts[i + 1] <= |text| &&
+        inputCuts[i + 1] == AtomNext(text, inputCuts[i]) &&
+        outputCuts[i] <= outputCuts[i + 1] <= |warnings| &&
+        warnings[outputCuts[i]..outputCuts[i + 1]] ==
+          WarningAtSpec(text, inputCuts[i])
+  }
+
+  ghost predicate WarningBytesRelation(
+    text: string, warnings: BenchWorld.Bytes
+  )
+  {
+    exists inputCuts: seq<nat>, outputCuts: seq<nat> ::
+      WarningPartitionFrom(text, 0, warnings, inputCuts, outputCuts)
+  }
+
+  ghost predicate CommandWarningsRelation(
+    raw: TrSchema.TrCmdRaw,
+    decoded: seq<SetDecode>,
+    warnings: BenchWorld.Bytes
+  )
+    requires |decoded| == |raw.operands|
+  {
+    if |raw.operands| == 0 then
+      warnings == []
+    else
+      exists first: BenchWorld.Bytes ::
+        WarningBytesRelation(raw.operands[0], first) &&
+        (if |raw.operands| > 1 && decoded[0].SetOk? then
+           exists second: BenchWorld.Bytes ::
+             WarningBytesRelation(raw.operands[1], second) &&
+             warnings == first + second
+         else warnings == first)
   }
 
   ghost predicate SetDecodeRelation(text: string, decoded: SetDecode)
@@ -248,6 +467,7 @@ module TrSpec {
        DecodedBytes(decoded[0])
      else
        []) &&
+    CommandWarningsRelation(raw, decoded, cmd.warnings) &&
     if raw.seenHelp &&
        (!raw.seenVersion || raw.helpTokenIndex <= raw.versionTokenIndex) then
       cmd.mode == ModeHelp
@@ -257,10 +477,10 @@ module TrSpec {
       cmd.mode == ModeMissingOperand(MissingOperandMessageSpec())
     else if !raw.seenDelete && !raw.seenSqueeze &&
             |raw.operands| == 1 then
-      cmd.mode == ModeMissingOperand(MissingSet2MessageSpec())
+      cmd.mode == ModeMissingOperand(MissingSet2MessageSpec(raw.operands[0], false))
     else if raw.seenDelete && raw.seenSqueeze &&
             |raw.operands| == 1 then
-      cmd.mode == ModeMissingOperand(MissingSet2MessageSpec())
+      cmd.mode == ModeMissingOperand(MissingSet2MessageSpec(raw.operands[0], true))
     else if raw.seenDelete && !raw.seenSqueeze &&
             |raw.operands| > 1 then
       cmd.mode == ModeExtraOperand(raw.operands[1])
@@ -417,12 +637,14 @@ module TrSpec {
       case ModeExtraOperand(operand) =>
         io.stdin() == old(io.stdin()) &&
         io.stdout() == old(io.stdout()) &&
-        io.stderr() == old(io.stderr()) + ExtraOperandMessageSpec(operand) &&
+        io.stderr() == old(io.stderr()) +
+          ExtraOperandMessageSpec(operand, |raw.operands| == 2) &&
         exit == 1
       case ModeUnsupportedSet(operand) =>
         io.stdin() == old(io.stdin()) &&
         io.stdout() == old(io.stdout()) &&
-        io.stderr() == old(io.stderr()) + UnsupportedSetMessageSpec(operand) &&
+        io.stderr() == old(io.stderr()) + cmd.warnings +
+          UnsupportedSetMessageSpec(operand) &&
         exit == 1
       case ModeEmptySet2 =>
         io.stdin() == old(io.stdin()) &&
@@ -434,7 +656,7 @@ module TrSpec {
         (exists output: BenchWorld.Bytes ::
            OutputRelation(cmd, old(io.stdin()), output) &&
            io.stdout() == old(io.stdout()) + output) &&
-        io.stderr() == old(io.stderr()) &&
+        io.stderr() == old(io.stderr()) + cmd.warnings &&
         exit == 0
   }
 }

@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/Utf8.dfy"
+include "../../core/StringEscaping.dfy"
 include "BasenameSchema.dfy"
 
 module BasenameSpec {
@@ -8,6 +9,7 @@ module BasenameSpec {
   import BenchIO
   import BenchWorld
   import Schema = BasenameSchema
+  import SE = StringEscaping
 
 
 
@@ -185,8 +187,8 @@ module BasenameSpec {
 
   function ExtraOperandMessageSpec(op: string): BenchWorld.Bytes
   {
-    Utf8.Encode("basename: extra operand '" + op + "'\n" +
-    "Try 'basename --help' for more information.\n")
+    "basename: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(op)) +
+    "\nTry 'basename --help' for more information.\n"
   }
 
   twostate predicate Spec(raw: Schema.BasenameCmdRaw, io: BenchIO.IO, exit: int)

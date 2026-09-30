@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "CsplitSchema.dfy"
 
 module CsplitSpec {
@@ -9,6 +10,7 @@ module CsplitSpec {
   import BenchWorld
   import IOContract
   import Schema = CsplitSchema
+  import SE = StringEscaping
 
   datatype NumberStatus = NumbersOk | NumberZero | NumberBackwards(current: nat, previous: nat)
   datatype SplitPlan = SplitComplete(pieces: seq<BenchWorld.Bytes>) |
@@ -78,12 +80,15 @@ module CsplitSpec {
   {
     match input
     case Stdin => []
-    case File(path) => Utf8.Encode("csplit: cannot open '" + path + "' for reading: " + ReadErrnoText(err) + "\n")
+    case File(path) =>
+      "csplit: cannot open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+      " for reading: " + Utf8.Encode(ReadErrnoText(err)) + "\n"
   }
 
   function WriteErrorMessage(path: BenchWorld.Path, err: int): BenchWorld.Bytes
   {
-    Utf8.Encode("csplit: " + path + ": " + WriteErrnoText(err) + "\n")
+    "csplit: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+    ": " + Utf8.Encode(WriteErrnoText(err)) + "\n"
   }
 
   function ZeroLineMessage(line: nat): BenchWorld.Bytes
@@ -263,15 +268,16 @@ module CsplitSpec {
     case File(_) => preStdin
   }
 
-  function ReadResultFields(
+  ghost function ReadResultFields(
     input: Schema.Input,
     preFs: BenchWorld.FileSystem,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     match input
     case Stdin => BenchWorld.Ok(preStdin)
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate WriteAttemptsRelation(
@@ -498,7 +504,7 @@ module CsplitSpec {
       io.stderr() == old(io.stderr()) &&
       exit == 0
     else
-      match ReadResultFields(raw.input, old(io.fs()), old(io.stdin()))
+      match ReadResultFields(raw.input, old(io.fs()), old(io.trustedStreams()), old(io.stdin()))
       case Err(err) =>
         io.fs() == old(io.fs()) &&
         io.stdin() == ReadStdinAfterFields(raw.input, old(io.stdin())) &&

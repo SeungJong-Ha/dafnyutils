@@ -116,7 +116,17 @@ module LognameSchema {
   ) returns (plan: CliTypes.CliPlan<LognameCmdRaw>)
     decreases *
   {
-    var msg := FormatParseError(e);
-    plan := CliTypes.CliEarlyExit(1, [], msg);
+    match CliTypes.PriorHelpVersionRequest(argv, e.tokenIndex)
+    case RequestHelp =>
+      plan := CliTypes.CliRun(
+        LognameCmdRaw(true, false, 0, -1, [])
+      );
+    case RequestVersion =>
+      plan := CliTypes.CliRun(
+        LognameCmdRaw(false, true, -1, 0, [])
+      );
+    case RequestNone =>
+      var msg := FormatParseError(e);
+      plan := CliTypes.CliEarlyExit(1, [], msg);
   }
 }

@@ -72,6 +72,13 @@ def assert_same_result(
     assert_result_matches_reference(ref_result, bench_result)
 
 
+# A sequence of many terms must render completely without stack exhaustion.
+def test_long_integer_sequence_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(run_system_seq(["12000"], cwd), run_bench_seq(["12000"], cwd))
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -91,6 +98,14 @@ def test_integer_sequences_match_coreutils(args: list[str]) -> None:
         ref = run_system_seq(args, cwd)
         bench = run_bench_seq(args, cwd)
         assert_same_result(ref, bench)
+
+
+# A leading negative number stops option parsing without requiring an explicit `--`.
+@pytest.mark.parametrize("args", [["-2"], ["-.5", ".5", "1"]])
+def test_leading_negative_operand_matches_coreutils(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(run_system_seq(args, cwd), run_bench_seq(args, cwd))
 
 
 @pytest.mark.parametrize(
@@ -256,3 +271,23 @@ def test_deferred_seq_regressions_placeholder() -> None:
 def test_seq_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     verify_seq_module(target)
+
+
+# Invalid numeric operands use GNU's C-locale byte escapes.
+@pytest.mark.parametrize("operand", ["a'b", "a\tb", "a\\b", "é"])
+def test_invalid_number_diagnostic_escaping_matches_coreutils(operand: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_seq([operand], cwd)
+        bench = run_bench_seq([operand], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Extra operands use the same GNU C-locale quoting as numeric errors.
+def test_extra_operand_diagnostic_escaping_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = ["1", "2", "3", "a'b"]
+        ref = run_system_seq(args, cwd)
+        bench = run_bench_seq(args, cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

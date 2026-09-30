@@ -88,6 +88,101 @@ def assert_same_result(
     )
 
 
+# Operand and file failures quote names using GNU's unconditional shell style.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["apost'rophe"],
+        ["missing/tab\tname", "destination"],
+        ["missing/é", "destination"],
+        ["source", "second", "missing/semicolon;dir"],
+    ],
+)
+def test_operand_failure_shell_quoting_matches_coreutils(args: list[str]) -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(
+            run_system_mv(args, cwd),
+            run_bench_mv(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Invalid mode values are diagnosed with GNU's locale quote style.
+@pytest.mark.parametrize("arg", ["--backup=bad'apostrophe", "--update=bad\tvalue", "--backup=é"])
+def test_invalid_mode_locale_quoting_matches_coreutils(arg: str) -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = [arg, "source", "destination"]
+        assert_same_result(
+            run_system_mv(args, cwd),
+            run_bench_mv(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Verbose rename output shell quotes both source and destination names.
+def test_verbose_rename_shell_quoting_matches_coreutils() -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source'name").write_bytes(b"data")
+        args = ["-v", "source'name", "target\tname"]
+        assert_same_result(run_system_mv(args, ref_cwd), run_bench_mv(args, bench_cwd))
+
+
+# Rename failures quote both path arguments under GNU's shell style.
+def test_rename_failure_shell_quoting_matches_coreutils() -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source'name").write_bytes(b"data")
+            (cwd / "target;dir").mkdir()
+        args = ["-T", "source'name", "target;dir"]
+        assert_same_result(
+            run_system_mv(args, ref_cwd),
+            run_bench_mv(args, bench_cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Debug skips render the destination with GNU's shell quote style.
+@pytest.mark.parametrize("options", [["--debug", "-n"], ["--update=none-fail"]])
+def test_skipped_target_shell_quoting_matches_coreutils(options: list[str]) -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source").write_bytes(b"new")
+            (cwd / "target'apostrophe").write_bytes(b"old")
+        args = [*options, "source", "target'apostrophe"]
+        assert_same_result(
+            run_system_mv(args, ref_cwd),
+            run_bench_mv(args, bench_cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Backup verbose output applies shell quoting to the generated backup name.
+def test_backup_verbose_shell_quoting_matches_coreutils() -> None:
+    # upstream: coreutils/tests/mv/diag.sh
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source'name").write_bytes(b"new")
+            (cwd / "target;name").write_bytes(b"old")
+        args = ["-v", "--backup=simple", "source'name", "target;name"]
+        assert_same_result(run_system_mv(args, ref_cwd), run_bench_mv(args, bench_cwd))
+
+
 def test_missing_operand_and_destination_match_coreutils() -> None:
     # upstream: coreutils/tests/mv/diag.sh
     with tempfile.TemporaryDirectory() as tmp_dir:

@@ -10,6 +10,8 @@ module WcCore {
   import IOContract
   import Spec = WcSpec
   import WcSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
   datatype Counts = Counts(lines: int, words: int, chars: int, bytes: int, maxLine: int)
   datatype ScanState = ScanState(counts: Counts, inWord: bool, lineLen: int)
@@ -80,13 +82,14 @@ module WcCore {
     cmd: WcSchema.WcCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): BenchWorld.Result<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin(_) => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   function ZeroCounts(): Counts
@@ -311,11 +314,12 @@ module WcCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    observation: InputObservation
+    observation: InputObservation,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
-    observation.result == ReadResultCore(cmd, preFs, preStdin, i) &&
+    observation.result == ReadResultCore(cmd, preFs, preStdin, i, preStreams) &&
     InputStepWitnessRelation(
       cmd.inputs[i],
       observation.result,
@@ -378,7 +382,8 @@ module WcCore {
     entryCuts: seq<nat>,
     errorOutput: BenchWorld.Bytes,
     errorCuts: seq<nat>,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     count <= |cmd.inputs| &&
@@ -389,7 +394,8 @@ module WcCore {
          preFs,
          preStdin,
          i,
-         observations[i]
+         observations[i],
+         preStreams
        )) &&
     FragmentsConcatenate(
       ObservationEntryFragments(observations),
@@ -665,11 +671,13 @@ module WcCore {
   ): BenchWorld.Bytes
   {
     RenderValues(SelectedValues(cmd, counts), width, 0) +
-    (if name == "" then [] else [' '] + name) +
+    (if name == "" then [] else
+      [' '] + (if '\n' in name then SE.SpecQuoteFBytes(Utf8.Encode(name)) else Utf8.Encode(name))) +
     ['\n']
   } by method {
     return RenderValues(SelectedValues(cmd, counts), width, 0) +
-      (if name == "" then [] else [' '] + name) +
+      (if name == "" then [] else
+        [' '] + (if '\n' in name then SE.SpecQuoteFBytes(Utf8.Encode(name)) else Utf8.Encode(name))) +
       ['\n'];
   }
 
@@ -758,7 +766,8 @@ module WcCore {
            entryCuts,
            errorOutput,
            errorCuts,
-           hadError
+           hadError,
+           old(io.trustedStreams())
          ) &&
          io.stdout() ==
          old(io.stdout()) + RunOutputFromEntriesCore(cmd, entries) &&
@@ -1219,17 +1228,19 @@ module WcCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     observations: seq<InputObservation>,
-    observation: InputObservation
+    observation: InputObservation,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires |observations| < |cmd.inputs|
     requires forall i: nat | i < |observations| ::
-               InputObservationRelation(cmd, preFs, preStdin, i, observations[i])
+               InputObservationRelation(cmd, preFs, preStdin, i, observations[i], preStreams)
     requires InputObservationRelation(
                cmd,
                preFs,
                preStdin,
                |observations|,
-               observation
+               observation,
+               preStreams
              )
     ensures forall i: nat | i < |observations + [observation]| ::
               InputObservationRelation(
@@ -1237,7 +1248,8 @@ module WcCore {
                 preFs,
                 preStdin,
                 i,
-                (observations + [observation])[i]
+                (observations + [observation])[i],
+                preStreams
               )
   {
     forall i: nat | i < |observations + [observation]|
@@ -1246,7 +1258,8 @@ module WcCore {
                 preFs,
                 preStdin,
                 i,
-                (observations + [observation])[i]
+                (observations + [observation])[i],
+                preStreams
               )
     {
     }
@@ -1298,7 +1311,8 @@ module WcCore {
     errorCuts: seq<nat>,
     hadError: bool,
     observation: InputObservation,
-    nextStdin: BenchWorld.Bytes
+    nextStdin: BenchWorld.Bytes,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires InputTraceWitnessRelation(
                cmd,
@@ -1311,7 +1325,8 @@ module WcCore {
                entryCuts,
                errorOutput,
                errorCuts,
-               hadError
+               hadError,
+               preStreams
              )
     requires count < |cmd.inputs|
     requires InputObservationRelation(
@@ -1319,7 +1334,8 @@ module WcCore {
                preFs,
                preStdin,
                count,
-               observation
+               observation,
+               preStreams
              )
     requires nextStdin ==
              if IsStdinInput(cmd.inputs[count]) then [] else currentStdin
@@ -1334,7 +1350,8 @@ module WcCore {
               entryCuts + [|entries + observation.entries|],
               errorOutput + observation.errorOutput,
               errorCuts + [|errorOutput + observation.errorOutput|],
-              hadError || observation.failed
+              hadError || observation.failed,
+              preStreams
             )
   {
     reveal InputTraceWitnessRelation();
@@ -1345,7 +1362,8 @@ module WcCore {
     ObservationEntryFragmentsSnoc(observations, observation);
     ObservationErrorFragmentsSnoc(observations, observation);
     ObservationRelationsSnoc(
-      cmd, preFs, preStdin, observations, observation
+      cmd, preFs, preStdin, observations, observation,
+      preStreams
     );
     FailedObservationSnoc(observations, observation);
     if IsStdinInput(cmd.inputs[count]) {
@@ -1372,7 +1390,8 @@ module WcCore {
     entryCuts: seq<nat>,
     errorOutput: BenchWorld.Bytes,
     errorCuts: seq<nat>,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires InputTraceWitnessRelation(
                cmd,
@@ -1385,7 +1404,8 @@ module WcCore {
                entryCuts,
                errorOutput,
                errorCuts,
-               hadError
+               hadError,
+               preStreams
              )
     ensures currentStdin == PrefixStdinCore(cmd, preStdin, count)
   {
@@ -1409,7 +1429,7 @@ module WcCore {
 
     if cmd.mode == WcSchema.ModeHelp {
       var help := GetHelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1418,7 +1438,7 @@ module WcCore {
 
     if cmd.mode == WcSchema.ModeVersion {
       var version := GetVersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1442,7 +1462,8 @@ module WcCore {
         entryCuts,
         err,
         errorCuts,
-        hadError
+        hadError,
+        old(io.trustedStreams())
       );
 
     var i := 0;
@@ -1461,7 +1482,8 @@ module WcCore {
                   entryCuts,
                   err,
                   errorCuts,
-                  hadError
+                  hadError,
+                  old(io.trustedStreams())
                 )
       decreases |cmd.inputs| - i
     {
@@ -1476,7 +1498,8 @@ module WcCore {
         entryCuts,
         err,
         errorCuts,
-        hadError
+        hadError,
+        old(io.trustedStreams())
       );
       assert io.stdin() == PrefixStdinCore(cmd, preStdin, i);
       var input := cmd.inputs[i];
@@ -1485,18 +1508,19 @@ module WcCore {
       match input {
         case Stdin(_) =>
           ghost var beforeStdin := io.stdin();
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           readResult := BenchWorld.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
           assert beforeStdin == PrefixStdinCore(cmd, preStdin, i);
           assert data == beforeStdin;
         case File(path) =>
-          readResult := io.ReadFile(path);
+          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
       }
       if input.File? {
         PrefixStdinCoreStep(cmd, preStdin, i);
       }
-      assert readResult == ReadResultCore(cmd, preFs, preStdin, i);
+      assert readResult == ReadResultCore(cmd, preFs, preStdin, i, old(io.trustedStreams()));
       assert input.Stdin? ==> readResult.Ok?;
 
       var entrySeq, errorPiece, inputHadError, countWitnesses :=
@@ -1513,7 +1537,8 @@ module WcCore {
           preFs,
           preStdin,
           i,
-          observation
+          observation,
+          old(io.trustedStreams())
         );
       assert io.stdin() ==
              (if IsStdinInput(cmd.inputs[i]) then [] else inputStdin);
@@ -1530,7 +1555,8 @@ module WcCore {
         errorCuts,
         hadError,
         observation,
-        io.stdin()
+        io.stdin(),
+        old(io.trustedStreams())
       );
       ghost var nextObservations := observations + [observation];
       ghost var nextEntryCuts := entryCuts + [|entries + entrySeq|];
@@ -1547,13 +1573,13 @@ module WcCore {
     var out := RunOutputFromEntriesCore(cmd, entries);
 
     if |out| > 0 {
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     } else {
       assert out == [];
       assert io.stdout() == preStdout + out;
     }
     if |err| > 0 {
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     } else {
       assert err == [];
       assert io.stderr() == preStderr + err;
@@ -1570,7 +1596,8 @@ module WcCore {
       entryCuts,
       err,
       errorCuts,
-      hadError
+      hadError,
+      old(io.trustedStreams())
     );
     PrefixStdinRelation(cmd, preStdin, |cmd.inputs|);
     assert io.stdin() ==
@@ -1590,7 +1617,8 @@ module WcCore {
         entryCuts,
         err,
         errorCuts,
-        hadError
+        hadError,
+        old(io.trustedStreams())
       );
     assert io.stdout() ==
            preStdout + RunOutputFromEntriesCore(cmd, entries);
@@ -1620,7 +1648,8 @@ module WcCore {
             coreEntryCuts,
             errorOutput,
             coreErrorCuts,
-            failed
+            failed,
+            old(io.trustedStreams())
           ) &&
           io.stdout() ==
           preStdout + RunOutputFromEntriesCore(cmd, coreEntries) &&

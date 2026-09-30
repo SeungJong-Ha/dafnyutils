@@ -1,11 +1,13 @@
 include "../../core/Utf8.dfy"
 include "../../core/World.dfy"
 include "../../core/CliTypes.dfy"
+include "../../core/CliExtern.dfy"
 
 module SeqSchema {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import CliTypes
+  import CliExtern
 
   datatype SeqCmdRaw = SeqCmdRaw(
     separator: CliTypes.OptionalString,
@@ -38,6 +40,11 @@ module SeqSchema {
   function HasPrefix(text: string, prefix: string): bool
   {
     |prefix| <= |text| && text[..|prefix|] == prefix
+  }
+
+  function IsNegativeOperand(text: string): bool
+  {
+    |text| > 1 && text[0] == '-' && (text[1] == '.' || '0' <= text[1] <= '9')
   }
 
   method DecodeEarlySpecial(argv: seq<string>, stopTokenIndex: int) returns (found: bool, raw: SeqCmdRaw)
@@ -208,6 +215,20 @@ module SeqSchema {
   ) returns (plan: CliTypes.CliPlan<SeqCmdRaw>)
     decreases *
   {
+    if 0 <= e.tokenIndex < |argv| && IsNegativeOperand(argv[e.tokenIndex]) {
+      var normalized := argv[..e.tokenIndex] + ["--"] + argv[e.tokenIndex..];
+      var schema := Schema();
+      var cfg := ParserConfig();
+      var reparsed := CliExtern.Cli.Parse(normalized, schema, cfg);
+      match reparsed {
+        case ParseSuccess(parsed) =>
+          var raw := Decode(parsed);
+          plan := CliTypes.CliRun(raw);
+          return;
+        case ParseFailure(_) =>
+      }
+    }
+
     if 0 <= e.tokenIndex <= |argv| {
       var handled, raw := DecodeEarlySpecial(argv, e.tokenIndex);
       if handled {

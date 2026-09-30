@@ -86,24 +86,30 @@ module LsCore {
      ExecuteCharCore(status.mode, 1 as bv32, 512 as bv32, 't', 'T')]
   }
 
-  function RenderEntryCore(
+  function RenderEntryCore(cmd: Schema.LsCmd, displayName: string, status: BenchWorld.FileStatus): BenchWorld.Bytes
+  {
+    RenderAlignedEntryCore(cmd, displayName, status, Spec.ColumnWidths(0, 0, 0, 0, 0))
+  }
+
+  function RenderAlignedEntryCore(
     cmd: Schema.LsCmd,
     displayName: string,
-    status: BenchWorld.FileStatus
+    status: BenchWorld.FileStatus,
+    widths: Spec.ColumnWidths
   ): BenchWorld.Bytes
   {
     var blockPrefix := if cmd.showBlocks then
-                         NatTextCore(Spec.DisplayedBlocksSpec(status.storage.allocatedBlocks, cmd.cliBlockSize)) + " "
+                         Spec.PadColumn(NatTextCore(Spec.DisplayedBlocksSpec(status.storage.allocatedBlocks, cmd.cliBlockSize)), widths.blocks, true) + " "
                        else "";
     Utf8.Encode(blockPrefix + if !cmd.numericLong then
       displayName + "\n"
     else
       ModeTextCore(status) + " " +
-      NatTextCore(status.linkCount) + " " +
-      NatTextCore(status.ownership.uid) + " " +
-      NatTextCore(status.ownership.gid) + " " +
-      NatTextCore(Spec.DisplayedFileSizeSpec(
-                    status.storage.size, cmd.fileSizeBlockSize)) + " " +
+      Spec.PadColumn(NatTextCore(status.linkCount), widths.links, true) + " " +
+      Spec.PadColumn(NatTextCore(status.ownership.uid), widths.owner, true) + " " +
+      Spec.PadColumn(NatTextCore(status.ownership.gid), widths.group, true) + " " +
+      Spec.PadColumn(NatTextCore(Spec.DisplayedFileSizeSpec(
+                    status.storage.size, cmd.fileSizeBlockSize)), widths.size, true) + " " +
       TimeTextCore(cmd, SelectedSecondsCore(cmd, status),
                    SelectedNanosecondsCore(cmd, status)) + " " +
       displayName + "\n")
@@ -174,17 +180,15 @@ module LsCore {
     right: Spec.EntryObservation
   ): bool
   {
-    if left.ok != right.ok then left.ok
-    else if !left.ok then StringLessCore(left.displayName, right.displayName)
-    else if cmd.sortMode == Schema.SortSize &&
-            left.status.storage.size != right.status.storage.size then
-      left.status.storage.size > right.status.storage.size
-    else if cmd.sortMode == Schema.SortTime && left.ok && right.ok &&
-            SelectedSecondsCore(cmd, left.status) != SelectedSecondsCore(cmd, right.status) then
-      SelectedSecondsCore(cmd, left.status) > SelectedSecondsCore(cmd, right.status)
-    else if cmd.sortMode == Schema.SortTime && left.ok && right.ok &&
-            SelectedNanosecondsCore(cmd, left.status) != SelectedNanosecondsCore(cmd, right.status) then
-      SelectedNanosecondsCore(cmd, left.status) > SelectedNanosecondsCore(cmd, right.status)
+    if cmd.sortMode == Schema.SortSize &&
+            (if left.ok then left.status.storage.size else 0) != (if right.ok then right.status.storage.size else 0) then
+      (if left.ok then left.status.storage.size else 0) > (if right.ok then right.status.storage.size else 0)
+    else if cmd.sortMode == Schema.SortTime &&
+            (if left.ok then SelectedSecondsCore(cmd, left.status) else 0) != (if right.ok then SelectedSecondsCore(cmd, right.status) else 0) then
+      (if left.ok then SelectedSecondsCore(cmd, left.status) else 0) > (if right.ok then SelectedSecondsCore(cmd, right.status) else 0)
+    else if cmd.sortMode == Schema.SortTime &&
+            (if left.ok then SelectedNanosecondsCore(cmd, left.status) else 0) != (if right.ok then SelectedNanosecondsCore(cmd, right.status) else 0) then
+      (if left.ok then SelectedNanosecondsCore(cmd, left.status) else 0) > (if right.ok then SelectedNanosecondsCore(cmd, right.status) else 0)
     else
       StringLessCore(left.displayName, right.displayName)
   }
@@ -287,28 +291,35 @@ module LsCore {
       DirectoryPositionsCore(sorted, i + 1)
   }
 
+  function RenderOperandCore(cmd: Schema.LsCmd, observations: seq<Spec.OperandObservation>, index: nat): BenchWorld.Bytes
+    requires index < |observations|
+  {
+    RenderAlignedEntryCore(cmd, observations[index].renderName, observations[index].status,
+                          Spec.OperandWidthsSpec(cmd, observations))
+  }
+
   function BodiesAtPositionsCore(
-    sorted: seq<Spec.OperandObservation>, positions: seq<nat>
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>, positions: seq<nat>
   ): BenchWorld.Bytes
     requires forall k: nat :: k < |positions| ==> positions[k] < |sorted|
   {
-    BodiesAtPositionsPrefixCore(sorted, positions, |positions|)
+    BodiesAtPositionsPrefixCore(cmd, sorted, positions, |positions|)
   }
 
   function BodiesFragmentsPrefixCore(
-    sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
   ): seq<BenchWorld.Bytes>
     requires processed <= |positions|
     requires forall k: nat :: k < |positions| ==> positions[k] < |sorted|
-    ensures |BodiesFragmentsPrefixCore(sorted, positions, processed)| == processed
+    ensures |BodiesFragmentsPrefixCore(cmd, sorted, positions, processed)| == processed
     ensures forall k: nat :: k < processed ==>
-                               BodiesFragmentsPrefixCore(sorted, positions, processed)[k] ==
-                               sorted[positions[k]].body
+                               BodiesFragmentsPrefixCore(cmd, sorted, positions, processed)[k] ==
+                               RenderOperandCore(cmd, sorted, positions[k])
     decreases processed
   {
     if processed == 0 then []
-    else (BodiesFragmentsPrefixCore(sorted, positions, processed - 1) +
-          [sorted[positions[processed - 1]].body])
+    else (BodiesFragmentsPrefixCore(cmd, sorted, positions, processed - 1) +
+          [RenderOperandCore(cmd, sorted, positions[processed - 1])])
   }
 
   function OperandIndicesPrefixCore(
@@ -328,15 +339,15 @@ module LsCore {
   }
 
   function BodiesAtPositionsPrefixCore(
-    sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
   ): BenchWorld.Bytes
     requires processed <= |positions|
     requires forall k: nat :: k < |positions| ==> positions[k] < |sorted|
     decreases processed
   {
     if processed == 0 then []
-    else (BodiesAtPositionsPrefixCore(sorted, positions, processed - 1) +
-          sorted[positions[processed - 1]].body)
+    else (BodiesAtPositionsPrefixCore(cmd, sorted, positions, processed - 1) +
+          RenderOperandCore(cmd, sorted, positions[processed - 1]))
   }
 
   function DirectoryGroupsCore(
@@ -361,8 +372,13 @@ module LsCore {
              sorted[positions[processed - 1]].body, true)])
   }
 
+  function HasQueuedDirectoryCore(sorted: seq<Spec.OperandObservation>): bool
+  {
+    exists i: nat :: i < |sorted| && sorted[i].operandClass == Spec.ExpandedDirectory
+  }
+
   function OutputGroupsCore(
-    sorted: seq<Spec.OperandObservation>
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>
   ): seq<Spec.OutputGroup>
   {
     var directPositions := DirectPositionsCore(sorted, 0);
@@ -370,7 +386,9 @@ module LsCore {
     (if |directPositions| == 0 then []
      else [Spec.OutputGroup(
              OperandIndicesPrefixCore(sorted, directPositions, |directPositions|),
-             BodiesAtPositionsCore(sorted, directPositions), false)]) +
+             BodiesAtPositionsCore(cmd, sorted, directPositions) +
+               (if |directoryPositions| == 0 && HasQueuedDirectoryCore(sorted)
+                then "\n" else []), false)]) +
     DirectoryGroupsCore(sorted, directoryPositions)
   }
 
@@ -471,7 +489,7 @@ module LsCore {
           observations[processed - 1].sectionErrors)
   }
 
-  ghost predicate ObservationPiecesSummary(
+  ghost predicate RawObservationPiecesSummary(
     cmd: Schema.LsCmd,
     observations: seq<Spec.EntryObservation>,
     outputFragments: seq<BenchWorld.Bytes>,
@@ -491,10 +509,27 @@ module LsCore {
        else Spec.AccessErrorMessageSpec(observations[i].displayName, observations[i].err))
   }
 
-  ghost predicate DirectoryListingSummary(
+  ghost predicate ObservationPiecesSummary(
     cmd: Schema.LsCmd,
+    observations: seq<Spec.EntryObservation>,
+    outputFragments: seq<BenchWorld.Bytes>
+  )
+  {
+    |outputFragments| == |observations| &&
+    forall i: nat | i < |observations| ::
+      outputFragments[i] ==
+      (if observations[i].ok
+       then RenderAlignedEntryCore(cmd, observations[i].renderName, observations[i].status, Spec.ObservationWidthsSpec(cmd, observations))
+       else Spec.RenderFailedEntrySpec(cmd, observations[i], Spec.ObservationWidthsSpec(cmd, observations)))
+  }
+
+  ghost opaque predicate DirectoryListingSummary(
+    cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     observations: seq<Spec.EntryObservation>,
     readErr: int,
     output: BenchWorld.Bytes,
@@ -506,9 +541,11 @@ module LsCore {
       outputFragments: seq<BenchWorld.Bytes>, outputCuts: seq<nat>,
       errorFragments: seq<BenchWorld.Bytes>, errorCuts: seq<nat>,
       entryOutput: BenchWorld.Bytes, entryErrors: BenchWorld.Bytes ::
-      Spec.DirectoryObservationRelation(cmd, fs, path, readErr == 0, rawObservations) &&
+      Spec.DirectoryObservationRelation(cmd, fs, path, firstStatus, afterStatus,
+                                        readErr == 0, rawObservations) &&
       observations == SortEntriesCore(cmd, rawObservations) &&
-      ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments) &&
+      ObservationPiecesSummary(cmd, observations, outputFragments) &&
+      Spec.ObservationErrorsRelation(displayPath, rawObservations, errorFragments) &&
       Spec.FragmentsConcatenate(outputFragments, entryOutput, outputCuts) &&
       output == TotalLineCore(cmd, rawObservations) + entryOutput &&
       Spec.FragmentsConcatenate(errorFragments, entryErrors, errorCuts) &&
@@ -528,7 +565,8 @@ module LsCore {
     if processed == 0 then []
     else (RecursiveChildOutputPrefixCore(
             observations, children, processed - 1) +
-          (if processed - 1 in children
+          (if processed - 1 in children &&
+              Spec.RecursiveNodeListed(children[processed - 1])
            then "\n" + children[processed - 1].output
            else []))
   }
@@ -552,7 +590,7 @@ module LsCore {
            else []))
   }
 
-  ghost predicate RecursiveDirectorySummary(
+  ghost opaque predicate RecursiveDirectorySummary(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     displayPath: BenchWorld.Path,
@@ -562,34 +600,78 @@ module LsCore {
   )
     decreases tree
   {
-    DirectoryListingSummary(
-      cmd, fs, accessPath, tree.observations, tree.readErr,
-      tree.listingOutput, tree.listingErrors, tree.listingHadError) &&
-    tree.children.Keys !! tree.cycles &&
-    (forall i: nat :: i in tree.cycles ==> i < |tree.observations|) &&
-    (forall i: nat :: i < |tree.observations| ==>
-                        var observation := tree.observations[i];
-                        var eligible := observation.ok &&
-                                        observation.status.kind == BenchWorld.DirectoryKind &&
-                                        observation.displayName != "." && observation.displayName != "..";
-                        (i in tree.cycles <==> eligible && observation.status.hostKey in ancestors) &&
-                        (i in tree.children <==> eligible && observation.status.hostKey !in ancestors)) &&
-    (forall i: nat :: i in tree.children ==>
-                        i < |tree.observations| &&
-                        RecursiveDirectorySummary(
-                          cmd, fs,
-                          Spec.ChildDisplayPath(displayPath, tree.observations[i].displayName),
-                          tree.observations[i].accessPath,
-                          ancestors + {tree.observations[i].status.hostKey},
-                          tree.children[i])) &&
-    tree.output == displayPath + ":\n" + tree.listingOutput +
-    RecursiveChildOutputPrefixCore(
-      tree.observations, tree.children, |tree.observations|) &&
-    tree.errors == tree.listingErrors + RecursiveChildErrorPrefixCore(
-      displayPath, tree.observations, tree.children, tree.cycles, |tree.observations|) &&
-    tree.hadError ==
-    (tree.listingHadError || |tree.cycles| > 0 ||
-     exists i: nat :: i in tree.children && tree.children[i].hadError)
+    cmd.statusContext.BoundStatusObservations? &&
+    tree.openOk == (IOContract.OpenDirFailureErrFields(fs, accessPath) == 0) &&
+    (if !tree.openOk then
+       tree.openErr == IOContract.OpenDirFailureErrFields(fs, accessPath) &&
+       tree.openErr > 0 && !tree.statusOk && !tree.cycle &&
+       tree.listingFirstStatus == tree.firstStatus &&
+       tree.listingAfterStatus == tree.firstStatus &&
+       tree.afterStatus == tree.firstStatus &&
+       tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+       tree.output == [] &&
+       tree.errors == Spec.OpenDirectoryErrorMessageSpec(displayPath, tree.openErr) &&
+       tree.hadError
+     else if !tree.statusOk then
+       tree.openErr == 0 && tree.statusErr > 0 && !tree.cycle &&
+       tree.listingFirstStatus == tree.firstStatus &&
+       tree.listingAfterStatus == tree.firstStatus &&
+       tree.afterStatus == tree.firstStatus &&
+       tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+       tree.output == [] &&
+       tree.errors == Spec.DirectoryIdentityErrorMessageSpec(displayPath, tree.statusErr) &&
+       tree.hadError
+     else
+       tree.openErr == 0 && tree.statusErr == 0 &&
+       tree.listingFirstStatus == tree.firstStatus + 1 &&
+       (exists resolved: BenchWorld.Path ::
+         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+         IOContract.ObservedFileStatusContractFields(
+           cmd.statusContext.observations, tree.firstStatus, fs, resolved,
+           true, true, tree.openedStatus, 0)) &&
+       (if tree.cycle then
+          tree.openedStatus.hostKey in ancestors &&
+          tree.listingAfterStatus == tree.listingFirstStatus &&
+          tree.afterStatus == tree.listingFirstStatus &&
+          tree.observations == [] && tree.children == map[] && tree.cycles == {} &&
+          tree.output == [] && tree.errors == Spec.RecursiveCycleMessageSpec(displayPath) &&
+          tree.hadError
+        else
+          tree.openedStatus.hostKey !in ancestors &&
+          DirectoryListingSummary(
+            cmd, displayPath, fs, accessPath, tree.listingFirstStatus,
+            tree.listingAfterStatus,
+            tree.observations, tree.readErr,
+            tree.listingOutput, tree.listingErrors, tree.listingHadError) &&
+          (exists statusCuts: seq<nat> ::
+            |statusCuts| == |tree.observations| + 1 &&
+            statusCuts[0] == tree.listingAfterStatus &&
+            statusCuts[|tree.observations|] == tree.afterStatus &&
+            (forall i: nat | i < |tree.observations| ::
+              (if i in tree.children then
+                 tree.children[i].firstStatus == statusCuts[i] &&
+                 tree.children[i].afterStatus == statusCuts[i + 1]
+               else statusCuts[i] == statusCuts[i + 1]))) &&
+          tree.cycles <= tree.children.Keys &&
+          (forall i: nat :: i < |tree.observations| ==>
+            (i in tree.children <==> Spec.RecursiveEntryEligible(tree.observations[i])) &&
+            (i in tree.cycles <==> i in tree.children && tree.children[i].cycle)) &&
+          (forall i: nat :: i in tree.children ==>
+            i < |tree.observations| &&
+            RecursiveDirectorySummary(
+              cmd, fs,
+              Spec.ChildDisplayPath(displayPath, tree.observations[i].displayName),
+              tree.observations[i].accessPath,
+              ancestors + {tree.openedStatus.hostKey}, tree.children[i])) &&
+          tree.output == Spec.DirectoryHeaderSpec(displayPath) + tree.listingOutput +
+            RecursiveChildOutputPrefixCore(
+              tree.observations, tree.children, |tree.observations|) &&
+          tree.errors == tree.listingErrors + RecursiveChildErrorPrefixCore(
+            displayPath, tree.observations, tree.children, tree.cycles,
+            |tree.observations|) &&
+          tree.hadError ==
+            (tree.listingHadError ||
+             exists i: nat :: i in tree.children && tree.children[i].hadError)))
   }
 
   ghost opaque predicate OperandObservationSummary(
@@ -605,15 +687,18 @@ module LsCore {
     observation.sectionAvailable ==
     (observation.operandClass == Spec.ExpandedDirectory &&
      IOContract.OpenDirFailureErrFields(fs, observation.path) == 0) &&
-    match Spec.OperandStatusResultSpec(cmd, fs, observation.path)
+    match Spec.OperandStatusResultSpec(cmd, fs, observation.path, observation.firstStatus)
     case Err(error) =>
       !observation.ok &&
       observation.err == IOContract.IOErrorErrno(error) &&
       observation.operandClass == Spec.AccessFailure &&
+      observation.afterStatus == observation.firstStatus +
+        Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                        observation.firstStatus) &&
       observation.body == [] &&
       observation.accessErrors == Spec.AccessErrorMessageSpec(
         observation.operand, observation.err) &&
-      observation.sectionErrors == [] && observation.failed
+      observation.sectionErrors == [] && observation.failed && !observation.hasCycle
     case Ok(status) =>
       observation.ok && observation.status == status && observation.err == 0 &&
       observation.accessErrors == [] &&
@@ -624,65 +709,181 @@ module LsCore {
             exists tree: Spec.RecursiveWitness ::
               RecursiveDirectorySummary(
                 cmd, fs, observation.operand, observation.path,
-                {status.hostKey}, tree) &&
+                {}, tree) &&
+              tree.firstStatus == observation.firstStatus +
+                Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                                observation.firstStatus) &&
+              tree.afterStatus == observation.afterStatus &&
               observation.body == tree.output &&
               observation.sectionErrors == tree.errors &&
-              observation.failed == tree.hadError
+              observation.failed == tree.hadError &&
+              observation.hasCycle == Spec.RecursiveHasCycle(tree)
           else
+            !observation.hasCycle &&
             exists entries: seq<Spec.EntryObservation>, readErr: int,
-              listingOutput: BenchWorld.Bytes ::
+              listingOutput: BenchWorld.Bytes
+              {:trigger DirectoryListingSummary(
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
+                listingOutput, observation.sectionErrors, observation.failed)} ::
               DirectoryListingSummary(
-                cmd, fs, observation.path, entries, readErr,
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
                 listingOutput, observation.sectionErrors, observation.failed) &&
               observation.body ==
               (if |cmd.operands| > 1
-               then observation.operand + ":\n"
+               then Spec.DirectoryHeaderSpec(observation.operand)
                else []) + listingOutput
         else
+          observation.afterStatus == observation.firstStatus +
+            Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                            observation.firstStatus) &&
           observation.body == [] &&
-          observation.sectionErrors == Spec.ReadDirectoryErrorMessageSpec(
-            observation.path,
+          observation.sectionErrors == Spec.OpenDirectoryErrorMessageSpec(
+            observation.operand,
             IOContract.OpenDirFailureErrFields(fs, observation.path)) &&
-          observation.failed
+          observation.failed && !observation.hasCycle
       else
         observation.operandClass == Spec.DirectOperand &&
+        observation.afterStatus == observation.firstStatus +
+          Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                          observation.firstStatus) &&
         !observation.sectionAvailable &&
-        observation.body == RenderEntryCore(
-          cmd,
-          Spec.RenderNameSpec(
+        observation.renderName == Spec.RenderNameSpec(
             fs, observation.operand, observation.path,
-            Spec.ExplicitCommandLineFollowSpec(cmd), cmd.numericLong, status),
-          status) &&
-        observation.sectionErrors == [] && !observation.failed
+            Spec.ExplicitCommandLineFollowSpec(cmd), cmd.numericLong, status) &&
+        observation.body == RenderEntryCore(cmd, observation.renderName, status) &&
+        observation.sectionErrors == [] && !observation.failed && !observation.hasCycle
+  }
+
+  lemma ExpandedRecursiveOperandSummary(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, cwd: BenchWorld.Path,
+    observation: Spec.OperandObservation, tree: Spec.RecursiveWitness
+  )
+    requires observation.index < |cmd.operands|
+    requires observation.operand == cmd.operands[observation.index]
+    requires observation.path == Spec.MakeAbsoluteSpec(cwd, observation.operand)
+    requires observation.ok && observation.err == 0 &&
+             observation.operandClass == Spec.ExpandedDirectory
+    requires observation.status.kind == BenchWorld.DirectoryKind &&
+             !cmd.listDirectories && cmd.recursive
+    requires observation.accessErrors == []
+    requires observation.sectionAvailable ==
+             (IOContract.OpenDirFailureErrFields(fs, observation.path) == 0)
+    requires Spec.OperandStatusResultSpec(
+               cmd, fs, observation.path, observation.firstStatus) ==
+             BenchWorld.Ok(observation.status)
+    requires if observation.sectionAvailable then
+      RecursiveDirectorySummary(
+        cmd, fs, observation.operand, observation.path,
+        {}, tree) &&
+      tree.firstStatus == observation.firstStatus +
+        Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                        observation.firstStatus) &&
+      tree.afterStatus == observation.afterStatus &&
+      observation.body == tree.output &&
+      observation.sectionErrors == tree.errors &&
+      observation.failed == tree.hadError &&
+              observation.hasCycle == Spec.RecursiveHasCycle(tree)
+    else
+      observation.afterStatus == observation.firstStatus +
+        Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                        observation.firstStatus) &&
+      observation.body == [] &&
+      observation.sectionErrors == Spec.OpenDirectoryErrorMessageSpec(
+        observation.operand, IOContract.OpenDirFailureErrFields(fs, observation.path)) &&
+      observation.failed && !observation.hasCycle
+    ensures OperandObservationSummary(cmd, fs, cwd, observation)
+  {
+    reveal OperandObservationSummary();
+  }
+
+  lemma ExpandedFlatOperandSummary(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, cwd: BenchWorld.Path,
+    observation: Spec.OperandObservation,
+    entries: seq<Spec.EntryObservation>, readErr: int,
+    listingOutput: BenchWorld.Bytes
+  )
+    requires observation.index < |cmd.operands|
+    requires observation.operand == cmd.operands[observation.index]
+    requires observation.path == Spec.MakeAbsoluteSpec(cwd, observation.operand)
+    requires observation.ok && observation.err == 0 &&
+             observation.operandClass == Spec.ExpandedDirectory
+    requires observation.status.kind == BenchWorld.DirectoryKind &&
+             !cmd.listDirectories && !cmd.recursive
+    requires observation.accessErrors == []
+    requires observation.sectionAvailable ==
+             (IOContract.OpenDirFailureErrFields(fs, observation.path) == 0)
+    requires Spec.OperandStatusResultSpec(
+               cmd, fs, observation.path, observation.firstStatus) ==
+             BenchWorld.Ok(observation.status)
+    requires !observation.hasCycle
+    requires if observation.sectionAvailable then
+      DirectoryListingSummary(
+        cmd, observation.operand, fs, observation.path,
+        observation.firstStatus + Spec.OperandStatusCallCountSpec(
+          cmd, fs, observation.path, observation.firstStatus),
+        observation.afterStatus, entries, readErr,
+        listingOutput, observation.sectionErrors, observation.failed) &&
+      observation.body ==
+        (if |cmd.operands| > 1 then Spec.DirectoryHeaderSpec(observation.operand)
+         else []) + listingOutput
+    else
+      observation.afterStatus == observation.firstStatus +
+        Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                        observation.firstStatus) &&
+      observation.body == [] &&
+      observation.sectionErrors == Spec.OpenDirectoryErrorMessageSpec(
+        observation.operand, IOContract.OpenDirFailureErrFields(fs, observation.path)) &&
+      observation.failed && !observation.hasCycle
+    ensures OperandObservationSummary(cmd, fs, cwd, observation)
+  {
+    reveal OperandObservationSummary();
   }
 
   ghost predicate RunSummary(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     output: BenchWorld.Bytes,
     errors: BenchWorld.Bytes,
     exit: int
   )
   {
     exists observations: seq<Spec.OperandObservation>,
-      sorted: seq<Spec.OperandObservation>, groups: seq<Spec.OutputGroup> ::
+      sorted: seq<Spec.OperandObservation>, groups: seq<Spec.OutputGroup>,
+      statusCuts: seq<nat> ::
       |observations| == |cmd.operands| &&
+      |statusCuts| == |observations| + 1 &&
+      statusCuts[0] == firstStatus &&
+      statusCuts[|observations|] == afterStatus &&
+      (forall i: nat | i < |observations| ::
+        observations[i].firstStatus == statusCuts[i] &&
+        observations[i].afterStatus == statusCuts[i + 1]) &&
       (forall i: nat | i < |observations| ::
          observations[i].index == i &&
          OperandObservationSummary(cmd, fs, cwd, observations[i])) &&
       sorted == SortOperandsCore(cmd, observations) &&
-      groups == OutputGroupsCore(sorted) &&
+      groups == OutputGroupsCore(cmd, sorted) &&
       output == JoinOutputGroupsCore(groups) &&
       errors == AccessErrorsCore(observations) + SectionErrorsCore(sorted) &&
-      exit == (if exists i: nat ::
-                    i < |observations| && observations[i].failed then 2 else 0)
+      exit == Spec.OperandExitSpec(observations)
   }
 
   opaque twostate predicate CoreSummary(raw: Schema.LsCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.cwdRegion, io.envRegion, io.nowRegion, io.stdoutRegion, io.stderrRegion
+    reads io.fsRegion, io.cwdRegion, io.envRegion, io.nowRegion,
+          io.statusObservationsRegion, io.stdoutRegion, io.stderrRegion
   {
-    var cmd := Spec.EffectiveCommandSpec(raw, old(io.env()), old(io.now()));
+    var cmd := Schema.WithStatusObservations(
+      Spec.EffectiveCommandSpec(raw, old(io.env()), old(io.now())),
+      io.statusObservations(), old(io.statusCursor()));
+    (cmd.mode != Schema.ModeRun ==> io.statusCursor() == old(io.statusCursor())) &&
     if cmd.mode == Schema.ModeHelp then
       io.stdout() == old(io.stdout()) + Spec.HelpTextSpec() &&
       io.stderr() == old(io.stderr()) &&
@@ -697,7 +898,8 @@ module LsCore {
       exit == (if cmd.mode.ModeInvalidTime? then 1 else 2)
     else
       exists output: BenchWorld.Bytes, errors: BenchWorld.Bytes ::
-        RunSummary(cmd, old(io.fs()), old(io.cwd()), output, errors, exit) &&
+        RunSummary(cmd, old(io.fs()), old(io.cwd()), old(io.statusCursor()),
+                   io.statusCursor(), output, errors, exit) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errors
   }
@@ -757,9 +959,43 @@ module LsCore {
     }
   }
 
+  method OperandExitCore(observations: seq<Spec.OperandObservation>) returns (exit: nat)
+    ensures exit == Spec.OperandExitSpec(observations)
+  {
+    exit := 0;
+    var i := 0;
+    while i < |observations|
+      invariant 0 <= i <= |observations|
+      invariant forall j: nat | j < i :: Spec.OperandFailureExitSpec(observations[j]) <= exit
+      invariant exit == 0 || exists j: nat :: j < i && Spec.OperandFailureExitSpec(observations[j]) == exit
+      decreases |observations| - i
+    {
+      var severity := Spec.OperandFailureExitSpec(observations[i]);
+      if severity > exit { exit := severity; }
+      i := i + 1;
+    }
+    var values := set j: nat | j < |observations| :: Spec.OperandFailureExitSpec(observations[j]);
+    var maximum := Spec.MaximumWidth(values);
+    if values != {} {
+      assert maximum in values;
+      assert maximum <= exit;
+      if exit != 0 { assert exit in values; }
+      assert exit <= maximum;
+    } else {
+      if exit != 0 {
+        ghost var j: nat :| j < |observations| && Spec.OperandFailureExitSpec(observations[j]) == exit;
+        assert exit in values;
+      }
+      assert exit == 0;
+    }
+    assert exit == maximum;
+    assert Spec.OperandExitSpec(observations) == maximum;
+  }
+
   method ObservePath(
     cmd: Schema.LsCmd,
     displayName: string,
+    entryKind: BenchWorld.DirectoryEntryKind,
     path: BenchWorld.Path,
     followSymlink: bool,
     io: BenchIO.IO
@@ -769,17 +1005,25 @@ module LsCore {
       errors: BenchWorld.Bytes,
       hadError: bool
     )
-    ensures Spec.MetadataObservationRelation(old(io.fs()), observation)
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    modifies io.statusObservationsRegion
+    ensures Spec.MetadataObservationRelation(cmd, old(io.fs()), observation)
+    ensures observation.statusOrdinal == old(io.statusCursor())
+    ensures observation.source == Spec.StatusEntryEvidence(observation.statusOrdinal)
+    ensures io.statusCursor() == old(io.statusCursor()) + 1
     ensures output ==
             (if observation.ok then RenderEntryCore(cmd, observation.renderName, observation.status) else [])
     ensures errors ==
             (if observation.ok then [] else Spec.AccessErrorMessageSpec(displayName, observation.err))
     ensures hadError == !observation.ok
+    ensures observation.entryKind == entryKind
     ensures observation.displayName == displayName
     ensures observation.accessPath == path
     ensures observation.followSymlink == followSymlink
   {
     ghost var preFs := io.fs();
+    ghost var preStatus := io.statusCursor();
     var ok, status, err := io.GetFileStatus(path, followSymlink);
     var renderName := displayName;
     if ok && status.kind == BenchWorld.SymlinkKind && !followSymlink && cmd.numericLong {
@@ -789,7 +1033,8 @@ module LsCore {
       case Err(_) =>
     }
     observation := Spec.EntryObservation(
-      displayName, renderName, path, followSymlink, ok, status, err);
+      displayName, renderName, path, followSymlink, ok, status, err, entryKind,
+      preStatus, Spec.StatusEntryEvidence(preStatus));
     if ok {
       output := RenderEntryCore(cmd, renderName, status);
       errors := [];
@@ -799,8 +1044,86 @@ module LsCore {
       errors := Spec.AccessErrorMessageSpec(displayName, err);
       hadError := true;
     }
-    reveal IOContract.GetFileStatusContractFields();
+    reveal IOContract.ObservedFileStatusContractFields();
     reveal Spec.MetadataObservationRelation();
+  }
+
+  method ObserveDirectoryEntry(
+    cmd: Schema.LsCmd, name: string, path: BenchWorld.Path,
+    kind: BenchWorld.DirectoryEntryKind, ghost entry: BenchWorld.DirEntry,
+    io: BenchIO.IO
+  ) returns (observation: Spec.EntryObservation, output: BenchWorld.Bytes,
+             errors: BenchWorld.Bytes, hadError: bool)
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    requires entry.name == name
+    requires IOContract.DirectoryEntryKindMatchesEntry(kind, entry)
+    modifies io.statusObservationsRegion
+    ensures observation.displayName == name && observation.accessPath == path
+    ensures observation.entryKind == kind
+    ensures observation.statusOrdinal == old(io.statusCursor())
+    ensures io.statusCursor() == old(io.statusCursor()) + Spec.EntryStatusCallCount(observation)
+    ensures if Spec.EntryStatusRequiredSpec(cmd, Spec.ClassifiedDirentKindSpec(kind), name) then
+      observation.source == Spec.StatusEntryEvidence(observation.statusOrdinal) &&
+      Spec.MetadataObservationRelation(cmd, old(io.fs()), observation) &&
+      observation.followSymlink ==
+        (cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd))
+    else
+      observation.source == Spec.DirentEntryEvidence(entry, Spec.ClassifiedDirentKindSpec(kind)) &&
+      Spec.DirentKindMatchesEntrySpec(Spec.ClassifiedDirentKindSpec(kind), entry) &&
+      Spec.CanonicalDirentFields(observation)
+    ensures output == (if observation.ok then RenderEntryCore(cmd, observation.renderName, observation.status) else [])
+    ensures errors == (if observation.ok then [] else Spec.AccessErrorMessageSpec(name, observation.err))
+    ensures hadError == !observation.ok
+  {
+    if Spec.EntryStatusRequiredSpec(cmd, Spec.ClassifiedDirentKindSpec(kind), name) {
+      observation, output, errors, hadError := ObservePath(
+        cmd, name, kind, path,
+        cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd), io);
+    } else {
+      observation := Spec.EntryObservation(
+        name, name, path, false, true, BenchWorld.DEFAULT_FILE_STATUS, 0, kind,
+        io.statusCursor(), Spec.DirentEntryEvidence(entry, Spec.ClassifiedDirentKindSpec(kind)));
+      output := RenderEntryCore(cmd, name, BenchWorld.DEFAULT_FILE_STATUS);
+      errors := [];
+      hadError := false;
+    }
+  }
+
+  method ObserveDotEntry(
+    cmd: Schema.LsCmd, name: string, path: BenchWorld.Path, io: BenchIO.IO
+  ) returns (observation: Spec.EntryObservation, output: BenchWorld.Bytes,
+             errors: BenchWorld.Bytes, hadError: bool)
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    requires name == "." || name == ".."
+    modifies io.statusObservationsRegion
+    ensures observation.displayName == name && observation.accessPath == path
+    ensures observation.entryKind == BenchWorld.DirectoryDirentKind
+    ensures observation.statusOrdinal == old(io.statusCursor())
+    ensures io.statusCursor() == old(io.statusCursor()) + Spec.EntryStatusCallCount(observation)
+    ensures if Spec.EntryRenderSortMetadataRequiredSpec(cmd) then
+      observation.source == Spec.StatusEntryEvidence(observation.statusOrdinal) &&
+      Spec.MetadataObservationRelation(cmd, old(io.fs()), observation) &&
+      observation.followSymlink ==
+        (cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd))
+    else observation.source == Spec.ImpliedDotEntryEvidence && Spec.CanonicalDirentFields(observation)
+    ensures output == (if observation.ok then RenderEntryCore(cmd, observation.renderName, observation.status) else [])
+    ensures errors == (if observation.ok then [] else Spec.AccessErrorMessageSpec(name, observation.err))
+    ensures hadError == !observation.ok
+  {
+    if Spec.EntryRenderSortMetadataRequiredSpec(cmd) {
+      observation, output, errors, hadError := ObservePath(
+        cmd, name, BenchWorld.DirectoryDirentKind, path,
+        cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd), io);
+    } else {
+      observation := Spec.EntryObservation(
+        name, name, path, false, true, BenchWorld.DEFAULT_FILE_STATUS, 0,
+        BenchWorld.DirectoryDirentKind, io.statusCursor(), Spec.ImpliedDotEntryEvidence);
+      output := RenderEntryCore(cmd, name, BenchWorld.DEFAULT_FILE_STATUS);
+      errors := [];
+      hadError := false;
+    }
   }
 
   method AddObservation(
@@ -824,7 +1147,7 @@ module LsCore {
       errorCuts2: seq<nat>,
       errors2: BenchWorld.Bytes
     )
-    requires ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments)
+    requires RawObservationPiecesSummary(cmd, observations, outputFragments, errorFragments)
     requires Spec.FragmentsConcatenate(outputFragments, output, outputCuts)
     requires Spec.FragmentsConcatenate(errorFragments, errors, errorCuts)
     requires piece ==
@@ -832,7 +1155,7 @@ module LsCore {
     requires errorPiece ==
              (if observation.ok then [] else Spec.AccessErrorMessageSpec(observation.displayName, observation.err))
     ensures observations2 == observations + [observation]
-    ensures ObservationPiecesSummary(cmd, observations2, outputFragments2, errorFragments2)
+    ensures RawObservationPiecesSummary(cmd, observations2, outputFragments2, errorFragments2)
     ensures Spec.FragmentsConcatenate(outputFragments2, output2, outputCuts2)
     ensures Spec.FragmentsConcatenate(errorFragments2, errors2, errorCuts2)
   {
@@ -896,16 +1219,6 @@ module LsCore {
     }
   }
 
-  ghost opaque predicate DotCoverage(
-    cmd: Schema.LsCmd,
-    observations: seq<Spec.EntryObservation>
-  )
-  {
-    cmd.hiddenMode == Schema.All ==>
-      (exists i: nat :: i < |observations| && observations[i].displayName == ".") &&
-      (exists i: nat :: i < |observations| && observations[i].displayName == "..")
-  }
-
   ghost opaque predicate ProcessedCoverage(
     cmd: Schema.LsCmd,
     expected: set<BenchWorld.DirEntry>,
@@ -916,28 +1229,6 @@ module LsCore {
     forall entry: BenchWorld.DirEntry ::
       entry in expected - remaining && Spec.VisibleNameSpec(cmd, entry.name) ==>
         exists i: nat :: i < |observations| && observations[i].displayName == entry.name
-  }
-
-  lemma DotCoverageInit(cmd: Schema.LsCmd, observations: seq<Spec.EntryObservation>)
-    requires cmd.hiddenMode == Schema.All ==>
-               (exists i: nat :: i < |observations| && observations[i].displayName == ".") &&
-               (exists i: nat :: i < |observations| && observations[i].displayName == "..")
-    ensures DotCoverage(cmd, observations)
-  {
-    reveal DotCoverage();
-  }
-
-  lemma DotCoveragePrefix(
-    cmd: Schema.LsCmd,
-    before: seq<Spec.EntryObservation>,
-    after: seq<Spec.EntryObservation>
-  )
-    requires DotCoverage(cmd, before)
-    requires |before| <= |after|
-    requires after[..|before|] == before
-    ensures DotCoverage(cmd, after)
-  {
-    reveal DotCoverage();
   }
 
   lemma ProcessedCoverageInit(
@@ -979,31 +1270,108 @@ module LsCore {
     }
   }
 
+  ghost predicate DirectoryStatusCuts(
+    observations: seq<Spec.EntryObservation>, cuts: seq<nat>, firstStatus: nat, afterStatus: nat
+  )
+  {
+    |cuts| == |observations| + 1 && cuts[0] == firstStatus &&
+    cuts[|observations|] == afterStatus &&
+    forall i: nat | i < |observations| ::
+      observations[i].statusOrdinal == cuts[i] &&
+      cuts[i + 1] == cuts[i] + Spec.EntryStatusCallCount(observations[i])
+  }
+
+  lemma DirectoryStatusCutsSnoc(
+    observations: seq<Spec.EntryObservation>, cuts: seq<nat>,
+    firstStatus: nat, beforeStatus: nat, afterStatus: nat, observation: Spec.EntryObservation
+  )
+    requires DirectoryStatusCuts(observations, cuts, firstStatus, beforeStatus)
+    requires observation.statusOrdinal == beforeStatus
+    requires afterStatus == beforeStatus + Spec.EntryStatusCallCount(observation)
+    ensures DirectoryStatusCuts(observations + [observation], cuts + [afterStatus], firstStatus, afterStatus)
+  {
+    forall i: nat | i < |observations + [observation]|
+      ensures (observations + [observation])[i].statusOrdinal == (cuts + [afterStatus])[i] &&
+        (cuts + [afterStatus])[i + 1] == (cuts + [afterStatus])[i] +
+          Spec.EntryStatusCallCount((observations + [observation])[i])
+    {
+      if i < |observations| { assert i + 1 < |cuts|; }
+      else { assert i == |observations|; }
+    }
+  }
+
   lemma CompleteDirectoryObservations(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
     resolved: BenchWorld.Path,
     expected: set<BenchWorld.DirEntry>,
-    observations: seq<Spec.EntryObservation>
+    firstStatus: nat,
+    afterStatus: nat,
+    observations: seq<Spec.EntryObservation>,
+    statusCuts: seq<nat>
   )
+    requires DirectoryStatusCuts(observations, statusCuts, firstStatus, afterStatus)
     requires IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved)
     requires BenchWorld.FsContainsPath(fs, resolved)
-    requires expected == IOContract.DirectoryEntriesForPathFields(fs, resolved)
+    requires expected == IOContract.DirectoryEntriesIncludingDotsForPathFields(fs, resolved)
     requires Spec.DistinctDisplayNames(observations)
     requires forall i: nat :: i < |observations| ==>
                                 Spec.DirectorySourceRelation(cmd, fs, path, observations[i])
-    requires DotCoverage(cmd, observations)
     requires ProcessedCoverage(cmd, expected, {}, observations)
-    ensures Spec.DirectoryObservationRelation(cmd, fs, path, true, observations)
+    ensures Spec.DirectoryObservationRelation(
+              cmd, fs, path, firstStatus, afterStatus,
+              true, observations)
   {
+
     reveal Spec.DirectoryObservationRelation();
-    reveal DotCoverage();
     reveal ProcessedCoverage();
+    assert BenchWorld.DirEntry(".", true, false) in expected;
+    assert BenchWorld.DirEntry("..", true, false) in expected;
+  }
+
+  lemma StatusOnlyDirectoryCuts(
+    observations: seq<Spec.EntryObservation>, firstStatus: nat
+  )
+    requires forall i: nat :: i < |observations| ==>
+      observations[i].statusOrdinal == firstStatus + i &&
+      observations[i].source ==
+        Spec.StatusEntryEvidence(observations[i].statusOrdinal)
+    ensures exists cuts: seq<nat> ::
+      |cuts| == |observations| + 1 &&
+      cuts[0] == firstStatus &&
+      cuts[|observations|] == firstStatus + |observations| &&
+      (forall i: nat | i < |observations| ::
+        observations[i].statusOrdinal == cuts[i] &&
+        cuts[i + 1] == cuts[i] + Spec.EntryStatusCallCount(observations[i]))
+  {
+    ghost var cuts := seq(|observations| + 1,
+      i requires i < |observations| + 1 => firstStatus + i);
+    assert |cuts| == |observations| + 1;
+    assert cuts[0] == firstStatus;
+    assert cuts[|observations|] == firstStatus + |observations|;
+    assert forall i: nat | i < |observations| ::
+      observations[i].statusOrdinal == cuts[i] &&
+      cuts[i + 1] == cuts[i] + Spec.EntryStatusCallCount(observations[i]);
+    assert |cuts| == |observations| + 1 &&
+      cuts[0] == firstStatus &&
+      cuts[|observations|] == firstStatus + |observations| &&
+      (forall i: nat | i < |observations| ::
+        observations[i].statusOrdinal == cuts[i] &&
+        cuts[i + 1] == cuts[i] + Spec.EntryStatusCallCount(observations[i]));
+    assert exists witnessCuts: seq<nat> ::
+      |witnessCuts| == |observations| + 1 &&
+      witnessCuts[0] == firstStatus &&
+      witnessCuts[|observations|] == firstStatus + |observations| &&
+      (forall i: nat | i < |observations| ::
+        observations[i].statusOrdinal == witnessCuts[i] &&
+        witnessCuts[i + 1] == witnessCuts[i] +
+          Spec.EntryStatusCallCount(observations[i]));
   }
 
   method RenderObservationSequence(
     cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
     observations: seq<Spec.EntryObservation>
   ) returns (
       output: BenchWorld.Bytes,
@@ -1014,12 +1382,16 @@ module LsCore {
       ghost errorFragments: seq<BenchWorld.Bytes>,
       ghost errorCuts: seq<nat>
     )
-    ensures ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments)
+    ensures ObservationPiecesSummary(cmd, observations, outputFragments)
+    ensures Spec.ObservationErrorsRelation(displayPath, observations, errorFragments)
     ensures Spec.FragmentsConcatenate(outputFragments, output, outputCuts)
     ensures Spec.FragmentsConcatenate(errorFragments, errors, errorCuts)
     ensures hadError ==
             (exists i: nat :: i < |observations| && !observations[i].ok)
   {
+    hide RenderAlignedEntryCore();
+    hide Spec.RenderFailedEntrySpec();
+    hide Spec.ObservationWidthsSpec();
     output := [];
     errors := [];
     hadError := false;
@@ -1032,8 +1404,12 @@ module LsCore {
       invariant 0 <= i <= |observations|
       invariant |outputFragments| == i
       invariant |errorFragments| == i
-      invariant ObservationPiecesSummary(
-                  cmd, observations[..i], outputFragments, errorFragments)
+      invariant forall j: nat | j < i ::
+        outputFragments[j] == (if observations[j].ok then
+          RenderAlignedEntryCore(cmd, observations[j].renderName, observations[j].status,
+                                 Spec.ObservationWidthsSpec(cmd, observations)) else Spec.RenderFailedEntrySpec(cmd, observations[j], Spec.ObservationWidthsSpec(cmd, observations))) &&
+        errorFragments[j] == (if observations[j].ok then [] else
+          Spec.AccessErrorMessageSpec(Spec.EntryDiagnosticPathSpec(displayPath, observations[j].displayName), observations[j].err))
       invariant Spec.FragmentsConcatenate(outputFragments, output, outputCuts)
       invariant Spec.FragmentsConcatenate(errorFragments, errors, errorCuts)
       invariant hadError ==
@@ -1057,11 +1433,11 @@ module LsCore {
         }
       }
       var piece := if observation.ok
-      then RenderEntryCore(cmd, observation.renderName, observation.status)
-      else [];
+      then RenderAlignedEntryCore(cmd, observation.renderName, observation.status, Spec.ObservationWidthsSpec(cmd, observations))
+      else Spec.RenderFailedEntrySpec(cmd, observation, Spec.ObservationWidthsSpec(cmd, observations));
       var errorPiece := if observation.ok
       then []
-      else Spec.AccessErrorMessageSpec(observation.displayName, observation.err);
+      else Spec.AccessErrorMessageSpec(Spec.EntryDiagnosticPathSpec(displayPath, observation.displayName), observation.err);
       AppendFragment(outputFragments, output, outputCuts, piece);
       AppendFragment(errorFragments, errors, errorCuts, errorPiece);
       outputFragments := outputFragments + [piece];
@@ -1076,32 +1452,49 @@ module LsCore {
     }
   }
 
-  method {:vcs_split_on_every_assert} ReadDirectoryCore(
+  method {:vcs_split_on_every_assert} ReadOpenedDirectoryCore(
     cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
     path: BenchWorld.Path,
+    handle: int,
     io: BenchIO.IO
   ) returns (
       observations: seq<Spec.EntryObservation>,
       readErr: int,
-      wasOpened: bool,
       output: BenchWorld.Bytes,
       errors: BenchWorld.Bytes,
       hadError: bool
     )
-    modifies io.dirHandlesRegion
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    requires handle in io.dirHandles()
+    requires io.dirHandles()[handle].DotDirHandleState?
+    requires exists resolved: BenchWorld.Path ::
+      IOContract.ResolvePathForMetadataFields(io.fs(), path, true) == BenchWorld.Ok(resolved) &&
+      BenchWorld.FsContainsPath(io.fs(), resolved) &&
+      io.dirHandles()[handle].path == resolved &&
+      io.dirHandles()[handle].remaining ==
+        IOContract.DirectoryEntriesIncludingDotsForPathFields(io.fs(), resolved)
+    modifies io.dirHandlesRegion, io.statusObservationsRegion
     ensures DirectoryListingSummary(
-              cmd, old(io.fs()), path, observations, readErr, output, errors, hadError)
-    ensures wasOpened == (IOContract.OpenDirFailureErrFields(old(io.fs()), path) == 0)
-    ensures !wasOpened ==>
-              observations == [] &&
-              readErr == IOContract.OpenDirFailureErrFields(old(io.fs()), path) &&
-              errors == Spec.ReadDirectoryErrorMessageSpec(path, readErr) && hadError
+              cmd, displayPath, old(io.fs()), path, old(io.statusCursor()), io.statusCursor(),
+              observations, readErr, output, errors, hadError)
+    ensures handle !in io.dirHandles()
     decreases *
   {
+    hide RenderEntryCore();
+    hide RenderAlignedEntryCore();
+    hide Spec.RenderFailedEntrySpec();
+    hide Spec.ObservationWidthsSpec();
+    hide TotalLineCore();
+    hide IOContract.DirectoryEntryKindMatchesFilesystemFields();
+    hide Spec.DirectorySourceRelation();
+    reveal DirectoryListingSummary();
     ghost var preFs := io.fs();
+    ghost var preStatus := io.statusCursor();
+    ghost var statusCuts: seq<nat> := [preStatus];
     observations := [];
     readErr := 0;
-    wasOpened := false;
     output := [];
     errors := [];
     hadError := false;
@@ -1109,83 +1502,35 @@ module LsCore {
     var outputCuts: seq<nat> := [0];
     var errorFragments: seq<BenchWorld.Bytes> := [];
     var errorCuts: seq<nat> := [0];
-    assert ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments);
+    assert ObservationPiecesSummary(cmd, observations, outputFragments);
+    assert Spec.ObservationErrorsRelation(displayPath, observations, errorFragments);
     assert Spec.FragmentsConcatenate(outputFragments, output, outputCuts);
     assert Spec.FragmentsConcatenate(errorFragments, errors, errorCuts);
     DistinctEmpty();
 
-    var openOk, handle, openErr := io.OpenDir(path);
-    reveal IOContract.OpenDirContractFields();
-    if !openOk {
-      readErr := openErr;
-      output := TotalLineCore(cmd, []);
-      errors := Spec.ReadDirectoryErrorMessageSpec(path, readErr);
-      hadError := true;
-      assert Spec.DirectoryObservationRelation(cmd, preFs, path, false, observations);
-      assert observations == SortEntriesCore(cmd, []) by {
-        reveal SortEntriesCore();
-      }
-      assert DirectoryListingSummary(cmd, preFs, path, observations, readErr, output, errors, hadError);
-      return;
-    }
-    wasOpened := true;
     ghost var expected := io.dirHandles()[handle].remaining;
-    ghost var resolved: BenchWorld.Path :|
-      IOContract.ResolvePathForMetadataFields(preFs, path, true) == BenchWorld.Ok(resolved);
+    ghost var resolved := io.dirHandles()[handle].path;
+    assert IOContract.ResolvePathForMetadataFields(preFs, path, true) == BenchWorld.Ok(resolved);
     assert BenchWorld.FsContainsPath(preFs, resolved);
-    assert expected == IOContract.DirectoryEntriesForPathFields(preFs, resolved);
+    assert expected == IOContract.DirectoryEntriesIncludingDotsForPathFields(preFs, resolved);
 
-    if cmd.hiddenMode == Schema.All {
-      var beforeDot := observations;
-      var current := BenchWorld.AppendPath(path, ".");
-      var dot, dotOut, dotErr, dotFailed := ObservePath(
-        cmd, ".", current,
-        cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd), io);
-      observations, outputFragments, outputCuts, output,
-      errorFragments, errorCuts, errors :=
-        AddObservation(
-          cmd, dot, dotOut, dotErr, observations,
-          outputFragments, outputCuts, output,
-          errorFragments, errorCuts, errors);
-      DistinctSnoc(beforeDot, dot);
-      hadError := hadError || dotFailed;
-      assert Spec.DirectorySourceRelation(cmd, preFs, path, dot);
-      var parent := BenchWorld.AppendPath(path, "..");
-      var beforeDotdot := observations;
-      var dotdot, dotdotOut, dotdotErr, dotdotFailed := ObservePath(
-        cmd, "..", parent,
-        cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd), io);
-      observations, outputFragments, outputCuts, output,
-      errorFragments, errorCuts, errors :=
-        AddObservation(
-          cmd, dotdot, dotdotOut, dotdotErr, observations,
-          outputFragments, outputCuts, output,
-          errorFragments, errorCuts, errors);
-      assert !(exists i: nat ::
-                 i < |beforeDotdot| && beforeDotdot[i].displayName == "..");
-      DistinctSnoc(beforeDotdot, dotdot);
-      hadError := hadError || dotdotFailed;
-      assert Spec.DirectorySourceRelation(cmd, preFs, path, dotdot);
-    }
-
+    assert DirectoryStatusCuts(observations, statusCuts, preStatus, io.statusCursor());
     var finished := false;
     assert Spec.DistinctDisplayNames(observations);
-    assert cmd.hiddenMode == Schema.All ==>
-        (exists i: nat :: i < |observations| && observations[i].displayName == ".") &&
-        (exists i: nat :: i < |observations| && observations[i].displayName == "..");
-    DotCoverageInit(cmd, observations);
     ProcessedCoverageInit(cmd, expected, observations);
     while !finished
       invariant handle in io.dirHandles()
+      invariant io.dirHandles()[handle].DotDirHandleState?
       invariant io.dirHandles()[handle].remaining <= expected
+      invariant io.dirHandles()[handle].path == resolved
       invariant finished ==> io.dirHandles()[handle].remaining == {}
-      invariant ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments)
+      invariant RawObservationPiecesSummary(cmd, observations, outputFragments, errorFragments)
       invariant Spec.FragmentsConcatenate(outputFragments, output, outputCuts)
       invariant Spec.FragmentsConcatenate(errorFragments, errors, errorCuts)
+      invariant DirectoryStatusCuts(observations, statusCuts, preStatus, io.statusCursor())
       invariant forall i: nat :: i < |observations| ==>
                                    Spec.DirectorySourceRelation(cmd, preFs, path, observations[i])
       invariant Spec.DistinctDisplayNames(observations)
-      invariant DotCoverage(cmd, observations)
       invariant ProcessedCoverage(
                   cmd, expected, io.dirHandles()[handle].remaining, observations)
       invariant readErr == 0
@@ -1196,14 +1541,22 @@ module LsCore {
       ghost var beforeObservations := observations;
       ghost var visibleCovered := false;
       ghost var visibleIndex: nat := 0;
-      var hasMore, name, isDir, isSymlink, err := io.ReadDir(handle);
+      var hasMore, name, kind, err := io.ReadDir(handle);
       reveal IOContract.ReadDirContractFields();
+      ghost var entry := BenchWorld.DirEntry("", false, false);
+      if hasMore {
+        entry :| entry in beforeRemaining && entry.name == name &&
+          io.dirHandles()[handle].remaining == beforeRemaining - {entry} &&
+          IOContract.DirectoryEntryKindMatchesEntry(kind, entry);
+      }
       if err != 0 {
         readErr := err;
         finished := true;
         io.CloseDir(handle);
         var rawObservations := observations;
-        assert Spec.DirectoryObservationRelation(cmd, preFs, path, false, rawObservations);
+        assert DirectoryStatusCuts(rawObservations, statusCuts, preStatus, io.statusCursor());
+        assert Spec.DirectoryObservationRelation(
+          cmd, preFs, path, preStatus, io.statusCursor(), false, rawObservations);
         observations := SortEntriesCore(cmd, rawObservations);
         var entryErrors: BenchWorld.Bytes;
         var renderedHadError: bool;
@@ -1214,12 +1567,20 @@ module LsCore {
         output, entryErrors, renderedHadError,
         renderedOutputs, renderedOutputCuts,
         renderedErrors, renderedErrorCuts :=
-          RenderObservationSequence(cmd, observations);
+          RenderObservationSequence(cmd, displayPath, observations);
+        var ignoredOutput: BenchWorld.Bytes;
+        var ignoredFailure: bool;
+        ghost var ignoredFragments: seq<BenchWorld.Bytes>;
+        ghost var ignoredCuts: seq<nat>;
+        ignoredOutput, entryErrors, ignoredFailure,
+        ignoredFragments, ignoredCuts, renderedErrors, renderedErrorCuts :=
+          RenderObservationSequence(cmd, displayPath, rawObservations);
         var entryOutput := output;
         output := TotalLineCore(cmd, rawObservations) + entryOutput;
         errors := entryErrors + Spec.ReadDirectoryErrorMessageSpec(path, readErr);
         hadError := true;
-        assert DirectoryListingSummary(cmd, preFs, path, observations, readErr, output, errors, hadError);
+        assert DirectoryListingSummary(cmd, displayPath, preFs, path, preStatus, io.statusCursor(),
+                                       observations, readErr, output, errors, hadError);
         return;
       }
       if !hasMore {
@@ -1233,19 +1594,31 @@ module LsCore {
           visibleCovered := true;
         } else {
           var beforeObservation := observations;
+          ghost var beforeEntryStatus := io.statusCursor();
           var childPath := BenchWorld.AppendPath(path, name);
-          var observation, piece, errorPiece, failed := ObservePath(
-            cmd, name, childPath,
-            cmd.followMode == Schema.FollowAlways && Spec.EntryMetadataRequiredSpec(cmd), io);
+          var observation: Spec.EntryObservation;
+          var piece: BenchWorld.Bytes;
+          var errorPiece: BenchWorld.Bytes;
+          var failed: bool;
+          if name == "." || name == ".." {
+            observation, piece, errorPiece, failed := ObserveDotEntry(cmd, name, childPath, io);
+          } else {
+            observation, piece, errorPiece, failed := ObserveDirectoryEntry(
+              cmd, name, childPath, kind, entry, io);
+          }
+          DirectoryStatusCutsSnoc(observations, statusCuts, preStatus, beforeEntryStatus, io.statusCursor(), observation);
           observations, outputFragments, outputCuts, output,
           errorFragments, errorCuts, errors :=
             AddObservation(
               cmd, observation, piece, errorPiece, observations,
               outputFragments, outputCuts, output,
               errorFragments, errorCuts, errors);
+          statusCuts := statusCuts + [io.statusCursor()];
           DistinctSnoc(beforeObservation, observation);
           hadError := hadError || failed;
-          assert Spec.DirectorySourceRelation(cmd, preFs, path, observation);
+          assert Spec.DirectorySourceRelation(cmd, preFs, path, observation) by {
+            reveal Spec.DirectorySourceRelation();
+          }
           assert observation.displayName == name;
           visibleIndex := |beforeObservation|;
           assert observations[visibleIndex] == observation;
@@ -1253,7 +1626,6 @@ module LsCore {
         }
       }
       if hasMore {
-        ghost var entry := BenchWorld.DirEntry(name, isDir, isSymlink);
         assert entry in beforeRemaining;
         assert io.dirHandles()[handle].remaining == beforeRemaining - {entry};
         assert |beforeObservations| <= |observations|;
@@ -1263,15 +1635,18 @@ module LsCore {
           assert visibleIndex < |observations| &&
                  observations[visibleIndex].displayName == name;
         }
-        DotCoveragePrefix(cmd, beforeObservations, observations);
         ProcessedCoverageRemove(
           cmd, expected, beforeRemaining, entry, beforeObservations, observations);
       }
     }
     assert io.dirHandles()[handle].remaining == {};
     var rawObservations := observations;
+    hide Spec.DirectoryObservationRelation();
     CompleteDirectoryObservations(
-      cmd, preFs, path, resolved, expected, rawObservations);
+      cmd, preFs, path, resolved, expected, preStatus, io.statusCursor(), rawObservations, statusCuts);
+    assert DirectoryStatusCuts(rawObservations, statusCuts, preStatus, io.statusCursor());
+    assert Spec.DirectoryObservationRelation(
+      cmd, preFs, path, preStatus, io.statusCursor(), true, rawObservations);
     io.CloseDir(handle);
     observations := SortEntriesCore(cmd, rawObservations);
     ghost var renderedOutputs: seq<BenchWorld.Bytes>;
@@ -1281,10 +1656,63 @@ module LsCore {
     output, errors, hadError,
     renderedOutputs, renderedOutputCuts,
     renderedErrors, renderedErrorCuts :=
-      RenderObservationSequence(cmd, observations);
+      RenderObservationSequence(cmd, displayPath, observations);
+    var ignoredOutput: BenchWorld.Bytes;
+    var ignoredFailure: bool;
+    ghost var ignoredFragments: seq<BenchWorld.Bytes>;
+    ghost var ignoredCuts: seq<nat>;
+    ignoredOutput, errors, ignoredFailure,
+    ignoredFragments, ignoredCuts, renderedErrors, renderedErrorCuts :=
+      RenderObservationSequence(cmd, displayPath, rawObservations);
     var entryOutput := output;
     output := TotalLineCore(cmd, rawObservations) + entryOutput;
-    assert DirectoryListingSummary(cmd, preFs, path, observations, readErr, output, errors, hadError);
+    assert DirectoryListingSummary(cmd, displayPath, preFs, path, preStatus, io.statusCursor(),
+                                   observations, readErr, output, errors, hadError);
+  }
+
+  method {:vcs_split_on_every_assert} ReadDirectoryCore(
+    cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
+    path: BenchWorld.Path,
+    io: BenchIO.IO
+  ) returns (
+      observations: seq<Spec.EntryObservation>,
+      readErr: int,
+      wasOpened: bool,
+      output: BenchWorld.Bytes,
+      errors: BenchWorld.Bytes,
+      hadError: bool
+    )
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    modifies io.dirHandlesRegion, io.statusObservationsRegion
+    ensures wasOpened ==
+            (IOContract.OpenDirFailureErrFields(old(io.fs()), path) == 0)
+    ensures wasOpened ==> DirectoryListingSummary(
+              cmd, displayPath, old(io.fs()), path,
+              old(io.statusCursor()), io.statusCursor(),
+              observations, readErr, output, errors, hadError)
+    ensures !wasOpened ==>
+              observations == [] &&
+              readErr == IOContract.OpenDirFailureErrFields(old(io.fs()), path) &&
+              output == [] &&
+              errors == Spec.OpenDirectoryErrorMessageSpec(displayPath, readErr) &&
+              hadError && io.statusCursor() == old(io.statusCursor())
+    decreases *
+  {
+    var openOk, handle, openErr := io.OpenDir(path, true);
+    reveal IOContract.OpenDirContractFields();
+    wasOpened := openOk;
+    if !openOk {
+      observations := [];
+      readErr := openErr;
+      output := [];
+      errors := Spec.OpenDirectoryErrorMessageSpec(displayPath, openErr);
+      hadError := true;
+      return;
+    }
+    observations, readErr, output, errors, hadError :=
+      ReadOpenedDirectoryCore(cmd, displayPath, path, handle, io);
   }
 
   ghost predicate RecursivePrefixSummary(
@@ -1307,27 +1735,23 @@ module LsCore {
     i <= |observations| &&
     (forall j: nat :: j in children ==> j < i) &&
     (forall j: nat :: j in cycles ==> j < i) &&
-    children.Keys !! cycles &&
+    cycles <= children.Keys &&
     (forall j: nat :: j < i ==>
-                        var observation := observations[j];
-                        var eligible := observation.ok &&
-                                        observation.status.kind == BenchWorld.DirectoryKind &&
-                                        observation.displayName != "." && observation.displayName != "..";
-                        (j in cycles <==> eligible && observation.status.hostKey in ancestors) &&
-                        (j in children <==> eligible && observation.status.hostKey !in ancestors)) &&
+                        (j in children <==> Spec.RecursiveEntryEligible(observations[j])) &&
+                        (j in cycles <==> j in children && children[j].cycle)) &&
     (forall j: nat :: j in children ==>
                         j < |observations| &&
                         RecursiveDirectorySummary(
                           cmd, fs,
                           Spec.ChildDisplayPath(displayPath, observations[j].displayName),
                           observations[j].accessPath,
-                          ancestors + {observations[j].status.hostKey}, children[j])) &&
-    output == displayPath + ":\n" + listing +
+                          ancestors, children[j])) &&
+    output == Spec.DirectoryHeaderSpec(displayPath) + listing +
     RecursiveChildOutputPrefixCore(observations, children, i) &&
     errors == listingErrors + RecursiveChildErrorPrefixCore(
       displayPath, observations, children, cycles, i) &&
     hadError ==
-    (listingHadError || |cycles| > 0 ||
+    (listingHadError ||
      exists j: nat :: j in children && children[j].hadError)
   }
 
@@ -1355,22 +1779,98 @@ module LsCore {
   lemma RecursivePrefixComplete(
     cmd: Schema.LsCmd, fs: BenchWorld.FileSystem,
     displayPath: BenchWorld.Path, accessPath: BenchWorld.Path,
-    ancestors: set<BenchWorld.HostInodeKey>, tree: Spec.RecursiveWitness
+    ancestors: set<BenchWorld.HostInodeKey>, tree: Spec.RecursiveWitness,
+    statusCuts: seq<nat>
   )
     requires DirectoryListingSummary(
-               cmd, fs, accessPath, tree.observations, tree.readErr,
+               cmd, displayPath, fs, accessPath, tree.listingFirstStatus,
+               tree.listingAfterStatus,
+               tree.observations, tree.readErr,
                tree.listingOutput, tree.listingErrors, tree.listingHadError)
+    requires cmd.statusContext.BoundStatusObservations?
+    requires tree.openOk && tree.openErr == 0 && tree.statusOk &&
+             tree.statusErr == 0 && !tree.cycle
+    requires tree.openedStatus.hostKey !in ancestors
+    requires tree.listingFirstStatus == tree.firstStatus + 1
+    requires exists resolved: BenchWorld.Path ::
+      IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+      IOContract.ObservedFileStatusContractFields(
+        cmd.statusContext.observations, tree.firstStatus, fs, resolved,
+        true, true, tree.openedStatus, 0)
+    requires IOContract.OpenDirFailureErrFields(fs, accessPath) == 0
+    requires |statusCuts| == |tree.observations| + 1
+    requires statusCuts[0] == tree.listingAfterStatus
+    requires statusCuts[|tree.observations|] == tree.afterStatus
+    requires forall i: nat | i < |tree.observations| ::
+      (if i in tree.children then
+         tree.children[i].firstStatus == statusCuts[i] &&
+         tree.children[i].afterStatus == statusCuts[i + 1]
+       else statusCuts[i] == statusCuts[i + 1])
     requires RecursivePrefixSummary(
-               cmd, fs, displayPath, ancestors, tree.observations, tree.listingOutput,
+               cmd, fs, displayPath, ancestors + {tree.openedStatus.hostKey},
+               tree.observations, tree.listingOutput,
                tree.listingErrors, tree.listingHadError, |tree.observations|,
                tree.children, tree.cycles, tree.output, tree.errors, tree.hadError)
     ensures RecursiveDirectorySummary(
               cmd, fs, displayPath, accessPath, ancestors, tree)
   {
     reveal RecursivePrefixSummary(
-           cmd, fs, displayPath, ancestors, tree.observations, tree.listingOutput,
+           cmd, fs, displayPath, ancestors + {tree.openedStatus.hostKey},
+           tree.observations, tree.listingOutput,
            tree.listingErrors, tree.listingHadError, |tree.observations|,
            tree.children, tree.cycles, tree.output, tree.errors, tree.hadError);
+    reveal RecursiveDirectorySummary();
+  }
+
+  ghost opaque predicate StatusCutsPrefix(
+    cuts: seq<nat>, children: map<nat, Spec.RecursiveWitness>, processed: nat
+  )
+  {
+    |cuts| == processed + 1 &&
+    forall j: nat | j < processed ::
+      (if j in children then
+         children[j].firstStatus == cuts[j] &&
+         children[j].afterStatus == cuts[j + 1]
+       else cuts[j] == cuts[j + 1])
+  }
+
+  lemma StatusCutsSnoc(
+    beforeCuts: seq<nat>, beforeChildren: map<nat, Spec.RecursiveWitness>,
+    afterChildren: map<nat, Spec.RecursiveWitness>, i: nat,
+    afterStatus: nat, addedChild: bool
+  )
+    requires StatusCutsPrefix(beforeCuts, beforeChildren, i)
+    requires |beforeCuts| == i + 1
+    requires i !in beforeChildren
+    requires if addedChild then
+      i in afterChildren &&
+      afterChildren == beforeChildren[i := afterChildren[i]] &&
+      afterChildren[i].firstStatus == beforeCuts[i] &&
+      afterChildren[i].afterStatus == afterStatus
+    else afterChildren == beforeChildren && afterStatus == beforeCuts[i]
+    ensures StatusCutsPrefix(beforeCuts + [afterStatus], afterChildren, i + 1)
+  {
+    reveal StatusCutsPrefix();
+    forall j: nat | j < i + 1
+      ensures (if j in afterChildren then
+                 afterChildren[j].firstStatus == (beforeCuts + [afterStatus])[j] &&
+                 afterChildren[j].afterStatus == (beforeCuts + [afterStatus])[j + 1]
+               else (beforeCuts + [afterStatus])[j] ==
+                    (beforeCuts + [afterStatus])[j + 1])
+    {
+      if j < i {
+        assert j in afterChildren <==> j in beforeChildren;
+        if j in afterChildren {
+          assert afterChildren[j] == beforeChildren[j];
+        }
+        assert (beforeCuts + [afterStatus])[j] == beforeCuts[j];
+        assert (beforeCuts + [afterStatus])[j + 1] == beforeCuts[j + 1];
+      } else {
+        assert j == i;
+        assert (beforeCuts + [afterStatus])[j] == beforeCuts[i];
+        assert (beforeCuts + [afterStatus])[j + 1] == afterStatus;
+      }
+    }
   }
 
   lemma RecursiveOutputPrefixAgreement(
@@ -1382,7 +1882,7 @@ module LsCore {
     requires processed <= |observations|
     requires forall k: nat :: k < processed ==>
                                 (k in left <==> k in right) &&
-                                (k in left ==> left[k].output == right[k].output)
+                                (k in left ==> left[k] == right[k])
     ensures RecursiveChildOutputPrefixCore(observations, left, processed) ==
             RecursiveChildOutputPrefixCore(observations, right, processed)
     decreases processed
@@ -1427,21 +1927,22 @@ module LsCore {
     beforeOutput: BenchWorld.Bytes, piece: BenchWorld.Bytes
   )
     requires i < |observations|
-    requires beforeOutput == displayPath + ":\n" + listing +
+    requires beforeOutput == Spec.DirectoryHeaderSpec(displayPath) + listing +
                              RecursiveChildOutputPrefixCore(observations, beforeChildren, i)
     requires afterChildren == beforeChildren ||
              (i in afterChildren && afterChildren == beforeChildren[i := afterChildren[i]])
     requires piece ==
-             (if i in afterChildren then "\n" + afterChildren[i].output else [])
-    ensures beforeOutput + piece == displayPath + ":\n" + listing +
+             (if i in afterChildren && Spec.RecursiveNodeListed(afterChildren[i])
+              then "\n" + afterChildren[i].output else [])
+    ensures beforeOutput + piece == Spec.DirectoryHeaderSpec(displayPath) + listing +
                                     RecursiveChildOutputPrefixCore(observations, afterChildren, i + 1)
   {
     assert forall k: nat :: k < i ==>
                               (k in beforeChildren <==> k in afterChildren) &&
-                              (k in beforeChildren ==> beforeChildren[k].output == afterChildren[k].output) by {
+                              (k in beforeChildren ==> beforeChildren[k] == afterChildren[k]) by {
       forall k: nat | k < i
         ensures (k in beforeChildren <==> k in afterChildren) &&
-                (k in beforeChildren ==> beforeChildren[k].output == afterChildren[k].output)
+                (k in beforeChildren ==> beforeChildren[k] == afterChildren[k])
       {
         assert k != i;
       }
@@ -1535,75 +2036,154 @@ module LsCore {
     io: BenchIO.IO
   ) returns (
       wasOpened: bool,
+      wasListed: bool,
       output: BenchWorld.Bytes,
       errors: BenchWorld.Bytes,
       hadError: bool,
+      hasCycle: bool,
       ghost tree: Spec.RecursiveWitness
     )
-    modifies io.dirHandlesRegion
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    modifies io.dirHandlesRegion, io.statusObservationsRegion
     ensures RecursiveDirectorySummary(
               cmd, old(io.fs()), displayPath, accessPath, ancestors, tree)
     ensures wasOpened ==
             (IOContract.OpenDirFailureErrFields(old(io.fs()), accessPath) == 0)
     ensures !wasOpened ==>
-              errors == Spec.ReadDirectoryErrorMessageSpec(
-                accessPath, IOContract.OpenDirFailureErrFields(old(io.fs()), accessPath)) &&
-              hadError
+              errors == Spec.OpenDirectoryErrorMessageSpec(
+                displayPath, IOContract.OpenDirFailureErrFields(old(io.fs()), accessPath)) &&
+              hadError && io.statusCursor() == old(io.statusCursor())
+    ensures !wasOpened ==> !hasCycle
+    ensures hasCycle == Spec.RecursiveHasCycle(tree)
+    ensures wasListed == Spec.RecursiveNodeListed(tree)
     ensures output == tree.output && errors == tree.errors && hadError == tree.hadError
+    ensures tree.firstStatus == old(io.statusCursor())
+    ensures tree.afterStatus == io.statusCursor()
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStatus := io.statusCursor();
+    var openOk, handle, openErr := io.OpenDir(accessPath, true);
+    reveal IOContract.OpenDirContractFields();
+    wasOpened := openOk;
+    if !openOk {
+      wasListed := false;
+      output := [];
+      errors := Spec.OpenDirectoryErrorMessageSpec(displayPath, openErr);
+      hadError := true;
+      hasCycle := false;
+      tree := Spec.RecursiveWitness(
+        [], 0, [], [], false, map[], {}, output, errors, hadError,
+        false, openErr, false, BenchWorld.DEFAULT_FILE_STATUS, 0, false,
+        preStatus, preStatus, preStatus, preStatus);
+      assert RecursiveDirectorySummary(
+        cmd, preFs, displayPath, accessPath, ancestors, tree) by {
+        reveal RecursiveDirectorySummary();
+      }
+      return;
+    }
+    var statusOk, openedStatus, statusErr := io.GetOpenDirectoryStatus(handle);
+    reveal IOContract.GetOpenDirectoryStatusContractFields();
+    if !statusOk {
+      wasListed := false;
+      io.CloseDir(handle);
+      output := [];
+      errors := Spec.DirectoryIdentityErrorMessageSpec(displayPath, statusErr);
+      hadError := true;
+      hasCycle := false;
+      tree := Spec.RecursiveWitness(
+        [], 0, [], [], false, map[], {}, output, errors, hadError,
+        true, 0, false, openedStatus, statusErr, false,
+        preStatus, preStatus, preStatus, preStatus);
+      assert RecursiveDirectorySummary(
+        cmd, preFs, displayPath, accessPath, ancestors, tree) by {
+        reveal RecursiveDirectorySummary();
+      }
+      return;
+    }
+    ghost var listingFirst := io.statusCursor();
+    assert listingFirst == preStatus + 1;
+    if openedStatus.hostKey in ancestors {
+      wasListed := false;
+      io.CloseDir(handle);
+      output := [];
+      errors := Spec.RecursiveCycleMessageSpec(displayPath);
+      hadError := true;
+      hasCycle := true;
+      tree := Spec.RecursiveWitness(
+        [], 0, [], [], false, map[], {}, output, errors, hadError,
+        true, 0, true, openedStatus, 0, true,
+        preStatus, listingFirst, listingFirst, listingFirst);
+      assert RecursiveDirectorySummary(
+        cmd, preFs, displayPath, accessPath, ancestors, tree) by {
+        reveal RecursiveDirectorySummary();
+      }
+      return;
+    }
     var observations: seq<Spec.EntryObservation>;
     var readErr: int;
     var listing: BenchWorld.Bytes;
     var listingErrors: BenchWorld.Bytes;
     var listingHadError: bool;
-    observations, readErr, wasOpened, listing, listingErrors, listingHadError :=
-      ReadDirectoryCore(cmd, accessPath, io);
+    observations, readErr, listing, listingErrors, listingHadError :=
+      ReadOpenedDirectoryCore(cmd, displayPath, accessPath, handle, io);
+    wasListed := true;
+    ghost var listingAfter := io.statusCursor();
     errors := listingErrors;
     hadError := listingHadError;
-    output := displayPath + ":\n" + listing;
+    hasCycle := false;
+    output := Spec.DirectoryHeaderSpec(displayPath) + listing;
     ghost var children: map<nat, Spec.RecursiveWitness> := map[];
     ghost var cycles: set<nat> := {};
+    var childAncestors := ancestors + {openedStatus.hostKey};
+    ghost var statusCuts: seq<nat> := [listingAfter];
+    assert StatusCutsPrefix(statusCuts, children, 0) by {
+      reveal StatusCutsPrefix();
+    }
     var i := 0;
     assert RecursivePrefixSummary(
-        cmd, preFs, displayPath, ancestors, observations, listing,
+        cmd, preFs, displayPath, childAncestors, observations, listing,
         listingErrors, listingHadError, i, children, cycles,
         output, errors, hadError) by {
       reveal RecursivePrefixSummary(
-             cmd, preFs, displayPath, ancestors, observations, listing,
+             cmd, preFs, displayPath, childAncestors, observations, listing,
              listingErrors, listingHadError, i, children, cycles,
              output, errors, hadError);
     }
     while i < |observations|
+      invariant hasCycle == (cycles != {} || exists j: nat :: j in children && Spec.RecursiveHasCycle(children[j]))
       invariant 0 <= i <= |observations|
-      invariant !wasOpened ==>
-                  observations == [] && i == 0 && errors == listingErrors &&
-                  hadError == listingHadError
+      invariant |statusCuts| == i + 1
+      invariant statusCuts[0] == listingAfter
+      invariant statusCuts[i] == io.statusCursor()
+      invariant StatusCutsPrefix(statusCuts, children, i)
       invariant RecursivePrefixSummary(
-                  cmd, preFs, displayPath, ancestors, observations, listing,
+                  cmd, preFs, displayPath, childAncestors, observations, listing,
                   listingErrors, listingHadError, i, children, cycles,
                   output, errors, hadError)
       decreases *
     {
       reveal RecursivePrefixSummary(
-             cmd, preFs, displayPath, ancestors, observations, listing,
+             cmd, preFs, displayPath, childAncestors, observations, listing,
              listingErrors, listingHadError, i, children, cycles,
              output, errors, hadError);
       ghost var beforeChildren := children;
       ghost var beforeCycles := cycles;
+      ghost var beforeStatus := io.statusCursor();
+      ghost var beforeCuts := statusCuts;
       var beforeOutput := output;
       var beforeErrors := errors;
       var beforeHadError := hadError;
-      assert beforeOutput == displayPath + ":\n" + listing +
+      assert beforeOutput == Spec.DirectoryHeaderSpec(displayPath) + listing +
                              RecursiveChildOutputPrefixCore(observations, beforeChildren, i);
       assert beforeErrors == listingErrors + RecursiveChildErrorPrefixCore(
                                displayPath, observations, beforeChildren, beforeCycles, i);
       assert beforeHadError ==
-             (listingHadError || |beforeCycles| > 0 ||
+             (listingHadError ||
               exists j: nat :: j in beforeChildren && beforeChildren[j].hadError);
       RecursivePrefixRanges(
-        cmd, preFs, displayPath, ancestors, observations, listing,
+        cmd, preFs, displayPath, childAncestors, observations, listing,
         listingErrors, listingHadError, i, children, cycles,
         output, errors, hadError);
       var observation := observations[i];
@@ -1612,40 +2192,36 @@ module LsCore {
       var stepFailed := false;
       ghost var addedChild := false;
       ghost var addedCycle := false;
-      if observation.ok &&
-         observation.status.kind == BenchWorld.DirectoryKind &&
-         observation.displayName != "." && observation.displayName != ".."
+      if Spec.RecursiveEntryEligible(observation)
       {
-        var childDisplay := if displayPath == "." then "./" + observation.displayName
-        else displayPath + "/" + observation.displayName;
-        if observation.status.hostKey in ancestors {
-          errorPiece := Spec.RecursiveCycleMessageSpec(childDisplay);
+        var childDisplay := Spec.ChildDisplayPath(displayPath, observation.displayName);
+        var descendantOutput: BenchWorld.Bytes;
+        var descendantErrors: BenchWorld.Bytes;
+        var childFailed: bool;
+        var childHasCycle: bool;
+        var childListed: bool;
+        ghost var childTree: Spec.RecursiveWitness;
+        var childOpened: bool;
+        childOpened, childListed, descendantOutput, descendantErrors, childFailed, childHasCycle, childTree := WalkDirectoryRecursive(
+          cmd, childDisplay, observation.accessPath, childAncestors, io);
+        outputPiece := if childListed then "\n" + descendantOutput else [];
+        errorPiece := descendantErrors;
+        assert i !in children;
+        children := children[i := childTree];
+        if childTree.cycle {
           cycles := cycles + {i};
-          stepFailed := true;
           addedCycle := true;
-        } else {
-          var descendantOutput: BenchWorld.Bytes;
-          var descendantErrors: BenchWorld.Bytes;
-          var childFailed: bool;
-          ghost var childTree: Spec.RecursiveWitness;
-          var childOpened: bool;
-          childOpened, descendantOutput, descendantErrors, childFailed, childTree := WalkDirectoryRecursive(
-            cmd,
-            childDisplay,
-            observation.accessPath,
-            ancestors + {observation.status.hostKey},
-            io
-          );
-          outputPiece := "\n" + descendantOutput;
-          errorPiece := descendantErrors;
-          children := children[i := childTree];
-          stepFailed := childFailed;
-          addedChild := true;
         }
+        hasCycle := hasCycle || childHasCycle;
+        stepFailed := childFailed;
+        addedChild := true;
       }
       output := output + outputPiece;
       errors := errors + errorPiece;
       hadError := hadError || stepFailed;
+      statusCuts := statusCuts + [io.statusCursor()];
+      StatusCutsSnoc(beforeCuts, beforeChildren, children, i,
+                     io.statusCursor(), addedChild);
       assert children == beforeChildren ||
              (i in children && children == beforeChildren[i := children[i]]);
       assert cycles == beforeCycles || cycles == beforeCycles + {i};
@@ -1672,22 +2248,14 @@ module LsCore {
           }
         }
       }
-      assert children.Keys !! cycles;
+      assert cycles <= children.Keys;
       assert forall j: nat :: j < i + 1 ==>
-                                var candidate := observations[j];
-                                var eligible := candidate.ok &&
-                                                candidate.status.kind == BenchWorld.DirectoryKind &&
-                                                candidate.displayName != "." && candidate.displayName != "..";
-                                (j in cycles <==> eligible && candidate.status.hostKey in ancestors) &&
-                                (j in children <==> eligible && candidate.status.hostKey !in ancestors) by {
+                                (j in children <==> Spec.RecursiveEntryEligible(observations[j])) &&
+                                (j in cycles <==> j in children && children[j].cycle) by {
         forall j: nat | j < i + 1
           ensures
-            var candidate := observations[j];
-            var eligible := candidate.ok &&
-                            candidate.status.kind == BenchWorld.DirectoryKind &&
-                            candidate.displayName != "." && candidate.displayName != "..";
-            (j in cycles <==> eligible && candidate.status.hostKey in ancestors) &&
-            (j in children <==> eligible && candidate.status.hostKey !in ancestors)
+            (j in children <==> Spec.RecursiveEntryEligible(observations[j])) &&
+            (j in cycles <==> j in children && children[j].cycle)
         {
           if j < i {
             assert j in children <==> j in beforeChildren;
@@ -1703,14 +2271,14 @@ module LsCore {
                                   cmd, preFs,
                                   Spec.ChildDisplayPath(displayPath, observations[j].displayName),
                                   observations[j].accessPath,
-                                  ancestors + {observations[j].status.hostKey}, children[j]) by {
+                                  childAncestors, children[j]) by {
         forall j: nat | j in children
           ensures j < |observations| &&
                   RecursiveDirectorySummary(
                     cmd, preFs,
                     Spec.ChildDisplayPath(displayPath, observations[j].displayName),
                     observations[j].accessPath,
-                    ancestors + {observations[j].status.hostKey}, children[j])
+                    childAncestors, children[j])
         {
           if j != i {
             assert j in beforeChildren;
@@ -1718,11 +2286,22 @@ module LsCore {
         }
       }
       assert outputPiece ==
-             (if i in children then "\n" + children[i].output else []);
+             (if i in children && Spec.RecursiveNodeListed(children[i])
+              then "\n" + children[i].output else []);
       RecursiveOutputSnoc(
         displayPath, listing, observations, beforeChildren, children, i,
         beforeOutput, outputPiece);
       assert output == beforeOutput + outputPiece;
+      if i in cycles {
+        assert i in children;
+        assert children[i].errors == Spec.RecursiveCycleMessageSpec(
+          Spec.ChildDisplayPath(displayPath, observations[i].displayName)) by {
+          reveal RecursiveDirectorySummary(
+            cmd, preFs,
+            Spec.ChildDisplayPath(displayPath, observations[i].displayName),
+            observations[i].accessPath, childAncestors, children[i]);
+        }
+      }
       assert errorPiece ==
              (if i in cycles then
                 Spec.RecursiveCycleMessageSpec(
@@ -1733,7 +2312,7 @@ module LsCore {
         children, cycles, i, beforeErrors, errorPiece);
       assert errors == beforeErrors + errorPiece;
       assert hadError ==
-             (listingHadError || |cycles| > 0 ||
+             (listingHadError ||
               exists j: nat :: j in children && children[j].hadError) by {
         if addedChild {
           assert i in children;
@@ -1751,24 +2330,27 @@ module LsCore {
       }
       i := i + 1;
       assert RecursivePrefixSummary(
-          cmd, preFs, displayPath, ancestors, observations, listing,
+          cmd, preFs, displayPath, childAncestors, observations, listing,
           listingErrors, listingHadError, i, children, cycles,
           output, errors, hadError) by {
         reveal RecursivePrefixSummary(
-               cmd, preFs, displayPath, ancestors, observations, listing,
+               cmd, preFs, displayPath, childAncestors, observations, listing,
                listingErrors, listingHadError, i, children, cycles,
                output, errors, hadError);
       }
     }
     reveal RecursivePrefixSummary(
-           cmd, preFs, displayPath, ancestors, observations, listing,
+           cmd, preFs, displayPath, childAncestors, observations, listing,
            listingErrors, listingHadError, i, children, cycles,
            output, errors, hadError);
     tree := Spec.RecursiveWitness(
       observations, readErr, listing, listingErrors, listingHadError,
-      children, cycles, output, errors, hadError);
+      children, cycles, output, errors, hadError,
+      true, 0, true, openedStatus, 0, false,
+      preStatus, listingFirst, listingAfter, io.statusCursor());
+    reveal StatusCutsPrefix();
     RecursivePrefixComplete(
-      cmd, preFs, displayPath, accessPath, ancestors, tree);
+      cmd, preFs, displayPath, accessPath, ancestors, tree, statusCuts);
   }
 
   method {:vcs_split_on_every_assert} ObserveOperand(
@@ -1778,36 +2360,41 @@ module LsCore {
     io: BenchIO.IO
   ) returns (observation: Spec.OperandObservation)
     requires index < |cmd.operands|
-    modifies io.dirHandlesRegion
+    requires cmd.statusContext.BoundStatusObservations?
+    requires cmd.statusContext.observations == io.statusObservations()
+    modifies io.dirHandlesRegion, io.statusObservationsRegion
     ensures observation.index == index
     ensures OperandObservationSummary(cmd, old(io.fs()), cwd, observation)
+    ensures observation.firstStatus == old(io.statusCursor())
+    ensures observation.afterStatus == io.statusCursor()
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStatus := io.statusCursor();
     var operand := cmd.operands[index];
-    var path := if BenchWorld.IsAbsolutePath(operand)
-    then BenchWorld.NormalizePath(operand)
-    else BenchWorld.NormalizePath(BenchWorld.AppendPath(cwd, operand));
-    var follow := Spec.ExplicitCommandLineFollowSpec(cmd);
+    var path := Spec.MakeAbsoluteSpec(cwd, operand);
+    var follow := Spec.ImplicitDirectoryFollowSpec(cmd) ||
+                  Spec.ExplicitCommandLineFollowSpec(cmd);
     var ok, status, err := io.GetFileStatus(path, follow);
-    reveal IOContract.GetFileStatusContractFields();
-    if ok && Spec.ImplicitDirectoryFollowSpec(cmd) &&
-       status.kind == BenchWorld.SymlinkKind {
-      var targetOk, targetStatus, targetErr := io.GetFileStatus(path, true);
-      reveal IOContract.GetFileStatusContractFields();
-      if targetOk && targetStatus.kind == BenchWorld.DirectoryKind {
-        status := targetStatus;
-      }
+    reveal IOContract.ObservedFileStatusContractFields();
+    if Spec.ImplicitDirectoryFollowSpec(cmd) &&
+       (!ok || status.kind != BenchWorld.DirectoryKind) {
+      ok, status, err := io.GetFileStatus(path, false);
+      reveal IOContract.ObservedFileStatusContractFields();
     }
-    assert match Spec.OperandStatusResultSpec(cmd, preFs, path)
+    ghost var afterOperandStatus := io.statusCursor();
+    assert afterOperandStatus == preStatus +
+      Spec.OperandStatusCallCountSpec(cmd, preFs, path, preStatus);
+    assert match Spec.OperandStatusResultSpec(cmd, preFs, path, preStatus)
            case Ok(expected) => ok && status == expected && err == 0
            case Err(error) => !ok && err == IOContract.IOErrorErrno(error) by {
-      reveal IOContract.GetFileStatusContractFields();
+      reveal IOContract.ObservedFileStatusContractFields();
     }
     if !ok {
       observation := Spec.OperandObservation(
-        index, operand, path, false, status, err, Spec.AccessFailure,
-        false, [], Spec.AccessErrorMessageSpec(operand, err), [], true);
+        index, operand, operand, path, false, status, err, Spec.AccessFailure,
+        false, [], Spec.AccessErrorMessageSpec(operand, err), [], true, false,
+        preStatus, io.statusCursor());
       assert OperandObservationSummary(cmd, preFs, cwd, observation) by {
         reveal OperandObservationSummary();
       }
@@ -1817,71 +2404,92 @@ module LsCore {
       var sectionErrors: BenchWorld.Bytes;
       var failed: bool;
       if cmd.recursive {
+        var hasCycle: bool;
+        var wasListed: bool;
         ghost var recursiveTree: Spec.RecursiveWitness;
-        wasOpened, body, sectionErrors, failed, recursiveTree := WalkDirectoryRecursive(
-          cmd, operand, path, {status.hostKey}, io);
+        wasOpened, wasListed, body, sectionErrors, failed, hasCycle, recursiveTree := WalkDirectoryRecursive(
+          cmd, operand, path, {}, io);
         observation := Spec.OperandObservation(
-          index, operand, path, true, status, 0, Spec.ExpandedDirectory,
-          wasOpened, if wasOpened then body else [], [], sectionErrors, failed);
-        assert OperandObservationSummary(cmd, preFs, cwd, observation) by {
-          reveal OperandObservationSummary();
-        }
+          index, operand, operand, path, true, status, 0, Spec.ExpandedDirectory,
+          wasOpened, if wasOpened then body else [], [], sectionErrors, failed, hasCycle,
+          preStatus, io.statusCursor());
+        assert recursiveTree.firstStatus == afterOperandStatus;
+        assert recursiveTree.afterStatus == observation.afterStatus;
+        assert observation.sectionAvailable ==
+          (IOContract.OpenDirFailureErrFields(preFs, path) == 0);
+        ExpandedRecursiveOperandSummary(
+          cmd, preFs, cwd, observation, recursiveTree);
       } else {
         var observations: seq<Spec.EntryObservation>;
         var readErr: int;
         var listingOutput: BenchWorld.Bytes;
         observations, readErr, wasOpened, listingOutput, sectionErrors, failed :=
-          ReadDirectoryCore(cmd, path, io);
+          ReadDirectoryCore(cmd, operand, path, io);
         body := listingOutput;
         if |cmd.operands| > 1 {
-          body := operand + ":\n" + body;
+          body := Spec.DirectoryHeaderSpec(operand) + body;
         }
         observation := Spec.OperandObservation(
-          index, operand, path, true, status, 0, Spec.ExpandedDirectory,
-          wasOpened, if wasOpened then body else [], [], sectionErrors, failed);
+          index, operand, operand, path, true, status, 0, Spec.ExpandedDirectory,
+          wasOpened, if wasOpened then body else [], [], sectionErrors, failed, false,
+          preStatus, io.statusCursor());
+        assert observation.sectionAvailable ==
+          (IOContract.OpenDirFailureErrFields(preFs, path) == 0);
+        assert Spec.OperandStatusResultSpec(cmd, preFs, path, preStatus) ==
+          BenchWorld.Ok(status);
         if wasOpened {
           assert observation.body ==
-                 (if |cmd.operands| > 1 then operand + ":\n" else []) + listingOutput by {
-            assert observation.body == body;
+            (if |cmd.operands| > 1 then Spec.DirectoryHeaderSpec(operand)
+             else []) + listingOutput by {
             if |cmd.operands| > 1 {
             } else {
             }
           }
-          assert exists entries: seq<Spec.EntryObservation>,
-              listingReadErr: int,
-              rendered: BenchWorld.Bytes ::
-              DirectoryListingSummary(
-                cmd, preFs, path, entries, listingReadErr,
-                rendered, observation.sectionErrors, observation.failed) &&
-              observation.body ==
-              (if |cmd.operands| > 1 then operand + ":\n" else []) + rendered by {
-            assert DirectoryListingSummary(
-                cmd, preFs, path, observations, readErr,
-                listingOutput, sectionErrors, failed);
-          }
+          assert DirectoryListingSummary(
+            cmd, operand, preFs, path, afterOperandStatus, io.statusCursor(),
+            observations, readErr, listingOutput, sectionErrors, failed);
+        } else {
+          assert io.statusCursor() == afterOperandStatus;
+          assert observation.body == [];
+          assert observation.sectionErrors == Spec.OpenDirectoryErrorMessageSpec(
+            operand, IOContract.OpenDirFailureErrFields(preFs, path));
         }
-        assert OperandObservationSummary(cmd, preFs, cwd, observation) by {
-          assert Spec.OperandStatusResultSpec(cmd, preFs, path) == BenchWorld.Ok(status);
-          assert observation.sectionAvailable == wasOpened;
-          assert wasOpened ==
-                 (IOContract.OpenDirFailureErrFields(preFs, path) == 0);
-          reveal OperandObservationSummary();
-          if wasOpened {
-            assert exists entries: seq<Spec.EntryObservation>,
-                listingReadErr: int,
-                rendered: BenchWorld.Bytes ::
-                DirectoryListingSummary(
-                  cmd, preFs, path, entries, listingReadErr,
-                  rendered, observation.sectionErrors, observation.failed) &&
-                observation.body ==
-                (if |cmd.operands| > 1 then operand + ":\n" else []) + rendered;
+        assert observation.index < |cmd.operands|;
+        assert observation.operand == cmd.operands[observation.index];
+        assert observation.path == Spec.MakeAbsoluteSpec(cwd, observation.operand);
+        assert observation.ok && observation.err == 0 &&
+               observation.operandClass == Spec.ExpandedDirectory;
+        assert observation.status.kind == BenchWorld.DirectoryKind &&
+               !cmd.listDirectories && !cmd.recursive;
+        assert observation.accessErrors == [];
+        assert if observation.sectionAvailable then
+          DirectoryListingSummary(
+            cmd, observation.operand, preFs, observation.path,
+            observation.firstStatus + Spec.OperandStatusCallCountSpec(
+              cmd, preFs, observation.path, observation.firstStatus),
+            observation.afterStatus, observations, readErr,
+            listingOutput, observation.sectionErrors, observation.failed) &&
+          observation.body ==
+            (if |cmd.operands| > 1
+             then Spec.DirectoryHeaderSpec(observation.operand)
+             else []) + listingOutput
+        else
+          observation.afterStatus == observation.firstStatus +
+            Spec.OperandStatusCallCountSpec(
+              cmd, preFs, observation.path, observation.firstStatus) &&
+          observation.body == [] &&
+          observation.sectionErrors == Spec.OpenDirectoryErrorMessageSpec(
+            observation.operand,
+            IOContract.OpenDirFailureErrFields(preFs, observation.path)) &&
+          observation.failed by {
+          if observation.sectionAvailable {
+            assert wasOpened;
           } else {
-            assert observation.body == [];
-            assert observation.sectionErrors == Spec.ReadDirectoryErrorMessageSpec(
-                                                  path, IOContract.OpenDirFailureErrFields(preFs, path));
-            assert observation.failed;
+            assert !wasOpened;
           }
         }
+        ExpandedFlatOperandSummary(
+          cmd, preFs, cwd, observation, observations, readErr, listingOutput);
       }
     } else {
       var renderName := operand;
@@ -1892,8 +2500,9 @@ module LsCore {
         case Err(_) =>
       }
       observation := Spec.OperandObservation(
-        index, operand, path, true, status, 0, Spec.DirectOperand,
-        false, RenderEntryCore(cmd, renderName, status), [], [], false);
+        index, operand, renderName, path, true, status, 0, Spec.DirectOperand,
+        false, RenderEntryCore(cmd, renderName, status), [], [], false, false,
+        preStatus, io.statusCursor());
       assert OperandObservationSummary(cmd, preFs, cwd, observation) by {
         reveal OperandObservationSummary();
       }
@@ -1934,7 +2543,7 @@ module LsCore {
   }
 
   method {:vcs_split_on_every_assert} RunCore(raw: Schema.LsCmdRaw, io: BenchIO.IO) returns (exit: int)
-    modifies io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+    modifies io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
     ensures CoreSummary(raw, io, exit)
     decreases *
   {
@@ -1942,12 +2551,14 @@ module LsCore {
     ghost var preCwd := io.cwd();
     ghost var preEnv := io.env();
     ghost var preNow := io.now();
+    ghost var preStatus := io.statusCursor();
+    ghost var preStatusObservations := io.statusObservations();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
     var parsedCmd := Schema.Command(raw);
     var cmd := parsedCmd;
     if parsedCmd.mode == Schema.ModeHelp {
-      io.AppendStdout(Spec.HelpTextSpec());
+      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -1955,7 +2566,7 @@ module LsCore {
       return;
     }
     if parsedCmd.mode == Schema.ModeVersion {
-      io.AppendStdout(Spec.VersionTextSpec());
+      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -1963,7 +2574,7 @@ module LsCore {
       return;
     }
     if parsedCmd.mode != Schema.ModeRun {
-      io.AppendStderr(Spec.InvalidModeMessageSpec(parsedCmd.mode));
+      var _, _ := io.WriteStderr(Spec.InvalidModeMessageSpec(parsedCmd.mode), BenchWorld.ThrowOnError);
       exit := if parsedCmd.mode.ModeInvalidTime? then 1 else 2;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -1980,19 +2591,30 @@ module LsCore {
     cmd := Schema.WithReferenceNow(
       Schema.WithBlockSize(parsedCmd, blockSize, fileSizeBlockSize), referenceNow);
     assert cmd == Spec.EffectiveCommandSpec(raw, preEnv, preNow);
+    cmd := Schema.WithStatusObservations(cmd, preStatusObservations, preStatus);
+    assert cmd == Schema.WithStatusObservations(
+      Spec.EffectiveCommandSpec(raw, preEnv, preNow), preStatusObservations, preStatus);
 
     var cwd := io.GetCwd();
     var output: BenchWorld.Bytes := [];
     var errors: BenchWorld.Bytes := [];
     var hadError := false;
     var observations: seq<Spec.OperandObservation> := [];
+    ghost var statusCuts: seq<nat> := [preStatus];
     var i := 0;
     while i < |cmd.operands|
       invariant 0 <= i <= |cmd.operands|
+      invariant |observations| == i
+      invariant |statusCuts| == i + 1
+      invariant statusCuts[0] == preStatus
+      invariant statusCuts[i] == io.statusCursor()
+      invariant io.statusObservations() == preStatusObservations
+      invariant forall j: nat | j < i ::
+        observations[j].firstStatus == statusCuts[j] &&
+        observations[j].afterStatus == statusCuts[j + 1]
       invariant io.stdout() == preStdout
       invariant io.stderr() == preStderr
       invariant cwd == preCwd
-      invariant |observations| == i
       invariant forall j: nat :: j < i ==>
                                    observations[j].index == j &&
                                    OperandObservationSummary(cmd, preFs, preCwd, observations[j])
@@ -2006,17 +2628,20 @@ module LsCore {
       ghost var beforeObservations := observations;
       FailedOperandSnoc(beforeObservations, observation);
       observations := observations + [observation];
+      statusCuts := statusCuts + [io.statusCursor()];
       hadError := hadError || observation.failed;
       assert observations[i] == observation;
       i := i + 1;
     }
     var sorted := SortOperandsCore(cmd, observations);
-    var groups := OutputGroupsCore(sorted);
+    var groups := OutputGroupsCore(cmd, sorted);
     output := JoinOutputGroupsCore(groups);
     errors := AccessErrorsCore(observations) + SectionErrorsCore(sorted);
-    io.AppendStdout(output);
-    io.AppendStderr(errors);
-    exit := if hadError then 2 else 0;
+    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
+    exit := OperandExitCore(observations);
+    assert RunSummary(cmd, preFs, preCwd, preStatus, io.statusCursor(),
+                      output, errors, exit);
     assert CoreSummary(raw, io, exit) by {
       reveal CoreSummary();
     }

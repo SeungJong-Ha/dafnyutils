@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "../../core/CliTypes.dfy"
 include "TacSchema.dfy"
 
@@ -11,6 +12,7 @@ module TacSpec {
   import CliTypes
   import IOContract
   import TacSchema
+  import SE = StringEscaping
 
 
 
@@ -69,12 +71,32 @@ module TacSpec {
   {
     match err
     case IsDirectory =>
-      var displayPath :=
-        if ' ' in path then "'" + path + "'"
-        else path;
-      Utf8.Encode("tac: " + displayPath + ": read error: " + ErrnoText(err) + "\n")
+      "tac: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+        ": read error: " + Utf8.Encode(ErrnoText(err)) + "\n"
     case _ =>
-      Utf8.Encode("tac: failed to open '" + path + "' for reading: " + ErrnoText(err) + "\n")
+      "tac: failed to open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+        " for reading: " + Utf8.Encode(ErrnoText(err)) + "\n"
+  }
+
+  function DirectoryReadErrorMessageSpec(path: BenchWorld.Path, errnoText: string): BenchWorld.Bytes
+  {
+    "tac: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+      ": read error: " + Utf8.Encode(errnoText) + "\n"
+  }
+
+  function DirectoryOpenErrorMessageSpec(path: BenchWorld.Path, errnoText: string): BenchWorld.Bytes
+  {
+    "tac: failed to open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+      " for reading: " + Utf8.Encode(errnoText) + "\n"
+  }
+
+  ghost function DirectoryReadOutcome(
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
+    fs: BenchWorld.FileSystem,
+    path: BenchWorld.Path
+  ): BenchWorld.TrustedStreamResult
+  {
+    preStreams(BenchWorld.StreamReadFile(fs, path, BenchWorld.AfterSeekEnd))
   }
 
   function InputsFromOperands(operands: seq<string>): seq<TacSchema.Input>
@@ -110,7 +132,7 @@ module TacSpec {
 
   ghost predicate ReadResultRelation(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     result: BenchWorld.Result<BenchWorld.Bytes>
@@ -122,7 +144,7 @@ module TacSpec {
       result == BenchWorld.Ok(
         if TacSchema.Stdin in cmd.inputs[..i] then [] else preStdin
       )
-    case File(path) => result == IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost function SeparatorStartSet(
@@ -214,14 +236,28 @@ module TacSpec {
     case Err(_) => fragment == []
   }
 
-  function ErrorPiece(input: TacSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  ghost function ErrorPiece(
+    input: TacSchema.Input,
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    fs: BenchWorld.FileSystem,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
+  ): BenchWorld.Bytes
   {
     match input
     case Stdin => []
     case File(path) =>
       match result
       case Ok(_) => []
-      case Err(err) => ErrorMessageSpec(path, err)
+      case Err(err) =>
+        if err == BenchWorld.IsDirectory then
+          match DirectoryReadOutcome(preStreams, fs, path)
+          case StreamReadFileResult(_, nativeErr, stage) =>
+            if stage == BenchWorld.OpenFailed then
+              DirectoryOpenErrorMessageSpec(path, IOContract.CLocaleErrnoTextResult(nativeErr))
+            else
+              DirectoryReadErrorMessageSpec(path, IOContract.CLocaleErrnoTextResult(nativeErr))
+          case _ => []
+        else ErrorMessageSpec(path, err)
   }
 
   function HadErrorPiece(input: TacSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
@@ -236,7 +272,7 @@ module TacSpec {
 
   ghost predicate InputObservationRelation(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     observation: InputObservation
@@ -244,9 +280,9 @@ module TacSpec {
     requires i < |cmd.inputs|
     requires |cmd.separator| > 0
   {
-    ReadResultRelation(cmd, preFs, preStdin, i, observation.result) &&
+    ReadResultRelation(cmd, preFs, preStreams, preStdin, i, observation.result) &&
     OutputFragmentRelation(cmd, observation.result, observation.stdoutFragment) &&
-    observation.stderrFragment == ErrorPiece(cmd.inputs[i], observation.result) &&
+    observation.stderrFragment == ErrorPiece(cmd.inputs[i], observation.result, preFs, preStreams) &&
     observation.failed == HadErrorPiece(cmd.inputs[i], observation.result)
   }
 
@@ -287,7 +323,7 @@ module TacSpec {
 
   ghost predicate InputTraceWitnessRelation(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     stdoutPart: BenchWorld.Bytes,
@@ -301,7 +337,7 @@ module TacSpec {
   {
     |observations| == |cmd.inputs| &&
     (forall i: nat {:trigger observations[i]} | i < |observations| ::
-       InputObservationRelation(cmd, preFs, preStdin, i, observations[i])) &&
+       InputObservationRelation(cmd, preFs, preStreams, preStdin, i, observations[i])) &&
     FragmentsConcatenate(
       ObservationStdoutFragments(observations),
       stdoutPart,
@@ -319,7 +355,7 @@ module TacSpec {
 
   ghost predicate InputTraceRelation(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     stdoutPart: BenchWorld.Bytes,
@@ -333,7 +369,7 @@ module TacSpec {
       stderrCuts: seq<nat> ::
       InputTraceWitnessRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         postStdin,
         stdoutPart,
@@ -363,7 +399,7 @@ module TacSpec {
       exists stdoutPart: BenchWorld.Bytes, stderrPart: BenchWorld.Bytes, hadError: bool ::
         InputTraceRelation(
           cmd,
-          old(io.fs()),
+          old(io.fs()), old(io.trustedStreams()),
           old(io.stdin()),
           io.stdin(),
           stdoutPart,

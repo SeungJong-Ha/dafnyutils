@@ -45,15 +45,22 @@ module TailRecordCore {
       else
         [0] + tailCuts[1..]
   } by method {
-    if |data| == 0 {
-      return [0];
-    } else if |data| == 1 {
-      return [0, 1];
-    } else {
-      var tailCuts := RecordCuts(data[1..], delimiter);
-      var shifted := ShiftCuts(tailCuts, 1);
-      return if data[0] == delimiter then [0] + shifted else [0] + shifted[1..];
+    var i := |data|;
+    var cuts: seq<nat> := [0];
+    while i > 0
+      invariant 0 <= i <= |data|
+      invariant cuts == RecordCuts(data[i..], delimiter)
+      decreases i
+    {
+      i := i - 1;
+      if i == |data| - 1 {
+        cuts := [0, 1];
+      } else {
+        var shifted := ShiftCuts(cuts, 1);
+        cuts := if data[i] == delimiter then [0] + shifted else [0] + shifted[1..];
+      }
     }
+    return cuts;
   }
 
   function RecordCount(data: BenchWorld.Bytes, delimiter: char): int

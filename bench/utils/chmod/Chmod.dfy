@@ -64,7 +64,7 @@ module Chmod {
     }
 
     method RunCore(raw: ChmodSchema.ChmodCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
       ensures RecursiveSpec.Spec(raw, io, exit)
       decreases *
     {

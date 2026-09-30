@@ -78,6 +78,18 @@ def assert_uniq_parity(args: list[str], cwd: Path, *, input_data: bytes = b"") -
     assert_result_matches_reference(ref, bench)
 
 
+# Historical field skipping compares suffixes after the requested first field.
+def test_historical_one_field_skip_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_uniq_parity(["-1"], Path(tmp_dir), input_data=b"a same\nb same\nc other\n")
+
+
+# A large historical skip count compares empty suffixes after all fields.
+def test_historical_large_field_skip_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_uniq_parity(["-7022"], Path(tmp_dir), input_data=b"a one\nb two\nc three\n")
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -281,3 +293,24 @@ def test_deferred_uniq_regressions_placeholder() -> None:
 def test_uniq_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Directory read errors always quote and escape the input name.
+def test_directory_read_diagnostic_escaping_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "a'b").mkdir()
+        ref = run_system_uniq(["a'b"], cwd)
+        bench = run_bench_uniq(["a'b"], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Extra input operands use GNU's C-locale byte escapes.
+@pytest.mark.parametrize("operand", ["a'b", "a\tb", "é"])
+def test_extra_operand_diagnostic_escaping_matches_coreutils(operand: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = ["-", "-", operand]
+        ref = run_system_uniq(args, cwd)
+        bench = run_bench_uniq(args, cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

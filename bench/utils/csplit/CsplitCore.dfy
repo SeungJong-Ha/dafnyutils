@@ -255,7 +255,7 @@ module CsplitCore {
       io.stderr() == old(io.stderr()) &&
       exit == 0
     else
-      match Spec.ReadResultFields(raw.input, old(io.fs()), old(io.stdin()))
+      match Spec.ReadResultFields(raw.input, old(io.fs()), old(io.trustedStreams()), old(io.stdin()))
       case Err(err) =>
         io.fs() == old(io.fs()) &&
         io.stdin() == Spec.ReadStdinAfterFields(raw.input, old(io.stdin())) &&
@@ -838,11 +838,12 @@ module CsplitCore {
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStreams := io.trustedStreams();
     ghost var preStdin := io.stdin();
     ghost var preNow := io.now();
     if raw.mode == Schema.ModeHelp {
       var help := Spec.HelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -850,7 +851,7 @@ module CsplitCore {
 
     if raw.mode == Schema.ModeVersion {
       var version := Spec.VersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -859,21 +860,22 @@ module CsplitCore {
     var data: BenchWorld.Bytes := [];
     match raw.input {
       case Stdin =>
-        assert Spec.ReadResultFields(raw.input, preFs, preStdin) ==
+        assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
                BenchWorld.Ok(preStdin);
       case File(path) =>
-        var readResult := io.ReadFile(path);
-        assert readResult == Spec.ReadResultFields(raw.input, preFs, preStdin);
+        var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
+        var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+        assert readResult == Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin);
         match readResult
         case Err(err) =>
           var msg := Spec.ReadErrorMessage(raw.input, err);
-          io.AppendStderr(msg);
+          var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
           exit := 1;
           assert CoreSummary(raw, io, exit);
           return;
         case Ok(fileData) =>
           data := fileData;
-          assert Spec.ReadResultFields(raw.input, preFs, preStdin) ==
+          assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
                  BenchWorld.Ok(data);
     }
 
@@ -884,7 +886,7 @@ module CsplitCore {
     case NumberZero =>
       assert AnalyzeNumbers(raw.lineNumbers).status == NumberZero;
       var msg := Spec.ZeroLineMessage(0);
-      io.AppendStderr(warnings + msg);
+      var _, _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -892,7 +894,7 @@ module CsplitCore {
       assert AnalyzeNumbers(raw.lineNumbers).status ==
              NumberBackwards(current, previous);
       var msg := Spec.BackwardLineMessage(current, previous);
-      io.AppendStderr(warnings + msg);
+      var _, _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -900,11 +902,12 @@ module CsplitCore {
 
       match raw.input {
         case Stdin =>
-          data := io.ReadStdinAll();
+          var stdinData, _ := io.ReadStdin(BenchWorld.ThrowOnError);
+          data := stdinData;
           assert data == preStdin;
         case File(path) =>
       }
-      assert Spec.ReadResultFields(raw.input, preFs, preStdin) ==
+      assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
              BenchWorld.Ok(data);
       assert io.stdin() == Spec.ReadStdinAfterFields(raw.input, preStdin);
 
@@ -917,8 +920,8 @@ module CsplitCore {
         ghost var lifetimeEvents;
         out, errOut, writeExit, lifetimeEvents :=
           WritePiecesThenError(pieces, 0, line, io);
-        io.AppendStdout(out);
-        io.AppendStderr(warnings + errOut);
+        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _, _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
         assert warnings == AnalyzeNumbers(raw.lineNumbers).warnings;
         assert io.stderr() == old(io.stderr()) + (warnings + errOut);
         exit := writeExit;
@@ -926,7 +929,7 @@ module CsplitCore {
         assert io.stdin() == Spec.ReadStdinAfterFields(raw.input, preStdin);
         assert CoreSummary(raw, io, exit) by {
           assert AnalyzeNumbers(raw.lineNumbers).status == NumbersOk;
-          assert Spec.ReadResultFields(raw.input, preFs, preStdin) ==
+          assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
                  BenchWorld.Ok(data);
           assert WritePiecesThenErrorSummaryFields(
               pieces,
@@ -976,8 +979,8 @@ module CsplitCore {
         ghost var lifetimeEvents;
         out, errOut, writeExit, lifetimeEvents :=
           WritePieces(pieces, 0, io);
-        io.AppendStdout(out);
-        io.AppendStderr(warnings + errOut);
+        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _, _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
         assert warnings == AnalyzeNumbers(raw.lineNumbers).warnings;
         assert io.stderr() == old(io.stderr()) + (warnings + errOut);
         exit := writeExit;
@@ -985,7 +988,7 @@ module CsplitCore {
         assert io.stdin() == Spec.ReadStdinAfterFields(raw.input, preStdin);
         assert CoreSummary(raw, io, exit) by {
           assert AnalyzeNumbers(raw.lineNumbers).status == NumbersOk;
-          assert Spec.ReadResultFields(raw.input, preFs, preStdin) ==
+          assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
                  BenchWorld.Ok(data);
           assert WritePiecesSummaryFields(
               pieces,

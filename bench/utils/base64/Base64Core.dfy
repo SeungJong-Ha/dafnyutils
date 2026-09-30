@@ -1278,7 +1278,9 @@ module Base64Core {
       errorOutput == [] &&
       !hadReadError
     case File(path) =>
-      match IOContract.ReadFileResultFields(old(io.fs()), path)
+      match IOContract.ObservedReadFileResultFields(
+        old(io.fs()), old(io.trustedStreams()), path
+      )
       case Ok(fileData) =>
         data == fileData &&
         errorOutput == [] &&
@@ -1362,11 +1364,14 @@ module Base64Core {
   {
     match cmd.inputs[0]
     case Stdin =>
-      data := io.ReadStdinAll();
+      var stdinData, readErr := io.ReadStdin(BenchWorld.ThrowOnError);
+      assert readErr == 0;
+      data := stdinData;
       errOut := [];
       hadReadError := false;
     case File(path) =>
-      var res := io.ReadFile(path);
+      var fileData, err, stage := io.ReadFile(path, BenchWorld.FromStart);
+      var res := IOContract.FileReadResultFromOutcome(fileData, err);
       match res
       case Ok(chunk) =>
         data := chunk;
@@ -1412,7 +1417,7 @@ module Base64Core {
     ghost var preStderr := io.stderr();
     var cmd := Command(raw);
     if cmd.mode == Schema.ModeHelp {
-      io.AppendStdout(Spec.HelpText());
+      var _, _ := io.WriteStdout(Spec.HelpText(), BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1420,7 +1425,7 @@ module Base64Core {
       return;
     }
     if cmd.mode == Schema.ModeVersion {
-      io.AppendStdout(Spec.VersionText());
+      var _, _ := io.WriteStdout(Spec.VersionText(), BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1428,7 +1433,7 @@ module Base64Core {
       return;
     }
     if cmd.mode == Schema.ModeInvalidWrap {
-      io.AppendStderr(Spec.InvalidWrapMessage(cmd.invalidWrapValue));
+      var _, _ := io.WriteStderr(Spec.InvalidWrapMessage(cmd.invalidWrapValue), BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -1436,7 +1441,7 @@ module Base64Core {
       return;
     }
     if cmd.mode.ModeExtraOperand? {
-      io.AppendStderr(Spec.ExtraOperandMessage(cmd.mode.operand));
+      var _, _ := io.WriteStderr(Spec.ExtraOperandMessage(cmd.mode.operand), BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -1451,15 +1456,15 @@ module Base64Core {
     assert |cmd.inputs| == 1;
     data, errOut, hadReadError := ProcessInput(cmd, io);
     var transform := TransformMethod(cmd, data);
-    io.AppendStdout(transform.out);
+    var _, _ := io.WriteStdout(transform.out, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + transform.out;
     if |errOut| > 0 {
-      io.AppendStderr(errOut);
+      var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
     } else {
       assert io.stderr() == preStderr + errOut;
     }
     if !transform.ok {
-      io.AppendStderr(Spec.InvalidInputMessage());
+      var _, _ := io.WriteStderr(Spec.InvalidInputMessage(), BenchWorld.ThrowOnError);
     }
     exit := if hadReadError || !transform.ok then 1 else 0;
     assert InputTraceRelation(

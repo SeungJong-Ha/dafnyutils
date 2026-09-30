@@ -243,3 +243,32 @@ def test_deferred_factor_regressions_placeholder() -> None:
 def test_factor_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     verify_factor_module(target)
+
+
+# Argument diagnostics encode Unicode to UTF-8 before C-locale escaping.
+@pytest.mark.parametrize("token", ["é", "x'y"])
+def test_escape_audit_argv_token(token: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_factor([token], cwd)
+        bench = run_bench_factor([token], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Standard-input diagnostics preserve raw non-UTF-8 bytes.
+def test_escape_audit_stdin_raw_byte() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_factor([], cwd, input_data=b"x\xe5\n")
+        bench = run_bench_factor([], cwd, input_data=b"x\xe5\n")
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Invalid argv diagnostics retain spaces from the original operand.
+@pytest.mark.parametrize("token", [" mtkv/8plebsdfmt", "x "])
+def test_escape_audit_invalid_argv_whitespace(token: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_factor([token], cwd)
+        bench = run_bench_factor([token], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

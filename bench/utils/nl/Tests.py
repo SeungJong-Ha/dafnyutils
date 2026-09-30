@@ -78,6 +78,12 @@ def assert_nl_parity(args: list[str], cwd: Path, *, input_data: bytes = b"") -> 
     assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
 
 
+# A long unterminated stdin line must be numbered without exhausting the call stack.
+def test_long_unterminated_stdin_line_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_nl_parity([], Path(tmp_dir), input_data=b"x" * 15_000)
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -153,6 +159,50 @@ def test_logical_page_delimiter_reports_benchmark_diagnostic() -> None:
 
 @pytest.mark.parametrize("args", [["-b", "q"], ["-n", "bad"]])
 def test_invalid_option_values_match_coreutils(args: list[str]) -> None:
+    # upstream: coreutils/tests/misc/nl.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_nl_parity(args, Path(tmp_dir))
+
+
+# GNU preserves semantic option diagnostics emitted before a later getopt failure.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-n", "-", "-s"],
+        ["-b", "q", "--number-separator"],
+    ],
+)
+def test_invalid_value_diagnostic_precedes_parse_failure(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_nl_parity(args, Path(tmp_dir))
+
+
+# Invalid body and format values accumulate in the same order GNU processes them.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-n", "-", "-b", "q"],
+        ["-b", "q", "-n", "-"],
+    ],
+)
+def test_invalid_value_diagnostics_accumulate_in_order(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_nl_parity(args, Path(tmp_dir))
+
+
+# Help stops option processing but retains diagnostics emitted before the request.
+def test_help_after_invalid_value_preserves_prior_diagnostic() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_nl(["-n", "-", "--help", "-s"], cwd)
+        bench = run_bench_nl(["-n", "-", "--help", "-s"], cwd)
+        assert_requested_message_behavior(ref, bench)
+        assert bench[1] == ref[1]
+
+
+# Invalid numbering values use C-locale quote escaping for argument bytes.
+@pytest.mark.parametrize("args", [["-b", "bad'body"], ["-b", "bad\tbody"], ["-n", "é"]])
+def test_invalid_numbering_locale_quoting_matches_coreutils(args: list[str]) -> None:
     # upstream: coreutils/tests/misc/nl.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         assert_nl_parity(args, Path(tmp_dir))

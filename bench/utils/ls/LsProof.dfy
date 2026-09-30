@@ -11,6 +11,94 @@ module LsProof {
   import Spec = LsSpec
   import Core = LsCore
 
+  lemma UnneededDirectoryStatusIsRejected(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, path: BenchWorld.Path,
+    observation: Spec.EntryObservation
+  )
+    requires observation.source.StatusEntryEvidence?
+    requires !Spec.EntryStatusRequiredSpec(
+      cmd, Spec.ClassifiedDirentKindSpec(observation.entryKind), observation.displayName)
+    ensures !Spec.DirectorySourceRelation(cmd, fs, path, observation)
+  {
+  }
+
+  lemma MismatchedDirectoryKindEvidenceIsRejected(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, path: BenchWorld.Path,
+    observation: Spec.EntryObservation
+  )
+    requires
+      (observation.source.DirentEntryEvidence? &&
+       observation.source.kind != Spec.ClassifiedDirentKindSpec(observation.entryKind)) ||
+      (observation.source.ImpliedDotEntryEvidence? &&
+       observation.entryKind != BenchWorld.DirectoryDirentKind)
+    ensures !Spec.DirectorySourceRelation(cmd, fs, path, observation)
+  {
+  }
+
+  lemma NamesOnlyDirectoryConsumesNoEntryStatuses(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, path: BenchWorld.Path,
+    firstStatus: nat, afterStatus: nat, complete: bool,
+    observations: seq<Spec.EntryObservation>
+  )
+    requires !Spec.EntryRenderSortMetadataRequiredSpec(cmd) && !cmd.recursive
+    requires Spec.DirectoryObservationRelation(
+      cmd, fs, path, firstStatus, afterStatus, complete, observations)
+    ensures afterStatus == firstStatus
+  {
+    var cuts: seq<nat> :|
+      |cuts| == |observations| + 1 && cuts[0] == firstStatus &&
+      cuts[|observations|] == afterStatus &&
+      (forall i: nat | i < |observations| ::
+        observations[i].statusOrdinal == cuts[i] &&
+        cuts[i + 1] == cuts[i] + Spec.EntryStatusCallCount(observations[i]));
+    forall i: nat | i < |observations|
+      ensures cuts[i + 1] == cuts[i]
+    {
+      assert Spec.DirectorySourceRelation(cmd, fs, path, observations[i]);
+      assert !observations[i].source.StatusEntryEvidence?;
+    }
+    var i := 0;
+    while i < |observations|
+      invariant i <= |observations|
+      invariant cuts[i] == firstStatus
+      decreases |observations| - i
+    {
+      i := i + 1;
+    }
+  }
+
+  lemma DirentRenderingIgnoresStatus(
+    cmd: Schema.LsCmd,
+    kind: Spec.DirentKindEvidence,
+    name: string,
+    first: BenchWorld.FileStatus,
+    second: BenchWorld.FileStatus
+  )
+    requires !Spec.EntryStatusRequiredSpec(cmd, kind, name)
+    ensures Spec.RenderEntrySpec(cmd, name, first) ==
+            Spec.RenderEntrySpec(cmd, name, second)
+    ensures Spec.TotalLineSpec(cmd, []) == []
+  {
+    assert !Spec.EntryRenderSortMetadataRequiredSpec(cmd);
+    assert !cmd.numericLong && !cmd.showBlocks;
+  }
+
+  lemma DirentSortingIgnoresStatus(
+    cmd: Schema.LsCmd,
+    kind: Spec.DirentKindEvidence,
+    name: string,
+    left: Spec.EntryObservation,
+    right: Spec.EntryObservation
+  )
+    requires !Spec.EntryStatusRequiredSpec(cmd, kind, name)
+    requires left.ok && right.ok
+    ensures Spec.BaseEntryBeforeSpec(cmd, left, right) ==
+            Spec.StringLessSpec(left.displayName, right.displayName)
+  {
+    assert cmd.sortMode == Schema.SortName;
+    reveal Spec.BaseEntryBeforeSpec();
+  }
+
   lemma DigitCharBridge(d: nat)
     requires d < 10
     ensures Core.DigitCharCore(d) == Spec.DigitChar(d)
@@ -107,6 +195,18 @@ module LsProof {
   )
     ensures Core.RenderEntryCore(cmd, displayName, status) ==
             Spec.RenderEntrySpec(cmd, displayName, status)
+  {
+    RenderAlignedEntryBridge(cmd, displayName, status, Spec.ColumnWidths(0, 0, 0, 0, 0));
+  }
+
+  lemma RenderAlignedEntryBridge(
+    cmd: Schema.LsCmd,
+    displayName: string,
+    status: BenchWorld.FileStatus,
+    widths: Spec.ColumnWidths
+  )
+    ensures Core.RenderAlignedEntryCore(cmd, displayName, status, widths) ==
+            Spec.RenderAlignedEntrySpec(cmd, displayName, status, widths)
   {
     if cmd.showBlocks {
       NatTextBridge(Spec.DisplayedBlocksSpec(
@@ -666,29 +766,30 @@ module LsProof {
   }
 
   lemma BodiesAtPositionsConcatenate(
-    sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>, positions: seq<nat>, processed: nat
   ) returns (cuts: seq<nat>)
     requires processed <= |positions|
     requires forall k: nat :: k < |positions| ==> positions[k] < |sorted|
     ensures Spec.FragmentsConcatenate(
-              Core.BodiesFragmentsPrefixCore(sorted, positions, processed),
-              Core.BodiesAtPositionsPrefixCore(sorted, positions, processed), cuts)
+              Core.BodiesFragmentsPrefixCore(cmd, sorted, positions, processed),
+              Core.BodiesAtPositionsPrefixCore(cmd, sorted, positions, processed), cuts)
     decreases processed
   {
+    hide Core.RenderOperandCore();
     if processed == 0 {
       cuts := [0];
     } else {
-      cuts := BodiesAtPositionsConcatenate(sorted, positions, processed - 1);
+      cuts := BodiesAtPositionsConcatenate(cmd, sorted, positions, processed - 1);
       var fragments := Core.BodiesFragmentsPrefixCore(
-        sorted, positions, processed - 1);
+        cmd, sorted, positions, processed - 1);
       var combined := Core.BodiesAtPositionsPrefixCore(
-        sorted, positions, processed - 1);
+        cmd, sorted, positions, processed - 1);
       Core.AppendFragment(
-        fragments, combined, cuts, sorted[positions[processed - 1]].body);
+        fragments, combined, cuts, Core.RenderOperandCore(cmd, sorted, positions[processed - 1]));
       cuts := cuts + [|Core.BodiesAtPositionsPrefixCore(
-                        sorted, positions, processed)|];
-      assert Core.BodiesFragmentsPrefixCore(sorted, positions, processed) ==
-             fragments + [sorted[positions[processed - 1]].body];
+                        cmd, sorted, positions, processed)|];
+      assert Core.BodiesFragmentsPrefixCore(cmd, sorted, positions, processed) ==
+             fragments + [Core.RenderOperandCore(cmd, sorted, positions[processed - 1])];
     }
   }
 
@@ -710,9 +811,9 @@ module LsProof {
   }
 
   lemma {:vcs_split_on_every_assert} OutputGroupsCoreSatisfiesRelation(
-    sorted: seq<Spec.OperandObservation>
+    cmd: Schema.LsCmd, sorted: seq<Spec.OperandObservation>
   )
-    ensures Spec.OutputGroupsRelation(sorted, Core.OutputGroupsCore(sorted))
+    ensures Spec.OutputGroupsRelation(cmd, sorted, Core.OutputGroupsCore(cmd, sorted))
   {
     var directPositions := Core.DirectPositionsCore(sorted, 0);
     var directoryPositions := Core.DirectoryPositionsCore(sorted, 0);
@@ -721,22 +822,25 @@ module LsProof {
     assert Spec.DirectPositionRelation(sorted, directPositions);
     assert Spec.DirectoryPositionRelation(sorted, directoryPositions);
     var directFragments := Core.BodiesFragmentsPrefixCore(
-      sorted, directPositions, |directPositions|);
+      cmd, sorted, directPositions, |directPositions|);
     var directIndices := Core.OperandIndicesPrefixCore(
       sorted, directPositions, |directPositions|);
-    var directBody := Core.BodiesAtPositionsCore(sorted, directPositions);
+    var directBody := Core.BodiesAtPositionsCore(cmd, sorted, directPositions);
     var directCuts := BodiesAtPositionsConcatenate(
-      sorted, directPositions, |directPositions|);
+      cmd, sorted, directPositions, |directPositions|);
     DirectoryGroupsCoreShape(
       sorted, directoryPositions, |directoryPositions|);
     assert Spec.FragmentsConcatenate(directFragments, directBody, directCuts);
     assert |directIndices| == |directPositions|;
     assert |directFragments| == |directPositions|;
-    var groups := Core.OutputGroupsCore(sorted);
+    var groups := Core.OutputGroupsCore(cmd, sorted);
     var offset := if |directPositions| == 0 then 0 else 1;
+    var queuedSuffix := if |directoryPositions| == 0 &&
+      Core.HasQueuedDirectoryCore(sorted) then "\n" else [];
     assert |groups| == |directoryPositions| + offset;
     if |directPositions| > 0 {
-      assert groups[0] == Spec.OutputGroup(directIndices, directBody, false);
+      assert groups[0] == Spec.OutputGroup(
+        directIndices, directBody + queuedSuffix, false);
     }
     forall k: nat | k < |directoryPositions|
       ensures groups[k + offset] == Spec.OutputGroup(
@@ -746,16 +850,23 @@ module LsProof {
       if offset == 0 {
         assert groups == Core.DirectoryGroupsCore(sorted, directoryPositions);
       } else {
-        assert groups == [Spec.OutputGroup(directIndices, directBody, false)] +
+        assert groups == [Spec.OutputGroup(
+                           directIndices, directBody + queuedSuffix, false)] +
                          Core.DirectoryGroupsCore(sorted, directoryPositions);
       }
     }
+    forall k: nat | k < |directPositions|
+      ensures directFragments[k] == Spec.RenderOperandSpec(cmd, sorted, directPositions[k])
+    {
+      RenderAlignedEntryBridge(cmd, sorted[directPositions[k]].renderName,
+        sorted[directPositions[k]].status, Spec.OperandWidthsSpec(cmd, sorted));
+    }
     assert Spec.OutputGroupsWitnessRelation(
-        sorted, groups, directPositions, directoryPositions, directIndices,
+        cmd, sorted, groups, directPositions, directoryPositions, directIndices,
         directFragments, directCuts, directBody) by {
       reveal Spec.OutputGroupsWitnessRelation();
     }
-    assert Spec.OutputGroupsRelation(sorted, groups) by {
+    assert Spec.OutputGroupsRelation(cmd, sorted, groups) by {
       reveal Spec.OutputGroupsRelation();
     }
   }
@@ -779,8 +890,11 @@ module LsProof {
       Core.AppendFragment(
         fragments, Core.JoinOutputGroupsPrefixCore(groups, processed - 1),
         cuts, tail);
+      assert Core.JoinOutputGroupsPrefixCore(groups, processed) ==
+             Core.JoinOutputGroupsPrefixCore(groups, processed - 1) + tail;
       cuts := cuts + [|Core.JoinOutputGroupsPrefixCore(groups, processed)|];
       assert Core.GroupFragmentsPrefixCore(groups, processed) == fragments + [tail];
+      reveal Spec.FragmentsConcatenate();
     }
   }
 
@@ -855,30 +969,32 @@ module LsProof {
   lemma ObservationPiecesImpliesSpec(
     cmd: Schema.LsCmd,
     observations: seq<Spec.EntryObservation>,
-    outputFragments: seq<BenchWorld.Bytes>,
-    errorFragments: seq<BenchWorld.Bytes>
+    outputFragments: seq<BenchWorld.Bytes>
   )
     requires Core.ObservationPiecesSummary(
-               cmd, observations, outputFragments, errorFragments)
+               cmd, observations, outputFragments)
     ensures Spec.ObservationPiecesRelation(
-              cmd, observations, outputFragments, errorFragments)
+              cmd, observations, outputFragments)
   {
     forall i: nat | i < |observations|
       ensures outputFragments[i] ==
               (if observations[i].ok
-               then Spec.RenderEntrySpec(cmd, observations[i].renderName, observations[i].status)
-               else [])
+               then Spec.RenderAlignedEntrySpec(cmd, observations[i].renderName, observations[i].status, Spec.ObservationWidthsSpec(cmd, observations))
+               else Spec.RenderFailedEntrySpec(cmd, observations[i], Spec.ObservationWidthsSpec(cmd, observations)))
     {
       if observations[i].ok {
-        RenderEntryBridge(cmd, observations[i].renderName, observations[i].status);
+        RenderAlignedEntryBridge(cmd, observations[i].renderName, observations[i].status, Spec.ObservationWidthsSpec(cmd, observations));
       }
     }
   }
 
   lemma DirectorySummaryImpliesSpec(
     cmd: Schema.LsCmd,
+    displayPath: BenchWorld.Path,
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     observations: seq<Spec.EntryObservation>,
     readErr: int,
     output: BenchWorld.Bytes,
@@ -886,17 +1002,23 @@ module LsProof {
     hadError: bool
   )
     requires Core.DirectoryListingSummary(
-               cmd, fs, path, observations, readErr, output, errors, hadError)
+               cmd, displayPath, fs, path, firstStatus, afterStatus,
+               observations, readErr, output, errors, hadError)
     ensures Spec.DirectoryListingRelation(
-              cmd, fs, path, observations, readErr, output, errors, hadError)
+              cmd, displayPath, fs, path, firstStatus, afterStatus,
+              observations, readErr, output, errors, hadError)
   {
+    reveal Core.DirectoryListingSummary();
+    reveal Spec.DirectoryListingRelation();
     var rawObservations: seq<Spec.EntryObservation>,
         outputFragments: seq<BenchWorld.Bytes>, outputCuts: seq<nat>,
         errorFragments: seq<BenchWorld.Bytes>, errorCuts: seq<nat>,
         entryOutput: BenchWorld.Bytes, entryErrors: BenchWorld.Bytes :|
-      Spec.DirectoryObservationRelation(cmd, fs, path, readErr == 0, rawObservations) &&
+      Spec.DirectoryObservationRelation(cmd, fs, path, firstStatus, afterStatus,
+                                        readErr == 0, rawObservations) &&
       observations == Core.SortEntriesCore(cmd, rawObservations) &&
-      Core.ObservationPiecesSummary(cmd, observations, outputFragments, errorFragments) &&
+      Core.ObservationPiecesSummary(cmd, observations, outputFragments) &&
+      Spec.ObservationErrorsRelation(displayPath, rawObservations, errorFragments) &&
       Spec.FragmentsConcatenate(outputFragments, entryOutput, outputCuts) &&
       output == Core.TotalLineCore(cmd, rawObservations) + entryOutput &&
       Spec.FragmentsConcatenate(errorFragments, entryErrors, errorCuts) &&
@@ -905,7 +1027,7 @@ module LsProof {
       (readErr != 0 ==> hadError);
     SortEntriesCoreSatisfiesRelation(cmd, rawObservations);
     TotalLineBridge(cmd, rawObservations);
-    ObservationPiecesImpliesSpec(cmd, observations, outputFragments, errorFragments);
+    ObservationPiecesImpliesSpec(cmd, observations, outputFragments);
   }
 
   lemma RecursiveOutputPrefixConcatenates(
@@ -977,21 +1099,31 @@ module LsProof {
               cmd, fs, displayPath, accessPath, ancestors, tree)
     decreases tree
   {
+    reveal Core.RecursiveDirectorySummary();
+    if !tree.openOk || !tree.statusOk || tree.cycle {
+      assert Spec.RecursiveDirectoryRelation(
+        cmd, fs, displayPath, accessPath, ancestors, tree) by {
+        reveal Spec.RecursiveDirectoryRelation();
+      }
+      return;
+    }
     DirectorySummaryImpliesSpec(
-      cmd, fs, accessPath, tree.observations, tree.readErr,
+      cmd, displayPath, fs, accessPath, tree.listingFirstStatus,
+      tree.listingAfterStatus,
+      tree.observations, tree.readErr,
       tree.listingOutput, tree.listingErrors, tree.listingHadError);
     forall i: nat | i in tree.children
       ensures Spec.RecursiveDirectoryRelation(
                 cmd, fs,
                 Spec.ChildDisplayPath(displayPath, tree.observations[i].displayName),
                 tree.observations[i].accessPath,
-                ancestors + {tree.observations[i].status.hostKey}, tree.children[i])
+                ancestors + {tree.openedStatus.hostKey}, tree.children[i])
     {
       RecursiveSummaryImpliesSpec(
         cmd, fs,
         Spec.ChildDisplayPath(displayPath, tree.observations[i].displayName),
         tree.observations[i].accessPath,
-        ancestors + {tree.observations[i].status.hostKey}, tree.children[i]);
+        ancestors + {tree.openedStatus.hostKey}, tree.children[i]);
     }
     var outputCuts := RecursiveOutputPrefixConcatenates(
       tree, |tree.observations|);
@@ -1007,11 +1139,15 @@ module LsProof {
           Spec.RecursiveOutputFragments(tree), childOutput, outputWitness) &&
         Spec.FragmentsConcatenate(
           Spec.RecursiveErrorFragments(displayPath, tree), childErrors, errorWitness) &&
-        tree.output == displayPath + ":\n" + tree.listingOutput + childOutput &&
+        tree.output == Spec.DirectoryHeaderSpec(displayPath) + tree.listingOutput + childOutput &&
         tree.errors == tree.listingErrors + childErrors;
+    assert Spec.RecursiveDirectoryRelation(
+      cmd, fs, displayPath, accessPath, ancestors, tree) by {
+      reveal Spec.RecursiveDirectoryRelation();
+    }
   }
 
-  lemma OperandObservationSummaryImpliesSpec(
+  lemma {:vcs_split_on_every_assert} OperandObservationSummaryImpliesSpec(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
@@ -1021,9 +1157,12 @@ module LsProof {
     ensures Spec.OperandObservationRelation(cmd, fs, cwd, observation)
   {
     reveal Core.OperandObservationSummary();
-    reveal Spec.OperandObservationRelation();
-    match Spec.OperandStatusResultSpec(cmd, fs, observation.path)
+    match Spec.OperandStatusResultSpec(cmd, fs, observation.path,
+                                       observation.firstStatus)
     case Err(_) =>
+      assert Spec.OperandObservationRelation(cmd, fs, cwd, observation) by {
+        reveal Spec.OperandObservationRelation();
+      }
     case Ok(status) =>
       if status.kind == BenchWorld.DirectoryKind && !cmd.listDirectories {
         if observation.sectionAvailable {
@@ -1031,27 +1170,82 @@ module LsProof {
             var tree: Spec.RecursiveWitness :|
               Core.RecursiveDirectorySummary(
                 cmd, fs, observation.operand, observation.path,
-                {status.hostKey}, tree) &&
+                {}, tree) &&
+              tree.firstStatus == observation.firstStatus +
+                Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                                observation.firstStatus) &&
+              tree.afterStatus == observation.afterStatus &&
               observation.body == tree.output &&
               observation.sectionErrors == tree.errors &&
-              observation.failed == tree.hadError;
+              observation.failed == tree.hadError &&
+              observation.hasCycle == Spec.RecursiveHasCycle(tree);
             RecursiveSummaryImpliesSpec(
               cmd, fs, observation.operand, observation.path,
-              {status.hostKey}, tree);
+              {}, tree);
+            assert exists candidateTree: Spec.RecursiveWitness ::
+              Spec.RecursiveDirectoryRelation(
+                cmd, fs, observation.operand, observation.path,
+                {}, candidateTree) &&
+              candidateTree.firstStatus == observation.firstStatus +
+                Spec.OperandStatusCallCountSpec(cmd, fs, observation.path,
+                                                observation.firstStatus) &&
+              candidateTree.afterStatus == observation.afterStatus &&
+              observation.body == candidateTree.output &&
+              observation.sectionErrors == candidateTree.errors &&
+              observation.failed == candidateTree.hadError &&
+                observation.hasCycle == Spec.RecursiveHasCycle(candidateTree) by {
+              assert Spec.RecursiveDirectoryRelation(
+                cmd, fs, observation.operand, observation.path,
+                {}, tree);
+            }
           } else {
             var entries: seq<Spec.EntryObservation>, readErr: int,
                 listingOutput: BenchWorld.Bytes :|
               Core.DirectoryListingSummary(
-                cmd, fs, observation.path, entries, readErr,
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
                 listingOutput, observation.sectionErrors, observation.failed) &&
               observation.body ==
               (if |cmd.operands| > 1
-               then observation.operand + ":\n"
+               then Spec.DirectoryHeaderSpec(observation.operand)
                else []) + listingOutput;
             DirectorySummaryImpliesSpec(
-              cmd, fs, observation.path, entries, readErr,
+              cmd, observation.operand, fs, observation.path,
+              observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                cmd, fs, observation.path, observation.firstStatus),
+              observation.afterStatus, entries, readErr,
               listingOutput, observation.sectionErrors, observation.failed);
+            assert exists witnessEntries: seq<Spec.EntryObservation>,
+                witnessErr: int, witnessOutput: BenchWorld.Bytes
+                {:trigger Spec.DirectoryListingRelation(
+                  cmd, observation.operand, fs, observation.path,
+                  observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                    cmd, fs, observation.path, observation.firstStatus),
+                  observation.afterStatus, witnessEntries, witnessErr,
+                  witnessOutput, observation.sectionErrors, observation.failed)} ::
+              Spec.DirectoryListingRelation(
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, witnessEntries, witnessErr,
+                witnessOutput, observation.sectionErrors, observation.failed) &&
+              observation.body ==
+                (if |cmd.operands| > 1
+                 then Spec.DirectoryHeaderSpec(observation.operand)
+                 else []) + witnessOutput by {
+              assert Spec.DirectoryListingRelation(
+                cmd, observation.operand, fs, observation.path,
+                observation.firstStatus + Spec.OperandStatusCallCountSpec(
+                  cmd, fs, observation.path, observation.firstStatus),
+                observation.afterStatus, entries, readErr,
+                listingOutput, observation.sectionErrors, observation.failed);
+            }
           }
+        }
+        assert Spec.OperandObservationRelation(cmd, fs, cwd, observation) by {
+          reveal Spec.OperandObservationRelation();
         }
       } else {
         RenderEntryBridge(
@@ -1060,42 +1254,87 @@ module LsProof {
             fs, observation.operand, observation.path,
             Spec.ExplicitCommandLineFollowSpec(cmd), cmd.numericLong, status),
           status);
+        assert Spec.OperandObservationRelation(cmd, fs, cwd, observation) by {
+          reveal Spec.OperandObservationRelation();
+        }
       }
+  }
+
+  lemma RunWitnessImpliesRelation(
+    cmd: Schema.LsCmd, fs: BenchWorld.FileSystem, cwd: BenchWorld.Path,
+    firstStatus: nat, afterStatus: nat,
+    output: BenchWorld.Bytes, errors: BenchWorld.Bytes, exit: int,
+    observations: seq<Spec.OperandObservation>,
+    sorted: seq<Spec.OperandObservation>, groups: seq<Spec.OutputGroup>,
+    statusCuts: seq<nat>
+  )
+    requires |observations| == |cmd.operands|
+    requires |statusCuts| == |observations| + 1
+    requires statusCuts[0] == firstStatus
+    requires statusCuts[|observations|] == afterStatus
+    requires forall i: nat | i < |observations| ::
+      observations[i].firstStatus == statusCuts[i] &&
+      observations[i].afterStatus == statusCuts[i + 1]
+    requires forall i: nat | i < |observations| ::
+      observations[i].index == i &&
+      Spec.OperandObservationRelation(cmd, fs, cwd, observations[i])
+    requires Spec.OperandSortingRelation(cmd, observations, sorted)
+    requires Spec.OutputGroupsRelation(cmd, sorted, groups)
+    requires Spec.SeparatedGroupsRelation(groups, output)
+    requires Spec.OperandErrorsRelation(observations, sorted, errors)
+    requires exit == Spec.OperandExitSpec(observations)
+    ensures Spec.RunRelation(cmd, fs, cwd, firstStatus, afterStatus,
+                             output, errors, exit)
+  {
+    reveal Spec.RunRelation();
   }
 
   lemma {:vcs_split_on_every_assert} RunSummaryImpliesSpec(
     cmd: Schema.LsCmd,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
+    firstStatus: nat,
+    afterStatus: nat,
     output: BenchWorld.Bytes,
     errors: BenchWorld.Bytes,
     exit: int
   )
-    requires Core.RunSummary(cmd, fs, cwd, output, errors, exit)
-    ensures Spec.RunRelation(cmd, fs, cwd, output, errors, exit)
+    requires Core.RunSummary(cmd, fs, cwd, firstStatus, afterStatus,
+                             output, errors, exit)
+    ensures Spec.RunRelation(cmd, fs, cwd, firstStatus, afterStatus,
+                             output, errors, exit)
   {
     var observations: seq<Spec.OperandObservation>,
-        sorted: seq<Spec.OperandObservation>, groups: seq<Spec.OutputGroup> :|
+        sorted: seq<Spec.OperandObservation>, groups: seq<Spec.OutputGroup>,
+        statusCuts: seq<nat> :|
       |observations| == |cmd.operands| &&
+      |statusCuts| == |observations| + 1 &&
+      statusCuts[0] == firstStatus &&
+      statusCuts[|observations|] == afterStatus &&
+      (forall i: nat | i < |observations| ::
+        observations[i].firstStatus == statusCuts[i] &&
+        observations[i].afterStatus == statusCuts[i + 1]) &&
       (forall i: nat | i < |observations| ::
          observations[i].index == i &&
          Core.OperandObservationSummary(cmd, fs, cwd, observations[i])) &&
       sorted == Core.SortOperandsCore(cmd, observations) &&
-      groups == Core.OutputGroupsCore(sorted) &&
+      groups == Core.OutputGroupsCore(cmd, sorted) &&
       output == Core.JoinOutputGroupsCore(groups) &&
       errors == Core.AccessErrorsCore(observations) +
       Core.SectionErrorsCore(sorted) &&
-      exit == (if exists i: nat ::
-                    i < |observations| && observations[i].failed then 2 else 0);
+      exit == Spec.OperandExitSpec(observations);
     forall i: nat | i < |observations|
       ensures Spec.OperandObservationRelation(cmd, fs, cwd, observations[i])
     {
       OperandObservationSummaryImpliesSpec(cmd, fs, cwd, observations[i]);
     }
     SortOperandsCoreSatisfiesRelation(cmd, observations);
-    OutputGroupsCoreSatisfiesRelation(sorted);
+    OutputGroupsCoreSatisfiesRelation(cmd, sorted);
     JoinOutputGroupsCoreSatisfiesRelation(groups);
     OperandErrorsCoreSatisfiesRelation(observations, sorted);
+    RunWitnessImpliesRelation(
+      cmd, fs, cwd, firstStatus, afterStatus, output, errors, exit,
+      observations, sorted, groups, statusCuts);
   }
 
   twostate lemma CoreSummaryImpliesSpec(
@@ -1107,13 +1346,19 @@ module LsProof {
     ensures Spec.Spec(raw, io, exit)
   {
     reveal Core.CoreSummary();
-    var cmd := Spec.EffectiveCommandSpec(raw, old(io.env()), old(io.now()));
+    var cmd := Schema.WithStatusObservations(
+      Spec.EffectiveCommandSpec(raw, old(io.env()), old(io.now())),
+      io.statusObservations(), old(io.statusCursor()));
     if cmd.mode == Schema.ModeRun {
       var output: BenchWorld.Bytes, errors: BenchWorld.Bytes :|
-        Core.RunSummary(cmd, old(io.fs()), old(io.cwd()), output, errors, exit) &&
+        Core.RunSummary(cmd, old(io.fs()), old(io.cwd()),
+                        old(io.statusCursor()), io.statusCursor(),
+                        output, errors, exit) &&
         io.stdout() == old(io.stdout()) + output &&
         io.stderr() == old(io.stderr()) + errors;
-      RunSummaryImpliesSpec(cmd, old(io.fs()), old(io.cwd()), output, errors, exit);
+      RunSummaryImpliesSpec(cmd, old(io.fs()), old(io.cwd()),
+                            old(io.statusCursor()), io.statusCursor(),
+                            output, errors, exit);
     }
   }
 }

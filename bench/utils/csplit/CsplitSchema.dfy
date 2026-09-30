@@ -1,11 +1,13 @@
 include "../../core/Utf8.dfy"
 include "../../core/World.dfy"
 include "../../core/CliTypes.dfy"
+include "../../core/StringEscaping.dfy"
 
 module CsplitSchema {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import CliTypes
+  import SE = StringEscaping
 
   datatype CsplitMode = ModeRun | ModeHelp | ModeVersion
   datatype Input = Stdin | File(path: BenchWorld.Path)
@@ -155,7 +157,8 @@ module CsplitSchema {
 
   function MissingPatternMessage(input: string): string
   {
-    "csplit: missing operand after '" + input + "'\n" + TryHelpText()
+    "csplit: missing operand after " + SE.SpecLocaleQuoteBytes(Utf8.Encode(input)) +
+    "\n" + TryHelpText()
   }
 
   function UnsupportedOptionMessage(rawToken: string): string

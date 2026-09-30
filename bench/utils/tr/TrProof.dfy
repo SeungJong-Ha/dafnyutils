@@ -9,6 +9,7 @@ module TrProof {
   import Schema = TrSchema
   import Core = TrCore
   import Spec = TrSpec
+  import Utf8 = Utf8Semantics
 
   ghost function ShiftIndices(indices: seq<nat>, delta: nat): seq<nat>
     ensures |ShiftIndices(indices, delta)| == |indices|
@@ -58,7 +59,7 @@ module TrProof {
 
   function ToSpecCmd(cmd: Core.TrCmd): Spec.TrCmd
   {
-    Spec.TrCmd(ToSpecMode(cmd.mode), cmd.deleteSet, cmd.squeeze, cmd.set1, cmd.set2, cmd.squeezeSet)
+    Spec.TrCmd(ToSpecMode(cmd.mode), cmd.deleteSet, cmd.squeeze, cmd.set1, cmd.set2, cmd.squeezeSet, cmd.warnings)
   }
 
   function ToSpecDecode(decoded: Core.SetDecode): Spec.SetDecode
@@ -68,14 +69,151 @@ module TrProof {
     case SetUnsupported(operand) => Spec.SetUnsupported(operand)
   }
 
-  lemma IsAsciiEq(ch: char)
-    ensures Core.IsAscii(ch) == Spec.IsAscii(ch)
+  lemma CoreAtomSatisfiesRelation(text: string, lo: nat)
+    requires lo < |text|
+    ensures Spec.SetAtomRelation(
+              text, lo, Core.AtomAt(text, lo).next,
+              Core.AtomAt(text, lo).bytes)
   {
+    reveal Spec.SetAtomRelation();
+    if text[lo] == '\\' && lo + 1 < |text| {
+      if Core.IsOctal(text[lo + 1]) {
+        if lo + 2 < |text| && Core.IsOctal(text[lo + 2]) {
+          if lo + 3 < |text| && Core.IsOctal(text[lo + 3]) {
+          }
+        }
+      }
+    }
   }
 
-  lemma IsSetSyntaxMarkerEq(ch: char)
-    ensures Core.IsSetSyntaxMarker(ch) == Spec.IsSetSyntaxMarker(ch)
+  lemma AtomNextEq(text: string, lo: nat)
+    requires lo < |text|
+    ensures Core.AtomAt(text, lo).next == Spec.AtomNext(text, lo)
   {
+    CoreAtomSatisfiesRelation(text, lo);
+  }
+
+  lemma WarningPartitionFromElement(
+    text: string,
+    start: nat,
+    warnings: BW.Bytes,
+    inputCuts: seq<nat>,
+    outputCuts: seq<nat>,
+    i: nat
+  )
+    requires Spec.WarningPartitionFrom(
+               text, start, warnings, inputCuts, outputCuts)
+    requires i + 1 < |inputCuts|
+    ensures inputCuts[i] < inputCuts[i + 1] <= |text|
+    ensures inputCuts[i + 1] == Spec.AtomNext(text, inputCuts[i])
+    ensures outputCuts[i] <= outputCuts[i + 1] <= |warnings|
+    ensures warnings[outputCuts[i]..outputCuts[i + 1]] ==
+            Spec.WarningAtSpec(text, inputCuts[i])
+  {
+    reveal Spec.WarningPartitionFrom();
+  }
+
+  lemma PrependWarningPartition(
+    text: string,
+    start: nat,
+    next: nat,
+    piece: BW.Bytes,
+    rest: BW.Bytes,
+    tailInputCuts: seq<nat>,
+    tailOutputCuts: seq<nat>
+  )
+    requires start < next <= |text|
+    requires next == Spec.AtomNext(text, start)
+    requires piece == Spec.WarningAtSpec(text, start)
+    requires Spec.WarningPartitionFrom(
+               text, next, rest, tailInputCuts, tailOutputCuts)
+    ensures Spec.WarningPartitionFrom(
+              text, start, piece + rest,
+              [start] + tailInputCuts,
+              [0] + ShiftIndices(tailOutputCuts, |piece|))
+  {
+    reveal Spec.WarningPartitionFrom();
+    var inputCuts := [start] + tailInputCuts;
+    var outputCuts := [0] + ShiftIndices(tailOutputCuts, |piece|);
+    assert tailInputCuts[0] == next;
+    assert tailOutputCuts[0] == 0;
+    ShiftIndicesIndex(tailOutputCuts, |piece|, |tailOutputCuts| - 1);
+    assert forall i
+        {:trigger inputCuts[i], inputCuts[i + 1]}
+        {:trigger (piece + rest)[outputCuts[i]..outputCuts[i + 1]]} ::
+        0 <= i && i + 1 < |inputCuts| ==>
+          inputCuts[i] < inputCuts[i + 1] <= |text| &&
+          inputCuts[i + 1] == Spec.AtomNext(text, inputCuts[i]) &&
+          outputCuts[i] <= outputCuts[i + 1] <= |piece + rest| &&
+          (piece + rest)[outputCuts[i]..outputCuts[i + 1]] ==
+            Spec.WarningAtSpec(text, inputCuts[i]) by {
+      forall i {:trigger inputCuts[i]} |
+        0 <= i && i + 1 < |inputCuts|
+        ensures inputCuts[i] < inputCuts[i + 1] <= |text| &&
+                inputCuts[i + 1] == Spec.AtomNext(text, inputCuts[i]) &&
+                outputCuts[i] <= outputCuts[i + 1] <= |piece + rest| &&
+                (piece + rest)[outputCuts[i]..outputCuts[i + 1]] ==
+                  Spec.WarningAtSpec(text, inputCuts[i])
+      {
+        if i == 0 {
+          ShiftIndicesIndex(tailOutputCuts, |piece|, 0);
+          assert outputCuts[1] == |piece|;
+          assert (piece + rest)[0..|piece|] == piece;
+        } else {
+          var j := i - 1;
+          ShiftIndicesIndex(tailOutputCuts, |piece|, j);
+          ShiftIndicesIndex(tailOutputCuts, |piece|, j + 1);
+          WarningPartitionFromElement(
+            text, next, rest, tailInputCuts, tailOutputCuts, j);
+          AppendShiftedSlice(
+            piece, rest, tailOutputCuts[j], tailOutputCuts[j + 1]);
+        }
+      }
+    }
+  }
+
+  lemma CoreWarningSatisfiesRelation(text: string, start: nat)
+    requires start <= |text|
+    ensures exists inputCuts: seq<nat>, outputCuts: seq<nat> ::
+              Spec.WarningPartitionFrom(
+                text, start, Core.WarningBytesFrom(text, start),
+                inputCuts, outputCuts)
+    decreases |text| - start
+  {
+    if start == |text| {
+      assert Core.WarningBytesFrom(text, start) == [];
+      assert Spec.WarningPartitionFrom(
+        text, start, [], [start], [0]);
+    } else {
+      var next := Core.AtomAt(text, start).next;
+      AtomNextEq(text, start);
+      CoreWarningSatisfiesRelation(text, next);
+      var tailInputCuts: seq<nat>, tailOutputCuts: seq<nat> :|
+        Spec.WarningPartitionFrom(
+          text, next, Core.WarningBytesFrom(text, next),
+          tailInputCuts, tailOutputCuts);
+      PrependWarningPartition(
+        text, start, next, Spec.WarningAtSpec(text, start),
+        Core.WarningBytesFrom(text, next),
+        tailInputCuts, tailOutputCuts);
+      assert Core.WarningBytesFrom(text, start) ==
+        Spec.WarningAtSpec(text, start) + Core.WarningBytesFrom(text, next);
+      assert Spec.WarningPartitionFrom(
+        text, start, Core.WarningBytesFrom(text, start),
+        [start] + tailInputCuts,
+        [0] + ShiftIndices(tailOutputCuts,
+          |Spec.WarningAtSpec(text, start)|));
+    }
+  }
+
+  lemma SetAtomRelationFunctional(
+    text: string, lo: nat, hi: nat, bytes: BW.Bytes)
+    requires Spec.SetAtomRelation(text, lo, hi, bytes)
+    ensures hi == Core.AtomAt(text, lo).next
+    ensures bytes == Core.AtomAt(text, lo).bytes
+  {
+    CoreAtomSatisfiesRelation(text, lo);
+    reveal Spec.SetAtomRelation();
   }
 
   // Core keeps its index recursion, so each bridge carries the suffix
@@ -171,14 +309,12 @@ module TrProof {
   }
 
   lemma RangeCharsSatisfiesExpansion(lo: char, hi: char)
-    requires Core.IsAscii(lo)
-    requires Core.IsAscii(hi)
+    requires 0 <= lo as int < 256
+    requires 0 <= hi as int < 256
     requires lo as int <= hi as int
     ensures Spec.RangeExpansion(lo, hi, Core.RangeChars(lo, hi))
     decreases (hi as int) - (lo as int)
   {
-    IsAsciiEq(lo);
-    IsAsciiEq(hi);
     if lo != hi {
       var next := ((lo as int) + 1) as char;
       RangeCharsSatisfiesExpansion(next, hi);
@@ -201,17 +337,52 @@ module TrProof {
   )
     requires Spec.SetUnitRelation(text, lo, hi, bytes)
     ensures lo < hi <= |text|
-    ensures if lo + 2 < |text| && text[lo + 1] == '-' then
-              bytes == Core.RangeChars(text[lo], text[lo + 2])
+    ensures !Spec.StartsUnsupportedConstruct(text[lo..])
+    ensures Core.AtomAt(text, lo).next < |text| &&
+            text[Core.AtomAt(text, lo).next] == '-' &&
+            Core.AtomAt(text, lo).next + 1 < |text| ==>
+              |Core.AtomAt(text, lo).bytes| == 1 &&
+              |Core.AtomAt(text, Core.AtomAt(text, lo).next + 1).bytes| == 1 &&
+              Core.AtomAt(text, lo).bytes[0] as int <=
+              Core.AtomAt(text, Core.AtomAt(text, lo).next + 1).bytes[0] as int &&
+              Core.AtomAt(text, Core.AtomAt(text, lo).next + 1).bytes[0] as int < 256
+    ensures if Core.AtomAt(text, lo).next < |text| &&
+               text[Core.AtomAt(text, lo).next] == '-' &&
+               Core.AtomAt(text, lo).next + 1 < |text| then
+              hi == Core.AtomAt(text, Core.AtomAt(text, lo).next + 1).next &&
+              bytes == Core.RangeChars(
+                Core.AtomAt(text, lo).bytes[0],
+                Core.AtomAt(text, Core.AtomAt(text, lo).next + 1).bytes[0])
             else
-              bytes == [text[lo]]
+              hi == Core.AtomAt(text, lo).next &&
+              bytes == Core.AtomAt(text, lo).bytes
   {
     reveal Spec.SetUnitRelation();
-    if lo + 2 < |text| && text[lo + 1] == '-' {
-      RangeCharsSatisfiesExpansion(text[lo], text[lo + 2]);
+    var atomEnd: nat, atomBytes: BW.Bytes :|
+      Spec.SetAtomRelation(text, lo, atomEnd, atomBytes) &&
+      (if atomEnd < |text| && text[atomEnd] == '-' &&
+          atomEnd + 1 < |text| then
+         exists endEnd: nat, endBytes: BW.Bytes
+           {:trigger Spec.SetAtomRelation(text, atomEnd + 1, endEnd, endBytes)} ::
+           Spec.SetAtomRelation(text, atomEnd + 1, endEnd, endBytes) &&
+           |atomBytes| == 1 && |endBytes| == 1 &&
+           hi == endEnd &&
+           Spec.RangeExpansion(atomBytes[0], endBytes[0], bytes)
+       else hi == atomEnd && bytes == atomBytes);
+    SetAtomRelationFunctional(text, lo, atomEnd, atomBytes);
+    if atomEnd < |text| && text[atomEnd] == '-' &&
+       atomEnd + 1 < |text| {
+      var endEnd: nat, endBytes: BW.Bytes :|
+        Spec.SetAtomRelation(text, atomEnd + 1, endEnd, endBytes) &&
+        |atomBytes| == 1 && |endBytes| == 1 &&
+        hi == endEnd &&
+        Spec.RangeExpansion(atomBytes[0], endBytes[0], bytes);
+      SetAtomRelationFunctional(text, atomEnd + 1, endEnd, endBytes);
+      reveal Spec.RangeExpansion();
+      RangeCharsSatisfiesExpansion(atomBytes[0], endBytes[0]);
       RangeExpansionFunctional(
-        text[lo], text[lo + 2], bytes,
-        Core.RangeChars(text[lo], text[lo + 2])
+        atomBytes[0], endBytes[0], bytes,
+        Core.RangeChars(atomBytes[0], endBytes[0])
       );
     }
   }
@@ -250,6 +421,7 @@ module TrProof {
     tailOutputCuts: seq<nat>
   )
     requires Spec.SetUnitRelation(text, start, next, piece)
+    requires start < next <= |text|
     requires Spec.SetPartitionFrom(
                text, next, rest, tailInputCuts, tailOutputCuts
              )
@@ -344,13 +516,22 @@ module TrProof {
       var piece := bytes[outputCuts[i]..outputCuts[i + 1]];
       SetUnitMatchesCore(text, lo, hi, piece);
       StartsUnsupportedConstructEq(text, lo);
-      IsSetSyntaxMarkerEq(text[lo]);
       SetPartitionFromMatchesCore(
         text, start, bytes, inputCuts, outputCuts, i + 1
       );
       SplitSlice(bytes, outputCuts[i], outputCuts[i + 1], |bytes|);
       assert bytes[outputCuts[i]..] ==
              piece + bytes[outputCuts[i + 1]..];
+      var atom := Core.AtomAt(text, lo);
+      if atom.next < |text| && text[atom.next] == '-' &&
+         atom.next + 1 < |text| {
+        var end := Core.AtomAt(text, atom.next + 1);
+        assert hi == end.next;
+        assert piece == Core.RangeChars(atom.bytes[0], end.bytes[0]);
+      } else {
+        assert hi == atom.next;
+        assert piece == atom.bytes;
+      }
     }
   }
 
@@ -375,16 +556,40 @@ module TrProof {
         );
     } else {
       StartsUnsupportedConstructEq(text, start);
-      IsSetSyntaxMarkerEq(text[start]);
-      if Core.StartsUnsupportedConstruct(text, start) ||
-         Core.IsSetSyntaxMarker(text[start]) {
-      } else if start + 2 < |text| && text[start + 1] == '-' {
-        IsAsciiEq(text[start]);
-        IsAsciiEq(text[start + 2]);
-        if Core.IsAscii(text[start]) &&
-           Core.IsAscii(text[start + 2]) &&
-           text[start] as int <= text[start + 2] as int {
-          var next := start + 3;
+      if Core.StartsUnsupportedConstruct(text, start) {
+      } else {
+        var atom := Core.AtomAt(text, start);
+        CoreAtomSatisfiesRelation(text, start);
+        if atom.next < |text| && text[atom.next] == '-' &&
+           atom.next + 1 < |text| {
+          var end := Core.AtomAt(text, atom.next + 1);
+          CoreAtomSatisfiesRelation(text, atom.next + 1);
+          if |atom.bytes| == 1 && |end.bytes| == 1 &&
+             atom.bytes[0] as int < 256 && end.bytes[0] as int < 256 &&
+             atom.bytes[0] as int <= end.bytes[0] as int {
+            var next := end.next;
+            var tail := Core.DecodeSetFrom(text, next);
+            match tail
+            case SetOk(rest) =>
+              DecodeSetFromOkSatisfiesPartition(text, next);
+              var tailInputCuts: seq<nat>, tailOutputCuts: seq<nat> :|
+                Spec.SetPartitionFrom(
+                  text, next, rest, tailInputCuts, tailOutputCuts
+                );
+              var piece := Core.RangeChars(atom.bytes[0], end.bytes[0]);
+              RangeCharsSatisfiesExpansion(atom.bytes[0], end.bytes[0]);
+              reveal Spec.SetUnitRelation();
+              assert Spec.SetUnitRelation(
+                  text, start, next, piece
+                );
+              PrependSetUnitPartition(
+                text, start, next, piece, rest,
+                tailInputCuts, tailOutputCuts
+              );
+            case SetUnsupported(_) =>
+          }
+        } else {
+          var next := atom.next;
           var tail := Core.DecodeSetFrom(text, next);
           match tail
           case SetOk(rest) =>
@@ -393,35 +598,15 @@ module TrProof {
               Spec.SetPartitionFrom(
                 text, next, rest, tailInputCuts, tailOutputCuts
               );
-            var piece := Core.RangeChars(text[start], text[start + 2]);
-            RangeCharsSatisfiesExpansion(text[start], text[start + 2]);
-            assert Spec.SetUnitRelation(
-                text, start, next, piece
-              );
+            var piece := atom.bytes;
+            reveal Spec.SetUnitRelation();
+            assert Spec.SetUnitRelation(text, start, next, piece);
             PrependSetUnitPartition(
               text, start, next, piece, rest,
               tailInputCuts, tailOutputCuts
             );
           case SetUnsupported(_) =>
         }
-      } else if !Core.IsAscii(text[start]) {
-      } else {
-        var next := start + 1;
-        var tail := Core.DecodeSetFrom(text, next);
-        match tail
-        case SetOk(rest) =>
-          DecodeSetFromOkSatisfiesPartition(text, next);
-          var tailInputCuts: seq<nat>, tailOutputCuts: seq<nat> :|
-            Spec.SetPartitionFrom(
-              text, next, rest, tailInputCuts, tailOutputCuts
-            );
-          var piece := [text[start]];
-          assert Spec.SetUnitRelation(text, start, next, piece);
-          PrependSetUnitPartition(
-            text, start, next, piece, rest,
-            tailInputCuts, tailOutputCuts
-          );
-        case SetUnsupported(_) =>
       }
     }
   }
@@ -617,11 +802,19 @@ module TrProof {
     if |raw.operands| > 0 {
       CoreDecodesIndex(raw.operands, 0);
       DecodedBytesMatchesCore(raw.operands[0]);
+      CoreWarningSatisfiesRelation(raw.operands[0], 0);
+      assert Spec.WarningBytesRelation(
+        raw.operands[0], Core.WarningBytesFrom(raw.operands[0], 0));
     }
     if |raw.operands| > 1 {
       CoreDecodesIndex(raw.operands, 1);
       DecodedBytesMatchesCore(raw.operands[1]);
+      CoreWarningSatisfiesRelation(raw.operands[1], 0);
+      assert Spec.WarningBytesRelation(
+        raw.operands[1], Core.WarningBytesFrom(raw.operands[1], 0));
     }
+    assert Spec.CommandWarningsRelation(
+      raw, decoded, Core.Command(raw).warnings);
     assert (exists operand ::
               Spec.FirstUnsupportedOperandRelation(
                 raw.operands, decoded, operand

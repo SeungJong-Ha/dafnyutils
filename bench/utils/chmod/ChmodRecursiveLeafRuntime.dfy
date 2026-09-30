@@ -21,12 +21,12 @@ module ChmodRecursiveLeafRuntime {
                          RecursiveAccessStderrCore(cmd, displayPath, err, failureKind)
   {
     if !cmd.silent {
-      io.AppendStderr(
+      var _, _ := io.WriteStderr(
         RecursiveAccessStderrCore(cmd, displayPath, err, failureKind)
-      );
+      , BenchWorld.ThrowOnError);
     }
     if cmd.verbose {
-      io.AppendStdout(Base.AccessFailureMessageCore(displayPath));
+      var _, _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
     }
   }
 
@@ -39,7 +39,7 @@ module ChmodRecursiveLeafRuntime {
   ) returns (ok: bool)
     requires SegmentPaths(io.fs()) == universe
     requires IdentityResolvesCore(io.fs(), identity)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures SegmentPaths(io.fs()) == universe
     ensures io.fs() == old(io.fs()) ||
             BenchWorld.FileSystemTopologyUnchangedExceptMode(old(io.fs()), io.fs())
@@ -58,7 +58,7 @@ module ChmodRecursiveLeafRuntime {
     var isTopLevel := identity.isTopLevel;
     if isSymlink && !ChmodFollowCore(cmd, isTopLevel) {
       if cmd.verbose {
-        io.AppendStdout(NeitherChangedMessageCore(displayPath));
+        var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
       }
       ok := true;
       return;
@@ -95,9 +95,9 @@ module ChmodRecursiveLeafRuntime {
     );
     if !setOk {
       if !cmd.silent {
-        io.AppendStderr(
+        var _, _ := io.WriteStderr(
           Base.ChangeErrorMessageCore(displayPath, Base.ErrnoTextCore(setErr))
-        );
+        , BenchWorld.ThrowOnError);
       }
       ok := false;
       return;
@@ -134,7 +134,7 @@ module ChmodRecursiveLeafRuntime {
                io.fs(),
                io.now()
              )
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures SegmentPaths(io.fs()) == universe
     ensures RuntimeVisitOutcomeCore(
               cmd,
@@ -177,7 +177,7 @@ module ChmodRecursiveLeafRuntime {
     requires identity.isDirectory
     requires BenchWorld.PathSegments(identity.resolvedPath) !in
              activeSegments
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures SegmentPaths(io.fs()) == universe
     ensures BenchWorld.PathSegments(identity.resolvedPath) in
               universe - activeSegments

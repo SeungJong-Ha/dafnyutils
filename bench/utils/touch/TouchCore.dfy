@@ -268,9 +268,11 @@ module TouchCore {
   method GetStdoutErrorMessage(err: int, io: BenchIO.IO) returns (out: BenchWorld.Bytes)
     ensures out == Spec.StdoutErrorMessageSpec(err)
   {
+    reveal Spec.StdoutErrorMessageSpec();
+    var quoted := io.QuoteafPath("-");
     var errnoText := io.GetCLocaleErrnoText(err);
-    out := Utf8.Encode("touch: setting times of standard output: "
-      + errnoText + "\n");
+    out := Utf8.Encode("touch: setting times of ") + quoted
+      + Utf8.Encode(": " + errnoText + "\n");
   }
 
   method GetMissingOperandMessage() returns (out: string)
@@ -539,7 +541,7 @@ module TouchCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeInvalidTime {
       var err := GetInvalidTimeMessage(cmd.timeArg);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -547,7 +549,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeAmbiguousTime {
       var err := GetAmbiguousTimeMessage(cmd.timeArg);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -555,7 +557,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -563,7 +565,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -574,13 +576,13 @@ module TouchCore {
       var timeWord := Schema.ClassifyTimeWord(cmd.timeArg);
       if timeWord == Schema.TimeWordAmbiguous {
         var err := GetAmbiguousTimeMessage(cmd.timeArg);
-        io.AppendStderr(err);
+        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       } else if timeWord == Schema.TimeWordInvalid {
         var err := GetInvalidTimeMessage(cmd.timeArg);
-        io.AppendStderr(err);
+        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
@@ -598,13 +600,13 @@ module TouchCore {
       var timestampOk, timestampSec, timestampNsec := io.ParseTimestamp(cmd.timestampArg, nowSec, 0);
       if !timestampOk {
         var err := GetInvalidDateMessage(cmd.timestampArg);
-        io.AppendStderr(err);
+        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       }
       if Spec.SourceConflict(cmd) {
-        io.AppendStderr(Spec.SourceConflictMessageSpec());
+        var _, _ := io.WriteStderr(Spec.SourceConflictMessageSpec(), BenchWorld.ThrowOnError);
         exit := 1;
         return;
       }
@@ -615,7 +617,7 @@ module TouchCore {
     } else if cmd.hasDate {
       var dateOk, dateSource, dateError := ResolveDateSource(cmd, selection, io);
       if !dateOk {
-        io.AppendStderr(dateError);
+        var _, _ := io.WriteStderr(dateError, BenchWorld.ThrowOnError);
         exit := 1;
         return;
       }
@@ -626,7 +628,7 @@ module TouchCore {
         io.GetFileTimes(cmd.referenceArg, cmd.followSymlink);
       if !refOk {
         var err := GetReferenceErrorMessage(cmd.referenceArg, refErr, io);
-        io.AppendStderr(err);
+        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert IOContract.TrustedFilesystemQueryContractFields(
             preFilesystemObservations, preFs,
@@ -660,7 +662,7 @@ module TouchCore {
 
     if |cmd.files| == 0 {
       var err := GetMissingOperandMessage();
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert ResolvedRunSummaryFields(cmd, io, exit) by {
         assert Spec.RequestedSelection(cmd, selection);
@@ -673,7 +675,7 @@ module TouchCore {
     }
 
     var hadError, errOut := RunFiles(cmd.files, cmd.noCreate, cmd.followSymlink, selection, source, io);
-    io.AppendStderr(errOut);
+    var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert io.stderr() == preStderr + errOut;
     assert RunFilesSummaryFields(

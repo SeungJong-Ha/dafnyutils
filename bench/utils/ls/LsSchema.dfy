@@ -51,7 +51,8 @@ module LsSchema {
     timeField: TimeField,
     followMode: FollowMode,
     recursive: bool,
-    operands: seq<string>
+    operands: seq<string>,
+    ghost statusContext: BenchWorld.StatusObservationContext
   )
 
   function DecimalDigitValue(ch: char): nat
@@ -128,7 +129,8 @@ module LsSchema {
       raw.timeField,
       raw.followMode,
       raw.recursive,
-      EffectiveOperands(raw)
+      EffectiveOperands(raw),
+      BenchWorld.UnboundStatusObservations
     )
   }
 
@@ -153,7 +155,8 @@ module LsSchema {
       cmd.timeField,
       cmd.followMode,
       cmd.recursive,
-      cmd.operands
+      cmd.operands,
+      cmd.statusContext
     )
   }
 
@@ -164,7 +167,16 @@ module LsSchema {
       cmd.showBlocks, cmd.cliBlockSize, cmd.fileSizeBlockSize,
       cmd.timeStyle, referenceNow,
       cmd.sortMode, cmd.reverse, cmd.timeField, cmd.followMode,
-      cmd.recursive, cmd.operands)
+      cmd.recursive, cmd.operands, cmd.statusContext)
+  }
+
+  function WithStatusObservations(
+    cmd: LsCmd,
+    ghost observations: BenchWorld.StatusTimeObservations,
+    ghost firstStatus: nat
+  ): LsCmd
+  {
+    cmd.(statusContext := BenchWorld.BoundStatusObservations(observations, firstStatus))
   }
 
   method Schema() returns (s: CliTypes.CliSchema)

@@ -42,6 +42,13 @@ module FoldSchema {
     | FoldRun(raw: FoldCmdRaw)
     | FoldParseError(error: CliTypes.ParseError)
 
+  function NumericWidthText(ch: char, value: CliTypes.OptionalString): string
+  {
+    match value
+    case None => [ch]
+    case Some(suffix) => [ch] + suffix
+  }
+
   method Schema() returns (s: CliTypes.CliSchema)
   {
     s := CliTypes.CliSchema(
@@ -49,6 +56,7 @@ module FoldSchema {
         CliTypes.OptionDecl("fold.bytes", ['b'], ["bytes"], CliTypes.NoArg),
         CliTypes.OptionDecl("fold.spaces", ['s'], ["spaces"], CliTypes.NoArg),
         CliTypes.OptionDecl("fold.width", ['w'], ["width"], CliTypes.ReqArg),
+        CliTypes.OptionDecl("fold.legacy_width", ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'], [], CliTypes.OptArg),
         CliTypes.OptionDecl("fold.help", [], ["help"], CliTypes.NoArg),
         CliTypes.OptionDecl("fold.version", [], ["version"], CliTypes.NoArg)
       ],
@@ -98,6 +106,8 @@ module FoldSchema {
         widthArgs := widthArgs + [WidthArg(token[8..], i)];
       } else if |token| > 2 && token[0] == '-' && token[1] == 'w' {
         widthArgs := widthArgs + [WidthArg(token[2..], i)];
+      } else if |token| > 1 && token[0] == '-' && '0' <= token[1] <= '9' {
+        widthArgs := widthArgs + [WidthArg(token[1..], i)];
       }
 
       if consumedNext {
@@ -196,6 +206,12 @@ module FoldSchema {
         case Some(value) =>
           widthArgs := widthArgs + [WidthArg(value, occ.tokenIndex)];
         case None =>
+      }
+      if occ.key == "fold.legacy_width" {
+        match occ.src
+        case Short(ch) =>
+          widthArgs := widthArgs + [WidthArg(NumericWidthText(ch, occ.value), occ.tokenIndex)];
+        case Long(_) =>
       }
       if occ.key == "fold.bytes" {
         byteMode := true;

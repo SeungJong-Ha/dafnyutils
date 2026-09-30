@@ -24,7 +24,8 @@ module StatSchema {
     mode: StatMode,
     followSymlink: bool,
     format: string,
-    files: seq<string>
+    files: seq<string>,
+    ghost statusContext: BenchWorld.StatusObservationContext
   )
 
   function RequestedMode(raw: StatCmdRaw): StatMode
@@ -43,7 +44,17 @@ module StatSchema {
 
   function Command(raw: StatCmdRaw): StatCmd
   {
-    StatCmd(RequestedMode(raw), raw.followSymlink, raw.format, raw.operands)
+    StatCmd(RequestedMode(raw), raw.followSymlink, raw.format, raw.operands,
+            BenchWorld.UnboundStatusObservations)
+  }
+
+  function WithStatusObservations(
+    cmd: StatCmd,
+    ghost observations: BenchWorld.StatusTimeObservations,
+    ghost firstStatus: nat
+  ): StatCmd
+  {
+    cmd.(statusContext := BenchWorld.BoundStatusObservations(observations, firstStatus))
   }
 
   method Schema() returns (s: CliTypes.CliSchema)

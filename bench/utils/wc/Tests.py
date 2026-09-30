@@ -226,3 +226,24 @@ def test_deferred_wc_regressions_placeholder() -> None:
 def test_wc_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Missing filenames use GNU's conditional shell quoting in diagnostics.
+@pytest.mark.parametrize("path", ["a'b", "a\tb", "é", "a\\b"])
+def test_missing_path_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_wc([path], cwd)
+        bench = run_bench_wc([path], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Successful counts escape newline filenames and encode Unicode filename bytes.
+@pytest.mark.parametrize("name", ["a\nb", "é"])
+def test_count_filename_escaping_matches_coreutils(name: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / name).write_bytes(b"x\n")
+        ref = run_system_wc([name], cwd)
+        bench = run_bench_wc([name], cwd)
+        assert_result_matches_reference(ref, bench)

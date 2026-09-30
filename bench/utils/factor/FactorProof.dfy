@@ -309,6 +309,12 @@ module FactorProof {
               ensures prefixes[j] == prefixes[j - 1] * 10 +
                 (prefixText[j - 1] as int - '0' as int)
             {
+              reveal Spec.DecimalTrace();
+              assert 0 <= j - 1 < |prefixText|;
+              assert Spec.DecimalTrace(prefixText, 0, quotient, prefixes);
+              assert prefixes[(j - 1) + 1] ==
+                     prefixes[j - 1] * 10 +
+                     (prefixText[j - 1] as int - '0' as int);
             }
             assert prefixes[1] ==
                    prefixes[0] * 10 +
@@ -1143,16 +1149,16 @@ module FactorProof {
     }
   }
 
-  lemma ProcessTokenSatisfiesRelation(token: string, exponents: bool)
-    ensures Core.ProcessToken(token, exponents).TokenOk? ==>
+  lemma ProcessTokenSatisfiesRelation(token: string, exponents: bool, fromArgv: bool)
+    ensures Core.ProcessToken(token, exponents, fromArgv).TokenOk? ==>
               Spec.TokenRelation(
-                token, exponents,
-                Core.ProcessToken(token, exponents).out, [], false
+                token, exponents, fromArgv,
+                Core.ProcessToken(token, exponents, fromArgv).out, [], false
               )
-    ensures Core.ProcessToken(token, exponents).TokenErr? ==>
+    ensures Core.ProcessToken(token, exponents, fromArgv).TokenErr? ==>
               Spec.TokenRelation(
-                token, exponents,
-                [], Core.ProcessToken(token, exponents).err, true
+                token, exponents, fromArgv,
+                [], Core.ProcessToken(token, exponents, fromArgv).err, true
               )
   {
     TrimWhitespaceSatisfiesRelation(token);
@@ -1176,25 +1182,49 @@ module FactorProof {
     }
   }
 
-  lemma RunTokensSatisfiesRelation(
-    tokens: seq<string>, exponents: bool
+  lemma {:isolate_assertions} RunTokensHeadDecomposition(
+    tokens: seq<string>, exponents: bool, fromArgv: bool
+  )
+    requires |tokens| > 0
+    ensures Core.RunTokens(tokens, exponents, fromArgv) ==
+      match Core.ProcessToken(tokens[0], exponents, fromArgv)
+      case TokenOk(out) =>
+        Core.RunResult(
+          out + Core.RunTokens(tokens[1..], exponents, fromArgv).stdout,
+          Core.RunTokens(tokens[1..], exponents, fromArgv).stderr,
+          Core.RunTokens(tokens[1..], exponents, fromArgv).hadError
+        )
+      case TokenErr(err) =>
+        Core.RunResult(
+          Core.RunTokens(tokens[1..], exponents, fromArgv).stdout,
+          err + Core.RunTokens(tokens[1..], exponents, fromArgv).stderr,
+          true
+        )
+  {
+    reveal Core.RunTokens();
+  }
+
+  lemma {:isolate_assertions} RunTokensSatisfiesRelation(
+    tokens: seq<string>, exponents: bool, fromArgv: bool
   )
     ensures Spec.RunRelation(
               tokens,
               exponents,
-              Core.RunTokens(tokens, exponents).stdout,
-              Core.RunTokens(tokens, exponents).stderr,
-              Core.RunTokens(tokens, exponents).hadError
+              fromArgv,
+              Core.RunTokens(tokens, exponents, fromArgv).stdout,
+              Core.RunTokens(tokens, exponents, fromArgv).stderr,
+              Core.RunTokens(tokens, exponents, fromArgv).hadError
             )
     decreases |tokens|
   {
     if |tokens| == 0 {
       reveal Spec.RunRelation();
     } else {
-      ProcessTokenSatisfiesRelation(tokens[0], exponents);
-      RunTokensSatisfiesRelation(tokens[1..], exponents);
-      var head := Core.ProcessToken(tokens[0], exponents);
-      var tail := Core.RunTokens(tokens[1..], exponents);
+      RunTokensHeadDecomposition(tokens, exponents, fromArgv);
+      ProcessTokenSatisfiesRelation(tokens[0], exponents, fromArgv);
+      RunTokensSatisfiesRelation(tokens[1..], exponents, fromArgv);
+      var head := Core.ProcessToken(tokens[0], exponents, fromArgv);
+      var tail := Core.RunTokens(tokens[1..], exponents, fromArgv);
       var headOutput: BW.Bytes;
       var headError: BW.Bytes;
       var headHadError: bool;
@@ -1207,7 +1237,28 @@ module FactorProof {
         headError := head.err;
         headHadError := true;
       }
-      reveal Spec.RunRelation();
+      assert Spec.TokenRelation(
+        tokens[0], exponents, fromArgv,
+        headOutput, headError, headHadError
+      );
+      assert Spec.RunRelation(
+        tokens[1..], exponents, fromArgv,
+        tail.stdout, tail.stderr, tail.hadError
+      );
+      assert Core.RunTokens(tokens, exponents, fromArgv).stdout ==
+             headOutput + tail.stdout;
+      assert Core.RunTokens(tokens, exponents, fromArgv).stderr ==
+             headError + tail.stderr;
+      assert Core.RunTokens(tokens, exponents, fromArgv).hadError ==
+             (headHadError || tail.hadError);
+      assert Spec.RunRelation(
+        tokens, exponents, fromArgv,
+        Core.RunTokens(tokens, exponents, fromArgv).stdout,
+        Core.RunTokens(tokens, exponents, fromArgv).stderr,
+        Core.RunTokens(tokens, exponents, fromArgv).hadError
+      ) by {
+        reveal Spec.RunRelation();
+      }
     }
   }
 
@@ -1506,23 +1557,26 @@ module FactorProof {
     } else if Core.VersionSelected(raw) {
     } else {
       var tokens := if |raw.operands| > 0 then raw.operands else Core.SplitWords(old(io.stdin()));
+      var fromArgv := |raw.operands| > 0;
       if |raw.operands| == 0 {
         SplitWordsSatisfiesRelation(old(io.stdin()));
       }
-      RunTokensSatisfiesRelation(tokens, raw.seenExponents);
-      var run := Core.RunTokens(tokens, raw.seenExponents);
+      RunTokensSatisfiesRelation(tokens, raw.seenExponents, fromArgv);
+      var run := Core.RunTokens(tokens, raw.seenExponents, fromArgv);
       assert Spec.RunRelation(
           tokens,
           raw.seenExponents,
+          fromArgv,
           run.stdout,
           run.stderr,
           run.hadError
         );
       assert exists output: BW.Bytes,
           errorOutput: BW.Bytes,
-          hadError: bool ::
+          hadError: bool
+          {:trigger Spec.RunRelation(tokens, raw.seenExponents, fromArgv, output, errorOutput, hadError)} ::
           Spec.RunRelation(
-            tokens, raw.seenExponents,
+            tokens, raw.seenExponents, fromArgv,
             output, errorOutput, hadError
           ) &&
           io.stdout() == old(io.stdout()) + output &&

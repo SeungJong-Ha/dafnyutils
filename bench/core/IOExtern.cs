@@ -206,17 +206,16 @@ public static partial class IOExtern {
   private sealed class DirEntry {
     public IntPtr DirPtr { get; }
     public string Path { get; }
+    public bool IncludeDots { get; }
 
-    public DirEntry(IntPtr dirPtr, string path) {
+    public DirEntry(IntPtr dirPtr, string path, bool includeDots) {
       DirPtr = dirPtr;
       Path = path;
+      IncludeDots = includeDots;
     }
   }
 
   private static readonly Dictionary<int, DirEntry> Dirs = new Dictionary<int, DirEntry>();
-  private static readonly Stream StdInStream = Console.OpenStandardInput();
-  private static readonly Stream StdOutStream = Console.OpenStandardOutput();
-  private static readonly Stream StdErrStream = Console.OpenStandardError();
   private static int nextDirHandle = 1;
   private static readonly object dirLock = new object();
   private const int MaxLinkPath = 4096;
@@ -303,6 +302,9 @@ public static partial class IOExtern {
   private static extern int fstat(int fd, out Stat buf);
 
   [DllImport("libc", SetLastError = true)]
+  private static extern int statx(int dirfd, string pathname, int flags, uint mask, out Statx buf);
+
+  [DllImport("libc", SetLastError = true)]
   private static extern int ioctl(int fd, ulong request, ref LinuxKernelTermios attributes);
 
   [DllImport("libc", SetLastError = true)]
@@ -322,6 +324,9 @@ public static partial class IOExtern {
 
   [DllImport("libc", SetLastError = true)]
   private static extern IntPtr opendir(string path);
+
+  [DllImport("libc", SetLastError = true)]
+  private static extern int dirfd(IntPtr dirp);
 
   [DllImport("libc", SetLastError = true)]
   private static extern IntPtr readdir(IntPtr dirp);
@@ -351,6 +356,15 @@ public static partial class IOExtern {
   private const int O_NOCTTY = 0x100;
   private const int AT_FDCWD = -100;
   private const int AT_SYMLINK_NOFOLLOW = 0x100;
+  private const int AT_NO_AUTOMOUNT = 0x800;
+  private const int AT_EMPTY_PATH = 0x1000;
+  private const uint STATX_INO = 0x100;
+  // STATX_BASIC_STATS: the set of fields FileStatusFromStatx reads and
+  // GetOpenDirectoryStatusContractFields (IOContract.dfy) promises the caller
+  // (kind/mode, nlink, uid/gid, atime/mtime/ctime, ino, size, blocks). No
+  // smaller mask suffices: every one of these bits backs a FileStatus field
+  // FileStatusFromStatx fills in unconditionally.
+  private const uint STATX_BASIC_STATS = 0x7ff;
   private const int S_IFMT = 0xF000;
   private const int S_IFIFO = 0x1000;
   private const int S_IFCHR = 0x2000;
@@ -391,8 +405,13 @@ public static partial class IOExtern {
 
   // Directory entry types
   private const byte DT_UNKNOWN = 0;
+  private const byte DT_FIFO = 1;
+  private const byte DT_CHR = 2;
   private const byte DT_DIR = 4;
+  private const byte DT_BLK = 6;
+  private const byte DT_REG = 8;
   private const byte DT_LNK = 10;
+  private const byte DT_SOCK = 12;
 
   private const long UTIME_NOW = (1L << 30) - 1;
   private const long UTIME_OMIT = (1L << 30) - 2;
@@ -424,6 +443,47 @@ public static partial class IOExtern {
     public long __glibc_reserved0;
     public long __glibc_reserved1;
     public long __glibc_reserved2;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct StatxTimestamp {
+    public long tv_sec;
+    public uint tv_nsec;
+    public int __reserved;
+  }
+
+  // Mirrors the Linux kernel's fixed 256-byte struct statx (linux/stat.h). GNU
+  // coreutils' fstat_for_ino issues the raw statx(2) syscall requesting only
+  // STATX_INO on an open directory fd (see ls.c's fstat_for_ino), and the
+  // kernel still returns the basic fields for local filesystems, so this
+  // layout is read the same way FileStatusFromStat reads Stat.
+  [StructLayout(LayoutKind.Sequential)]
+  private struct Statx {
+    public uint stx_mask;
+    public uint stx_blksize;
+    public ulong stx_attributes;
+    public uint stx_nlink;
+    public uint stx_uid;
+    public uint stx_gid;
+    public ushort stx_mode;
+    public ushort __spare0;
+    public ulong stx_ino;
+    public ulong stx_size;
+    public ulong stx_blocks;
+    public ulong stx_attributes_mask;
+    public StatxTimestamp stx_atime;
+    public StatxTimestamp stx_btime;
+    public StatxTimestamp stx_ctime;
+    public StatxTimestamp stx_mtime;
+    public uint stx_rdev_major;
+    public uint stx_rdev_minor;
+    public uint stx_dev_major;
+    public uint stx_dev_minor;
+    public ulong stx_mnt_id;
+    public uint stx_dio_mem_align;
+    public uint stx_dio_offset_align;
+    [MarshalAs(UnmanagedType.ByValArray, SizeConst = 12)]
+    public ulong[] __spare3;
   }
 
   [StructLayout(LayoutKind.Sequential)]
@@ -895,27 +955,15 @@ public static partial class IOExtern {
     return (statResult.st_mode & S_IFMT) == S_IFDIR;
   }
 
-  public static void ReadFileContents(ISequence<Dafny.Rune> path, out bool ok, out ISequence<Dafny.Rune> content) {
-    ok = false;
-    content = Sequence<Dafny.Rune>.Empty;
-    try {
-      var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
-      var bytes = File.ReadAllBytes(pathStr);
-      var text = Encoding.Latin1.GetString(bytes);
-      content = Sequence<Dafny.Rune>.UnicodeFromString(text);
-      ok = true;
-    } catch {
-      ok = false;
-      content = Sequence<Dafny.Rune>.Empty;
-    }
-  }
-
-  public static void ReadFileWithOutcome(
+  public static void ReadFile(
       ISequence<Dafny.Rune> path,
+      BenchWorld._IFileReadMode mode,
       out ISequence<Dafny.Rune> content,
-      out BigInteger err) {
+      out BigInteger err,
+      out BenchWorld._IFileReadStage stage) {
     content = Sequence<Dafny.Rune>.Empty;
     err = BigInteger.Zero;
+    stage = BenchWorld.FileReadStage.create_OpenFailed();
     var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
     if (string.IsNullOrEmpty(pathStr) || !IsAbiPath(pathStr)) {
       err = new BigInteger(string.IsNullOrEmpty(pathStr) ? ENOENT : EINVAL);
@@ -927,28 +975,41 @@ public static partial class IOExtern {
       err = new BigInteger(openErr == 0 ? EIO : openErr);
       return;
     }
+    if (mode.is_AfterSeekEnd) {
+      _ = lseek(fd, 0, SEEK_END);
+    }
+    stage = BenchWorld.FileReadStage.create_ReadFailed();
     ReadAllFromFdWithOutcome(fd, out var bytes, out var readErr);
     var closeResult = close(fd);
     var closeErr = closeResult < 0 ? Marshal.GetLastPInvokeError() : 0;
     content = Sequence<Dafny.Rune>.UnicodeFromString(Encoding.Latin1.GetString(bytes));
     var finalErr = readErr != 0 ? readErr : closeErr;
     err = new BigInteger(finalErr == 0 ? 0 : finalErr);
+    if (readErr == 0 && closeErr != 0) {
+      stage = BenchWorld.FileReadStage.create_CloseFailed();
+    } else if (finalErr == 0) {
+      stage = BenchWorld.FileReadStage.create_ReadSucceeded();
+    }
   }
 
-  public static ISequence<Dafny.Rune> ReadStdin() {
-    using var buffer = new MemoryStream();
-    StdInStream.CopyTo(buffer);
-    var text = Encoding.Latin1.GetString(buffer.ToArray());
-    return Sequence<Dafny.Rune>.UnicodeFromString(text);
+  private static void ThrowOnStreamError(
+      BenchWorld._IStreamErrorPolicy policy,
+      BigInteger err,
+      string operation) {
+    if (policy.is_ThrowOnError && err != BigInteger.Zero) {
+      throw new IOException($"{operation} failed (errno {err})");
+    }
   }
 
-  public static void ReadStdinWithOutcome(
+  public static void ReadStdin(
+      BenchWorld._IStreamErrorPolicy policy,
       out ISequence<Dafny.Rune> content,
       out BigInteger err) {
     content = Sequence<Dafny.Rune>.Empty;
     err = BigInteger.Zero;
     if (!FindCapability(BigInteger.Zero, out var capability)) {
       err = new BigInteger(EBADF);
+      ThrowOnStreamError(policy, err, "stdin read");
       return;
     }
     byte[] bytes;
@@ -956,12 +1017,14 @@ public static partial class IOExtern {
     lock (capability.Gate) {
       if (capability.Closed) {
         err = new BigInteger(EBADF);
+        ThrowOnStreamError(policy, err, "stdin read");
         return;
       }
       ReadAllFromFdWithOutcome(capability.NativeFd, out bytes, out readErr);
     }
     content = Sequence<Dafny.Rune>.UnicodeFromString(Encoding.Latin1.GetString(bytes));
     err = new BigInteger(readErr);
+    ThrowOnStreamError(policy, err, "stdin read");
   }
 
   private static void WriteStandardWithOutcome(
@@ -990,31 +1053,22 @@ public static partial class IOExtern {
     err = new BigInteger(writeErr);
   }
 
-  public static void WriteStdoutWithOutcome(
+  public static void WriteStdout(
       ISequence<Dafny.Rune> content,
+      BenchWorld._IStreamErrorPolicy policy,
       out BigInteger committed,
       out BigInteger err) {
     WriteStandardWithOutcome(BigInteger.One, content, out committed, out err);
+    ThrowOnStreamError(policy, err, "stdout write");
   }
 
-  public static void WriteStderrWithOutcome(
+  public static void WriteStderr(
       ISequence<Dafny.Rune> content,
+      BenchWorld._IStreamErrorPolicy policy,
       out BigInteger committed,
       out BigInteger err) {
     WriteStandardWithOutcome(new BigInteger(2), content, out committed, out err);
-  }
-
-  public static void WriteStdout(ISequence<Dafny.Rune> content) {
-    var text = content?.ToVerbatimString(false) ?? string.Empty;
-    var bytes = Encoding.Latin1.GetBytes(text);
-    StdOutStream.Write(bytes, 0, bytes.Length);
-    StdOutStream.Flush();
-  }
-
-  public static void WriteStderr(ISequence<Dafny.Rune> content) {
-    var text = content?.ToVerbatimString(false) ?? string.Empty;
-    var bytes = Encoding.Latin1.GetBytes(text);
-    StdErrStream.Write(bytes, 0, bytes.Length);
+    ThrowOnStreamError(policy, err, "stderr write");
   }
 
   public static void GetEnv(ISequence<Dafny.Rune> name, out bool ok, out ISequence<Dafny.Rune> value) {
@@ -1502,6 +1556,16 @@ public static partial class IOExtern {
   }
 
   public static void WriteFile(ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
+    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY, out ok, out err);
+  }
+
+  public static void AppendFile(ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
+    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY, out ok, out err);
+  }
+
+  private static void WriteFileWithFlags(
+      ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, int flags,
+      out bool ok, out BigInteger err) {
     ok = false;
     err = new BigInteger(0);
     var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
@@ -1513,7 +1577,7 @@ public static partial class IOExtern {
     var bytes = Encoding.Latin1.GetBytes(text);
     int fd;
     try {
-      fd = open(pathStr, O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY, DefaultCreateMode);
+      fd = open(pathStr, flags, DefaultCreateMode);
     } catch {
       fd = -1;
     }
@@ -1545,10 +1609,6 @@ public static partial class IOExtern {
     err = new BigInteger(0);
     var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
     var targetStr = target?.ToVerbatimString(false) ?? string.Empty;
-    if (string.IsNullOrEmpty(pathStr)) {
-      err = new BigInteger(EINVAL);
-      return;
-    }
     int rc;
     try {
       rc = symlink(targetStr, pathStr);
@@ -1634,6 +1694,66 @@ public static partial class IOExtern {
         new BigInteger(statResult.st_ino)
       ),
       new BigInteger(statResult.st_nlink)
+    );
+  }
+
+  // Converts a raw statx(2) result into the same modeled status FileStatusFromStat
+  // builds from struct stat. Local filesystems return the basic fields (mode,
+  // size, times, ownership) even when only STATX_INO was requested, matching
+  // the pinned GNU fstat_for_ino call this mirrors.
+  private static BenchWorld._IFileStatus FileStatusFromStatx(Statx statxResult) {
+    BenchWorld._IFileKind kind;
+    var kindBits = (uint)statxResult.stx_mode & S_IFMT;
+    if (kindBits == S_IFDIR) {
+      kind = BenchWorld.FileKind.create_DirectoryKind();
+    } else if (kindBits == S_IFLNK) {
+      kind = BenchWorld.FileKind.create_SymlinkKind();
+    } else if (kindBits == S_IFBLK) {
+      kind = BenchWorld.FileKind.create_BlockDeviceKind();
+    } else if (kindBits == S_IFCHR) {
+      kind = BenchWorld.FileKind.create_CharacterDeviceKind();
+    } else if (kindBits == S_IFIFO) {
+      kind = BenchWorld.FileKind.create_FifoKind();
+    } else if (kindBits == S_IFSOCK) {
+      kind = BenchWorld.FileKind.create_SocketKind();
+    } else {
+      kind = BenchWorld.FileKind.create_RegularKind();
+    }
+    var size = new BigInteger(statxResult.stx_size);
+    var blocks = new BigInteger(statxResult.stx_blocks);
+    var ioBlockBytes = new BigInteger(
+      statxResult.stx_blksize > 0 ? statxResult.stx_blksize : 4096u
+    );
+    // Re-encode the split major/minor statx fields into the same glibc dev_t
+    // bit layout struct stat's raw st_dev already uses (sysmacros.h makedev),
+    // so a HostInodeKey built here compares equal to one built by
+    // FileStatusFromStat for the same device.
+    var devMajor = (ulong)statxResult.stx_dev_major;
+    var devMinor = (ulong)statxResult.stx_dev_minor;
+    var dev = new BigInteger(
+      (devMinor & 0xFFUL) |
+      ((devMajor & 0xFFFUL) << 8) |
+      ((devMinor & ~0xFFUL) << 12) |
+      ((devMajor & ~0xFFFUL) << 32)
+    );
+    return BenchWorld.FileStatus.create_FileStatus(
+      kind,
+      statxResult.stx_mode & PermissionModeMask,
+      BenchWorld.Ownership.create_Ownership(
+        new BigInteger(statxResult.stx_uid),
+        new BigInteger(statxResult.stx_gid)
+      ),
+      BenchWorld.StorageInfo.create_StorageInfo(size, blocks, ioBlockBytes),
+      BenchWorld.FileTimes.create_FileTimes(
+        new BigInteger(statxResult.stx_atime.tv_sec),
+        new BigInteger(statxResult.stx_atime.tv_nsec),
+        new BigInteger(statxResult.stx_mtime.tv_sec),
+        new BigInteger(statxResult.stx_mtime.tv_nsec),
+        new BigInteger(statxResult.stx_ctime.tv_sec),
+        new BigInteger(statxResult.stx_ctime.tv_nsec)
+      ),
+      BenchWorld.HostInodeKey.create_HostInodeKey(dev, new BigInteger(statxResult.stx_ino)),
+      new BigInteger(statxResult.stx_nlink)
     );
   }
 
@@ -1972,6 +2092,7 @@ public static partial class IOExtern {
 
   public static void OpenDir(
     ISequence<Dafny.Rune> path,
+    bool includeDots,
     out bool ok,
     out BigInteger handle,
     out BigInteger err
@@ -2000,10 +2121,82 @@ public static partial class IOExtern {
 
     lock (dirLock) {
       var id = nextDirHandle++;
-      Dirs[id] = new DirEntry(dirPtr, pathStr);
+      Dirs[id] = new DirEntry(dirPtr, pathStr, includeDots);
       handle = new BigInteger(id);
       ok = true;
     }
+  }
+
+  public static void GetOpenDirectoryStatus(
+    BigInteger handle,
+    out bool ok,
+    out BenchWorld._IFileStatus status,
+    out BigInteger err
+  ) {
+    ok = false;
+    status = BenchWorld.FileStatus.Default();
+    err = BigInteger.Zero;
+    int id;
+    try {
+      id = (int)handle;
+    } catch (OverflowException) {
+      err = new BigInteger(EINVAL);
+      return;
+    }
+    DirEntry entry;
+    lock (dirLock) {
+      if (!Dirs.TryGetValue(id, out entry) || entry == null || entry.DirPtr == IntPtr.Zero) {
+        err = new BigInteger(EINVAL);
+        return;
+      }
+    }
+    int fd;
+    try {
+      fd = dirfd(entry.DirPtr);
+    } catch (DllNotFoundException) {
+      err = new BigInteger(EIO);
+      return;
+    } catch (EntryPointNotFoundException) {
+      err = new BigInteger(EIO);
+      return;
+    }
+    if (fd < 0) {
+      var fdErr = Marshal.GetLastWin32Error();
+      err = new BigInteger(fdErr == 0 ? EIO : fdErr);
+      return;
+    }
+    int rc;
+    Statx nativeStatus;
+    try {
+      // Mirrors GNU ls's fstat_for_ino (ls.c), which issues statx(fd, "",
+      // AT_EMPTY_PATH, STATX_INO) rather than fstat(fd) on an already-open
+      // directory fd. glibc's opendir() already performed its own internal
+      // fstat before this call runs; using the same statx form GNU uses here
+      // keeps this the single additional identity status per opened
+      // directory instead of a second, differently-shaped fstat.
+      rc = statx(fd, "", AT_EMPTY_PATH | AT_NO_AUTOMOUNT, STATX_INO, out nativeStatus);
+    } catch (DllNotFoundException) {
+      err = new BigInteger(EIO);
+      return;
+    } catch (EntryPointNotFoundException) {
+      err = new BigInteger(EIO);
+      return;
+    }
+    if (rc < 0) {
+      var statErr = Marshal.GetLastWin32Error();
+      err = new BigInteger(statErr == 0 ? EIO : statErr);
+      return;
+    }
+    // The kernel may report a subset of the requested mask (STATX_INO here);
+    // FileStatusFromStatx unconditionally reads every STATX_BASIC_STATS
+    // field, so fail closed instead of claiming fields the kernel did not
+    // actually report.
+    if ((nativeStatus.stx_mask & STATX_BASIC_STATS) != STATX_BASIC_STATS) {
+      err = new BigInteger(EIO);
+      return;
+    }
+    status = FileStatusFromStatx(nativeStatus);
+    ok = true;
   }
 
   public static void ResolvePathIdentity(
@@ -2044,11 +2237,10 @@ public static partial class IOExtern {
     ok = true;
   }
 
-  public static void ReadDir(BigInteger handle, out bool hasMore, out ISequence<Dafny.Rune> name, out bool isDir, out bool isSymlink, out BigInteger err) {
+  private static void ReadDirRaw(BigInteger handle, out bool hasMore, out ISequence<Dafny.Rune> name, out byte dType, out BigInteger err) {
     hasMore = false;
     name = Sequence<Dafny.Rune>.Empty;
-    isDir = false;
-    isSymlink = false;
+    dType = DT_UNKNOWN;
     err = new BigInteger(0);
     int id;
     try {
@@ -2059,7 +2251,7 @@ public static partial class IOExtern {
     }
     DirEntry entry;
     lock (dirLock) {
-      if (!Dirs.TryGetValue(id, out entry)) {
+      if (!Dirs.TryGetValue(id, out entry) || entry == null) {
         err = new BigInteger(EINVAL);
         return;
       }
@@ -2068,12 +2260,14 @@ public static partial class IOExtern {
       err = new BigInteger(EINVAL);
       return;
     }
+    var includeDots = entry.IncludeDots;
     IntPtr entryPtr;
     try {
       // Clear errno before readdir
       Marshal.SetLastSystemError(0);
       entryPtr = readdir(entry.DirPtr);
     } catch {
+      err = new BigInteger(EIO);
       return;
     }
     if (entryPtr == IntPtr.Zero) {
@@ -2096,15 +2290,44 @@ public static partial class IOExtern {
     }
     var nameStr = Encoding.UTF8.GetString(nameBytes, 0, nameLen);
     // Skip "." and ".." entries
-    if (nameStr == "." || nameStr == "..") {
+    if (!includeDots && (nameStr == "." || nameStr == "..")) {
       // Recursively read next entry
-      ReadDir(handle, out hasMore, out name, out isDir, out isSymlink, out err);
+      ReadDirRaw(handle, out hasMore, out name, out dType, out err);
       return;
     }
     hasMore = true;
     name = Sequence<Dafny.Rune>.UnicodeFromString(nameStr);
-    isDir = (dirent.d_type == DT_DIR);
-    isSymlink = (dirent.d_type == DT_LNK);
+    // Dot entries name an opened directory or its parent even on filesystems
+    // that report DT_UNKNOWN for these synthetic entries.
+    dType = includeDots && (nameStr == "." || nameStr == "..")
+      ? DT_DIR : dirent.d_type;
+  }
+
+  private static BenchWorld._IDirectoryEntryKind DirectoryEntryKindFromNative(byte dType) {
+    switch (dType) {
+      case DT_REG:
+        return BenchWorld.DirectoryEntryKind.create_RegularDirentKind();
+      case DT_DIR:
+        return BenchWorld.DirectoryEntryKind.create_DirectoryDirentKind();
+      case DT_LNK:
+        return BenchWorld.DirectoryEntryKind.create_SymlinkDirentKind();
+      case DT_FIFO:
+        return BenchWorld.DirectoryEntryKind.create_FifoDirentKind();
+      case DT_BLK:
+        return BenchWorld.DirectoryEntryKind.create_BlockDeviceDirentKind();
+      case DT_CHR:
+        return BenchWorld.DirectoryEntryKind.create_CharacterDeviceDirentKind();
+      case DT_SOCK:
+        return BenchWorld.DirectoryEntryKind.create_SocketDirentKind();
+      default:
+        // DT_UNKNOWN and unsupported native kinds retain unknown evidence.
+        return BenchWorld.DirectoryEntryKind.create_UnknownDirentKind();
+    }
+  }
+
+  public static void ReadDir(BigInteger handle, out bool hasMore, out ISequence<Dafny.Rune> name, out BenchWorld._IDirectoryEntryKind kind, out BigInteger err) {
+    ReadDirRaw(handle, out hasMore, out name, out var dType, out err);
+    kind = DirectoryEntryKindFromNative(dType);
   }
 
   public static void CloseDir(BigInteger handle) {
@@ -2179,26 +2402,13 @@ public static class BenchIOExtern {
 
 namespace BenchIO {
   public partial class IO {
-    public BenchWorld._IResult<Dafny.ISequence<Dafny.Rune>> ReadFile(ISequence<Dafny.Rune> path) {
-      IOExtern.ReadFileContents(path, out var ok, out var content);
-      if (ok) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Ok(content);
-      }
-      IOExtern.IsDirectory(path, true, out var okDir, out var isDir, out var errCode);
-      if (okDir && isDir) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_IsDirectory());
-      }
-      if (errCode == new BigInteger(13)) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_PermissionDenied());
-      }
-      return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_NoSuchFile());
-    }
-
-    public void ReadFileWithOutcome(
+    public void ReadFile(
         ISequence<Dafny.Rune> path,
+        BenchWorld._IFileReadMode mode,
         out ISequence<Dafny.Rune> data,
-        out BigInteger err) {
-      IOExtern.ReadFileWithOutcome(path, out data, out err);
+        out BigInteger err,
+        out BenchWorld._IFileReadStage stage) {
+      IOExtern.ReadFile(path, mode, out data, out err, out stage);
     }
 
     public BenchWorld._IResult<Dafny.ISequence<Dafny.Rune>> ReadLink(ISequence<Dafny.Rune> path) {
@@ -2223,36 +2433,27 @@ namespace BenchIO {
       );
     }
 
-    public Dafny.ISequence<Dafny.Rune> ReadStdinAll() {
-      return IOExtern.ReadStdin();
-    }
-
-    public void ReadStdinWithOutcome(
+    public void ReadStdin(
+        BenchWorld._IStreamErrorPolicy policy,
         out ISequence<Dafny.Rune> data,
         out BigInteger err) {
-      IOExtern.ReadStdinWithOutcome(out data, out err);
+      IOExtern.ReadStdin(policy, out data, out err);
     }
 
-    public void AppendStdout(Dafny.ISequence<Dafny.Rune> b) {
-      IOExtern.WriteStdout(b);
-    }
-
-    public void AppendStderr(Dafny.ISequence<Dafny.Rune> b) {
-      IOExtern.WriteStderr(b);
-    }
-
-    public void WriteStdoutWithOutcome(
+    public void WriteStdout(
         Dafny.ISequence<Dafny.Rune> b,
+        BenchWorld._IStreamErrorPolicy policy,
         out BigInteger committed,
         out BigInteger err) {
-      IOExtern.WriteStdoutWithOutcome(b, out committed, out err);
+      IOExtern.WriteStdout(b, policy, out committed, out err);
     }
 
-    public void WriteStderrWithOutcome(
+    public void WriteStderr(
         Dafny.ISequence<Dafny.Rune> b,
+        BenchWorld._IStreamErrorPolicy policy,
         out BigInteger committed,
         out BigInteger err) {
-      IOExtern.WriteStderrWithOutcome(b, out committed, out err);
+      IOExtern.WriteStderr(b, policy, out committed, out err);
     }
 
     public Dafny.ISequence<Dafny.Rune> GetCLocaleErrnoText(BigInteger err) {
@@ -2351,11 +2552,6 @@ namespace BenchIO {
     }
 
 
-    public void IsDirectoryStrict(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out bool isDir, out BigInteger err) {
-      IOExtern.IsDirectory(path, followSymlink, out ok, out isDir, out err);
-    }
-
-
     public void IsSymlink(Dafny.ISequence<Dafny.Rune> path, out bool ok, out bool isSymlink, out BigInteger err) {
       IOExtern.IsSymlink(path, out ok, out isSymlink, out err);
     }
@@ -2366,6 +2562,10 @@ namespace BenchIO {
 
     public void WriteFile(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
       IOExtern.WriteFile(path, data, out ok, out err);
+    }
+
+    public void AppendFile(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
+      IOExtern.AppendFile(path, data, out ok, out err);
     }
 
     public void CreateSymlink(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
@@ -2463,11 +2663,16 @@ namespace BenchIO {
 
     public void OpenDir(
       Dafny.ISequence<Dafny.Rune> path,
+      bool includeDots,
       out bool ok,
       out BigInteger handle,
       out BigInteger err
     ) {
-      IOExtern.OpenDir(path, out ok, out handle, out err);
+      IOExtern.OpenDir(path, includeDots, out ok, out handle, out err);
+    }
+
+    public void GetOpenDirectoryStatus(BigInteger handle, out bool ok, out BenchWorld._IFileStatus status, out BigInteger err) {
+      IOExtern.GetOpenDirectoryStatus(handle, out ok, out status, out err);
     }
 
     public void ResolvePathIdentity(
@@ -2479,8 +2684,8 @@ namespace BenchIO {
       IOExtern.ResolvePathIdentity(path, out ok, out resolvedPath, out err);
     }
 
-    public void ReadDir(BigInteger handle, out bool hasMore, out Dafny.ISequence<Dafny.Rune> name, out bool isDir, out bool isSymlink, out BigInteger err) {
-      IOExtern.ReadDir(handle, out hasMore, out name, out isDir, out isSymlink, out err);
+    public void ReadDir(BigInteger handle, out bool hasMore, out Dafny.ISequence<Dafny.Rune> name, out BenchWorld._IDirectoryEntryKind kind, out BigInteger err) {
+      IOExtern.ReadDir(handle, out hasMore, out name, out kind, out err);
     }
 
     public void CloseDir(BigInteger handle) {

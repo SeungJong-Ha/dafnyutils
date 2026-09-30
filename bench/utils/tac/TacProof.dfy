@@ -443,17 +443,17 @@ module TacProof {
 
   lemma ReadResultGivesRelation(
     cmd: Schema.TacCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
     ensures Spec.ReadResultRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
-              Core.ReadResult(cmd, preFs, preStdin, i)
+              Core.ReadResult(cmd, preFs, preStreams, preStdin, i)
             )
   {
     PrefixStdinCharacterization(cmd, preStdin, i);
@@ -560,26 +560,26 @@ module TacProof {
 
   ghost function CoreObservations(
     cmd: Schema.TacCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<Spec.InputObservation>
     requires |cmd.separator| > 0
     requires count <= |cmd.inputs|
-    ensures |CoreObservations(cmd, preFs, preStdin, count)| == count
+    ensures |CoreObservations(cmd, preFs, preStreams, preStdin, count)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      var prior := CoreObservations(cmd, preFs, preStdin, count - 1);
+      var prior := CoreObservations(cmd, preFs, preStreams, preStdin, count - 1);
       var i := count - 1;
-      var result := Core.ReadResult(cmd, preFs, preStdin, i);
+      var result := Core.ReadResult(cmd, preFs, preStreams, preStdin, i);
       prior + [
         Spec.InputObservation(
           result,
           Core.OutputPiece(cmd, result),
-          Spec.ErrorPiece(cmd.inputs[i], result),
+          Spec.ErrorPiece(cmd.inputs[i], result, preFs, preStreams),
           Spec.HadErrorPiece(cmd.inputs[i], result)
         )
       ]
@@ -587,32 +587,32 @@ module TacProof {
 
   lemma CoreObservationsFailure(
     cmd: Schema.TacCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires |cmd.separator| > 0
     requires count <= |cmd.inputs|
-    ensures Core.PrefixHadError(cmd, preFs, preStdin, count) ==
+    ensures Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count) ==
             (exists i: nat ::
-               i < |CoreObservations(cmd, preFs, preStdin, count)| &&
-               CoreObservations(cmd, preFs, preStdin, count)[i].failed)
+               i < |CoreObservations(cmd, preFs, preStreams, preStdin, count)| &&
+               CoreObservations(cmd, preFs, preStreams, preStdin, count)[i].failed)
     decreases count
   {
     if count > 0 {
-      CoreObservationsFailure(cmd, preFs, preStdin, count - 1);
-      var prior := CoreObservations(cmd, preFs, preStdin, count - 1);
-      var observations := CoreObservations(cmd, preFs, preStdin, count);
+      CoreObservationsFailure(cmd, preFs, preStreams, preStdin, count - 1);
+      var prior := CoreObservations(cmd, preFs, preStreams, preStdin, count - 1);
+      var observations := CoreObservations(cmd, preFs, preStreams, preStdin, count);
       var i := count - 1;
       var failed := Spec.HadErrorPiece(
         cmd.inputs[i],
-        Core.ReadResult(cmd, preFs, preStdin, i)
+        Core.ReadResult(cmd, preFs, preStreams, preStdin, i)
       );
       assert observations == prior + [
                                Spec.InputObservation(
-                                 Core.ReadResult(cmd, preFs, preStdin, i),
-                                 Core.OutputPiece(cmd, Core.ReadResult(cmd, preFs, preStdin, i)),
-                                 Spec.ErrorPiece(cmd.inputs[i], Core.ReadResult(cmd, preFs, preStdin, i)),
+                                 Core.ReadResult(cmd, preFs, preStreams, preStdin, i),
+                                 Core.OutputPiece(cmd, Core.ReadResult(cmd, preFs, preStreams, preStdin, i)),
+                                 Spec.ErrorPiece(cmd.inputs[i], Core.ReadResult(cmd, preFs, preStreams, preStdin, i), preFs, preStreams),
                                  failed
                                )
                              ];
@@ -620,13 +620,13 @@ module TacProof {
       assert |observations| == count;
       assert i < |observations|;
       assert observations[i].failed == failed;
-      assert Core.PrefixHadError(cmd, preFs, preStdin, count) ==
-             (Core.PrefixHadError(cmd, preFs, preStdin, count - 1) || failed);
+      assert Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count) ==
+             (Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count - 1) || failed);
       if failed {
         assert observations[i].failed;
         assert exists j: nat ::
             j < |observations| && observations[j].failed;
-        assert Core.PrefixHadError(cmd, preFs, preStdin, count);
+        assert Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count);
       } else {
         if exists j: nat :: j < |observations| && observations[j].failed {
           var j: nat :| j < |observations| && observations[j].failed;
@@ -645,20 +645,20 @@ module TacProof {
           (exists j: nat :: j < |observations| && observations[j].failed) ==
           (exists j: nat :: j < |prior| && prior[j].failed);
       }
-      assert Core.PrefixHadError(cmd, preFs, preStdin, count) ==
+      assert Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count) ==
              (exists j: nat ::
                 j < |observations| && observations[j].failed);
-      assert observations == CoreObservations(cmd, preFs, preStdin, count);
-      assert Core.PrefixHadError(cmd, preFs, preStdin, count) ==
+      assert observations == CoreObservations(cmd, preFs, preStreams, preStdin, count);
+      assert Core.PrefixHadError(cmd, preFs, preStreams, preStdin, count) ==
              (exists j: nat ::
-                j < |CoreObservations(cmd, preFs, preStdin, count)| &&
-                CoreObservations(cmd, preFs, preStdin, count)[j].failed);
+                j < |CoreObservations(cmd, preFs, preStreams, preStdin, count)| &&
+                CoreObservations(cmd, preFs, preStreams, preStdin, count)[j].failed);
     }
   }
 
   lemma {:isolate_assertions} BuildPrefixWitness(
     cmd: Schema.TacCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ) returns (
@@ -669,17 +669,17 @@ module TacProof {
     requires |cmd.separator| > 0
     requires count <= |cmd.inputs|
     ensures |observations| == count
-    ensures observations == CoreObservations(cmd, preFs, preStdin, count)
+    ensures observations == CoreObservations(cmd, preFs, preStreams, preStdin, count)
     ensures forall i: nat {:trigger observations[i]} | i < |observations| ::
-              Spec.InputObservationRelation(cmd, preFs, preStdin, i, observations[i])
+              Spec.InputObservationRelation(cmd, preFs, preStreams, preStdin, i, observations[i])
     ensures Spec.FragmentsConcatenate(
               Spec.ObservationStdoutFragments(observations),
-              Core.PrefixOutput(cmd, preFs, preStdin, count),
+              Core.PrefixOutput(cmd, preFs, preStreams, preStdin, count),
               stdoutCuts
             )
     ensures Spec.FragmentsConcatenate(
               Spec.ObservationStderrFragments(observations),
-              Core.PrefixErrorOutput(cmd, preFs, preStdin, count),
+              Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, count),
               stderrCuts
             )
     decreases count
@@ -691,11 +691,11 @@ module TacProof {
       assert Spec.FragmentsConcatenate([], [], [0]);
     } else {
       var priorObservations, priorStdoutCuts, priorStderrCuts :=
-        BuildPrefixWitness(cmd, preFs, preStdin, count - 1);
+        BuildPrefixWitness(cmd, preFs, preStreams, preStdin, count - 1);
       var i := count - 1;
-      var result := Core.ReadResult(cmd, preFs, preStdin, i);
+      var result := Core.ReadResult(cmd, preFs, preStreams, preStdin, i);
       var stdoutFragment := Core.OutputPiece(cmd, result);
-      var stderrFragment := Spec.ErrorPiece(cmd.inputs[i], result);
+      var stderrFragment := Spec.ErrorPiece(cmd.inputs[i], result, preFs, preStreams);
       var failed := Spec.HadErrorPiece(cmd.inputs[i], result);
       var observation := Spec.InputObservation(
         result,
@@ -703,43 +703,43 @@ module TacProof {
         stderrFragment,
         failed
       );
-      ReadResultGivesRelation(cmd, preFs, preStdin, i);
+      ReadResultGivesRelation(cmd, preFs, preStreams, preStdin, i);
       OutputPieceGivesRelation(cmd, result);
       assert Spec.InputObservationRelation(
           cmd,
-          preFs,
+          preFs, preStreams,
           preStdin,
           i,
           observation
         );
       observations := priorObservations + [observation];
       stdoutCuts := priorStdoutCuts +
-      [|Core.PrefixOutput(cmd, preFs, preStdin, count)|];
+      [|Core.PrefixOutput(cmd, preFs, preStreams, preStdin, count)|];
       stderrCuts := priorStderrCuts +
-      [|Core.PrefixErrorOutput(cmd, preFs, preStdin, count)|];
+      [|Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, count)|];
       ObservationFragmentsAppend(priorObservations, observation);
       AppendFragment(
         Spec.ObservationStdoutFragments(priorObservations),
-        Core.PrefixOutput(cmd, preFs, preStdin, count - 1),
+        Core.PrefixOutput(cmd, preFs, preStreams, preStdin, count - 1),
         priorStdoutCuts,
         stdoutFragment
       );
       AppendFragment(
         Spec.ObservationStderrFragments(priorObservations),
-        Core.PrefixErrorOutput(cmd, preFs, preStdin, count - 1),
+        Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, count - 1),
         priorStderrCuts,
         stderrFragment
       );
-      assert Core.PrefixOutput(cmd, preFs, preStdin, count) ==
-             Core.PrefixOutput(cmd, preFs, preStdin, count - 1) + stdoutFragment;
-      assert Core.PrefixErrorOutput(cmd, preFs, preStdin, count) ==
-             Core.PrefixErrorOutput(cmd, preFs, preStdin, count - 1) + stderrFragment;
+      assert Core.PrefixOutput(cmd, preFs, preStreams, preStdin, count) ==
+             Core.PrefixOutput(cmd, preFs, preStreams, preStdin, count - 1) + stdoutFragment;
+      assert Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, count) ==
+             Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, count - 1) + stderrFragment;
       assert forall j: nat {:trigger observations[j]} | j < |observations| ::
-          Spec.InputObservationRelation(cmd, preFs, preStdin, j, observations[j]) by {
+          Spec.InputObservationRelation(cmd, preFs, preStreams, preStdin, j, observations[j]) by {
         forall j: nat {:trigger observations[j]} | j < |observations|
           ensures Spec.InputObservationRelation(
                     cmd,
-                    preFs,
+                    preFs, preStreams,
                     preStdin,
                     j,
                     observations[j]
@@ -758,32 +758,32 @@ module TacProof {
 
   lemma CoreSummaryImpliesTrace(
     cmd: Schema.TacCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes
   )
     requires |cmd.separator| > 0
     ensures Spec.InputTraceRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               Core.PrefixStdin(cmd, preStdin, |cmd.inputs|),
-              Core.PrefixOutput(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixErrorOutput(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixHadError(cmd, preFs, preStdin, |cmd.inputs|)
+              Core.PrefixOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixHadError(cmd, preFs, preStreams, preStdin, |cmd.inputs|)
             )
   {
     var observations, stdoutCuts, stderrCuts :=
-      BuildPrefixWitness(cmd, preFs, preStdin, |cmd.inputs|);
-    CoreObservationsFailure(cmd, preFs, preStdin, |cmd.inputs|);
+      BuildPrefixWitness(cmd, preFs, preStreams, preStdin, |cmd.inputs|);
+    CoreObservationsFailure(cmd, preFs, preStreams, preStdin, |cmd.inputs|);
     PrefixStdinCharacterization(cmd, preStdin, |cmd.inputs|);
     assert Spec.InputTraceWitnessRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         Core.PrefixStdin(cmd, preStdin, |cmd.inputs|),
-        Core.PrefixOutput(cmd, preFs, preStdin, |cmd.inputs|),
-        Core.PrefixErrorOutput(cmd, preFs, preStdin, |cmd.inputs|),
-        Core.PrefixHadError(cmd, preFs, preStdin, |cmd.inputs|),
+        Core.PrefixOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+        Core.PrefixErrorOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+        Core.PrefixHadError(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
         observations,
         stdoutCuts,
         stderrCuts
@@ -804,7 +804,7 @@ module TacProof {
     if cmd.mode == Schema.ModeHelp {
     } else if cmd.mode == Schema.ModeVersion {
     } else {
-      CoreSummaryImpliesTrace(cmd, old(io.fs()), old(io.stdin()));
+      CoreSummaryImpliesTrace(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
     }
   }
 }

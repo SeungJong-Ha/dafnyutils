@@ -349,7 +349,7 @@ module CatCore {
 
   ghost predicate InputObservationRelation(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     observation: InputObservation
@@ -360,7 +360,7 @@ module CatCore {
     observation.result ==
     match observation.input
     case Stdin => BenchWorld.Ok(ExpectedStdinAt(cmd, preStdin, i))
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost function InputDataPiece(
@@ -416,7 +416,7 @@ module CatCore {
 
   opaque ghost predicate InputTraceWitnessRelation(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     count: nat,
     currentStdin: BenchWorld.Bytes,
@@ -433,7 +433,7 @@ module CatCore {
     (forall i: nat | i < |observations| ::
        InputObservationRelation(
          cmd,
-         preFs,
+         preFs, preStreams,
          preStdin,
          i,
          observations[i]
@@ -496,7 +496,7 @@ module CatCore {
         ) =>
         InputTraceWitnessRelation(
           cmd,
-          old(io.fs()),
+          old(io.fs()), old(io.trustedStreams()),
           old(io.stdin()),
           |cmd.inputs|,
           io.stdin(),
@@ -653,17 +653,17 @@ module CatCore {
 
   lemma ObservationRelationsSnoc(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     observations: seq<InputObservation>,
     observation: InputObservation
   )
     requires |observations| < |cmd.inputs|
     requires forall i: nat | i < |observations| ::
-               InputObservationRelation(cmd, preFs, preStdin, i, observations[i])
+               InputObservationRelation(cmd, preFs, preStreams, preStdin, i, observations[i])
     requires InputObservationRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                |observations|,
                observation
@@ -671,7 +671,7 @@ module CatCore {
     ensures forall i: nat | i < |observations + [observation]| ::
               InputObservationRelation(
                 cmd,
-                preFs,
+                preFs, preStreams,
                 preStdin,
                 i,
                 (observations + [observation])[i]
@@ -680,7 +680,7 @@ module CatCore {
     forall i: nat | i < |observations + [observation]|
       ensures InputObservationRelation(
                 cmd,
-                preFs,
+                preFs, preStreams,
                 preStdin,
                 i,
                 (observations + [observation])[i]
@@ -725,7 +725,7 @@ module CatCore {
 
   lemma {:isolate_assertions} ExtendInputTraceWitness(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     count: nat,
     currentStdin: BenchWorld.Bytes,
@@ -740,7 +740,7 @@ module CatCore {
   )
     requires InputTraceWitnessRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                count,
                currentStdin,
@@ -754,7 +754,7 @@ module CatCore {
     requires count < |cmd.inputs|
     requires InputObservationRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                count,
                observation
@@ -763,7 +763,7 @@ module CatCore {
              (if cmd.inputs[count] == CatSchema.Stdin then [] else currentStdin)
     ensures InputTraceWitnessRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               count + 1,
               nextStdin,
@@ -852,7 +852,7 @@ module CatCore {
     }
     ObservationRelationsSnoc(
       cmd,
-      preFs,
+      preFs, preStreams,
       preStdin,
       observations,
       observation
@@ -861,7 +861,7 @@ module CatCore {
     ExpectedStdinAtExtend(cmd, preStdin, count);
     assert InputTraceWitnessRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         count + 1,
         nextStdin,
@@ -1074,6 +1074,7 @@ module CatCore {
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStreams := io.trustedStreams();
     ghost var preStdin := io.stdin();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
@@ -1081,7 +1082,7 @@ module CatCore {
 
     if cmd.mode == CatSchema.ModeHelp {
       var help := Spec.HelpTextSpec();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + Spec.HelpTextSpec();
@@ -1098,7 +1099,7 @@ module CatCore {
 
     if cmd.mode == CatSchema.ModeVersion {
       var version := Spec.VersionTextSpec();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + Spec.VersionTextSpec();
@@ -1121,7 +1122,7 @@ module CatCore {
     ghost var errorCuts: seq<nat> := [0];
     assert InputTraceWitnessRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         0,
         io.stdin(),
@@ -1142,7 +1143,7 @@ module CatCore {
       invariant io.stderr() == preStderr
       invariant InputTraceWitnessRelation(
                   cmd,
-                  preFs,
+                  preFs, preStreams,
                   preStdin,
                   i,
                   io.stdin(),
@@ -1162,7 +1163,7 @@ module CatCore {
           assert beforeStdin == ExpectedStdinAt(cmd, preStdin, i) by {
             reveal InputTraceWitnessRelation();
           }
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           assert data == beforeStdin;
           ghost var observation := InputObservation(
@@ -1171,7 +1172,7 @@ module CatCore {
           );
           assert InputObservationRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
               observation
@@ -1181,7 +1182,7 @@ module CatCore {
           assert !InputFailed(observation);
           ExtendInputTraceWitness(
             cmd,
-            preFs,
+            preFs, preStreams,
             preStdin,
             i,
             beforeStdin,
@@ -1199,7 +1200,7 @@ module CatCore {
           assert (hadError || InputFailed(observation)) == hadError;
           assert InputTraceWitnessRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i + 1,
               io.stdin(),
@@ -1219,7 +1220,7 @@ module CatCore {
           errorCuts := nextErrorCuts;
           assert InputTraceWitnessRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i + 1,
               io.stdin(),
@@ -1235,7 +1236,8 @@ module CatCore {
           assert beforeStdin == ExpectedStdinAt(cmd, preStdin, i) by {
             reveal InputTraceWitnessRelation();
           }
-          var readResult := io.ReadFile(path);
+          var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
+          var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
           var dataPiece: BenchWorld.Bytes := [];
           var errorPiece: BenchWorld.Bytes := [];
           var inputHadError := false;
@@ -1256,14 +1258,14 @@ module CatCore {
           assert InputFailed(observation) == inputHadError;
           assert InputObservationRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
               observation
             );
           ExtendInputTraceWitness(
             cmd,
-            preFs,
+            preFs, preStreams,
             preStdin,
             i,
             beforeStdin,
@@ -1289,7 +1291,7 @@ module CatCore {
           errorCuts := nextErrorCuts;
           assert InputTraceWitnessRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i + 1,
               io.stdin(),
@@ -1307,17 +1309,17 @@ module CatCore {
     var initialState := Model.InitState();
     var processed, renderWitness := ProcessBytesMethod(cmd, combined, initialState);
     if |processed.out| > 0 {
-      io.AppendStdout(processed.out);
+      var _, _ := io.WriteStdout(processed.out, BenchWorld.ThrowOnError);
     }
     assert io.stdout() == preStdout + processed.out;
     if |err| > 0 {
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     }
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;
     assert InputTraceWitnessRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         |cmd.inputs|,
         io.stdin(),

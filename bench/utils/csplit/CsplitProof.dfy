@@ -1570,7 +1570,7 @@ module CsplitProof {
       return;
     }
 
-    match Spec.ReadResultFields(raw.input, old(io.fs()), old(io.stdin()))
+    match Spec.ReadResultFields(raw.input, old(io.fs()), old(io.trustedStreams()), old(io.stdin()))
     case Err(err) =>
       assert Spec.Spec(raw, io, exit);
     case Ok(data) =>

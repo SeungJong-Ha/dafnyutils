@@ -131,6 +131,8 @@ def verify_logname_module(target: Path) -> None:
 def assert_same_result(
     ref_result: tuple[bytes, bytes, int],
     bench_result: tuple[bytes, bytes, int],
+    *,
+    strict_stderr: bool = False,
 ) -> None:
     def normalize_stderr(stderr: bytes) -> bytes:
         text = stderr.decode("utf-8")
@@ -146,6 +148,7 @@ def assert_same_result(
         ref_result,
         bench_result,
         stderr_normalizer=normalize_stderr,
+        ignore_stderr_when_exit_nonzero=not strict_stderr,
     )
 
 
@@ -190,6 +193,20 @@ def test_help_version_precedence_matches_coreutils(args: list[str]) -> None:
         assert_requested_message_behavior(ref, bench)
 
 
+@pytest.mark.parametrize(
+    "args",
+    [["--help", "-7022"], ["--version", "-7022"]],
+)
+def test_request_precedes_later_parse_error(args: list[str]) -> None:
+    # GNU exits for an earlier help/version request before diagnosing later options.
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_requested_message_behavior(
+            run_system_logname(args, cwd),
+            run_bench_logname(args, cwd),
+        )
+
+
 def test_extra_operand_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version-getopt.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -198,6 +215,19 @@ def test_extra_operand_matches_coreutils() -> None:
         ref = run_system_logname(args, cwd)
         bench = run_bench_logname(args, cwd)
         assert_same_result(ref, bench)
+
+
+# Locale quoting escapes control, apostrophe, backslash, and UTF-8 operand bytes.
+@pytest.mark.parametrize("operand", ["semi;colon", "apost'rophe", "tab\tname", "a\\b", "é"])
+def test_extra_operand_locale_quoting_matches_coreutils(operand: str) -> None:
+    # upstream: coreutils/tests/help/help-version-getopt.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(
+            run_system_logname([operand], cwd),
+            run_bench_logname([operand], cwd),
+            strict_stderr=True,
+        )
 
 
 def test_bad_option_matches_coreutils() -> None:

@@ -57,7 +57,7 @@ module Ls {
     }
 
     method RunCore(raw: Sch.LsCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion
+      modifies io.stdoutRegion, io.stderrRegion, io.dirHandlesRegion, io.statusObservationsRegion
       ensures Spec.Spec(raw, io, exit)
       decreases *
     {

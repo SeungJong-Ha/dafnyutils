@@ -223,6 +223,16 @@ def test_numeric_pattern_diagnostics_match_coreutils(args: list[str]) -> None:
     )
 
 
+# Missing patterns quote the last operand with GNU's C-locale byte escaping.
+@pytest.mark.parametrize(
+    "operand",
+    ["8ke6\th-1386", "can't", "bad\\path", "line\nname", "bad\x01path", "경로", "", "plain"],
+)
+def test_missing_pattern_diagnostic_matches_coreutils(operand: str) -> None:
+    # upstream: coreutils/tests/csplit/csplit.sh
+    assert_csplit_parity([operand], ignore_stderr_when_exit_nonzero=False)
+
+
 def test_missing_input_file_diagnostic_matches_coreutils() -> None:
     # upstream: coreutils/tests/csplit/csplit.sh
     assert_csplit_parity(["missing.txt", "1"], ignore_stderr_when_exit_nonzero=False)
@@ -280,3 +290,9 @@ def test_deferred_csplit_regressions_placeholder() -> None:
 def test_csplit_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Input-open errors use GNU's shell quoting without forced colon quoting.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_read_error(path: str) -> None:
+    assert_csplit_parity([path, "1"], ignore_stderr_when_exit_nonzero=False)

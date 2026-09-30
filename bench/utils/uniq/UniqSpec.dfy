@@ -2,6 +2,7 @@ include "../../core/World.dfy"
 include "../../core/Utf8.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "UniqSchema.dfy"
 
 module UniqSpec {
@@ -11,6 +12,7 @@ module UniqSpec {
   import BW = BenchWorld
   import Utf8 = Utf8Semantics
   import UniqSchema
+  import SE = StringEscaping
 
 
 
@@ -251,7 +253,8 @@ module UniqSpec {
   function ReadErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
     if err == BenchWorld.IsDirectory then
-      Utf8.Encode("uniq: error reading " + QuoteAlways(path) + ": " + ErrnoText(err) + "\n")
+      "uniq: error reading " + SpecQuoteAfBytes(Utf8.Encode(path)) +
+        ": " + Utf8.Encode(ErrnoText(err)) + "\n"
     else
       "uniq: " + QuoteIfNeeded(path) + ": " + Utf8.Encode(ErrnoText(err)) + "\n"
   }
@@ -273,8 +276,8 @@ module UniqSpec {
 
   function ExtraOperandMessageSpec(operand: string): BenchWorld.Bytes
   {
-    Utf8.Encode("uniq: extra operand '" + operand + "'\n" +
-    "Try 'uniq --help' for more information.\n")
+    "uniq: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(operand)) +
+      "\nTry 'uniq --help' for more information.\n"
   }
 
   function InputFromOperands(operands: seq<string>): UniqSchema.Input
@@ -306,6 +309,7 @@ module UniqSpec {
       !raw.seenRepeated,
       !raw.seenUnique,
       raw.seenIgnoreCase,
+      raw.skipFields,
       InputFromOperands(raw.operands)
     )
   }
@@ -330,9 +334,58 @@ module UniqSpec {
       LowerAscii(a[0]) == LowerAscii(b[0]) && EqualFoldAscii(a[1..], b[1..])
   }
 
-  function LinesEqual(cmd: UniqSchema.UniqCmd, a: BenchWorld.Bytes, b: BenchWorld.Bytes): bool
+  function IsFieldBlank(ch: BenchWorld.RawByte): bool
   {
-    if cmd.ignoreCase then EqualFoldAscii(a, b) else a == b
+    ch == ' ' || ch == '\t'
+  }
+
+  ghost predicate FieldStepWitness(
+    line: BenchWorld.Bytes, lo: nat, hi: nat, middle: nat
+  )
+  {
+    lo < hi <= |line| &&
+    lo <= middle <= hi &&
+    (forall i: nat :: lo <= i < middle ==> IsFieldBlank(line[i])) &&
+    (forall i: nat :: middle <= i < hi ==> !IsFieldBlank(line[i])) &&
+    (middle == hi ==> hi == |line|) &&
+    (hi < |line| ==> IsFieldBlank(line[hi]))
+  }
+
+  ghost predicate FieldStep(line: BenchWorld.Bytes, lo: nat, hi: nat)
+  {
+    exists middle: nat :: FieldStepWitness(line, lo, hi, middle)
+  }
+
+  ghost predicate FieldSkipFromRelation(
+    line: BenchWorld.Bytes, start: nat, count: nat, cut: nat
+  )
+  {
+    exists cuts: seq<nat> ::
+      1 <= |cuts| <= count + 1 &&
+      cuts[0] == start &&
+      (forall i: nat :: i + 1 < |cuts| ==> FieldStep(line, cuts[i], cuts[i + 1])) &&
+      (|cuts| - 1 == count || cuts[|cuts| - 1] == |line|) &&
+      cut == cuts[|cuts| - 1]
+  }
+
+  ghost predicate FieldSkipRelation(
+    line: BenchWorld.Bytes, count: nat, suffix: BenchWorld.Bytes
+  )
+  {
+    exists cut: nat ::
+      FieldSkipFromRelation(line, 0, count, cut) &&
+      cut <= |line| &&
+      suffix == line[cut..]
+  }
+
+  ghost predicate LinesEqual(
+    cmd: UniqSchema.UniqCmd, a: BenchWorld.Bytes, b: BenchWorld.Bytes
+  )
+  {
+    exists left: BenchWorld.Bytes, right: BenchWorld.Bytes ::
+      FieldSkipRelation(a, cmd.skipFields, left) &&
+      FieldSkipRelation(b, cmd.skipFields, right) &&
+      (if cmd.ignoreCase then EqualFoldAscii(left, right) else left == right)
   }
 
   ghost predicate FragmentsConcatenate(
@@ -536,7 +589,9 @@ module UniqSpec {
       stderrPart == [] &&
       !hadError
     case File(path) =>
-      readResults[0] == IOContract.ReadFileResultFields(old(io.fs()), path) &&
+      readResults[0] == IOContract.ObservedReadFileResultFields(
+        old(io.fs()), old(io.trustedStreams()), path
+      ) &&
       match readResults[0]
       case Ok(data) =>
         OutputRelation(command, data, stdoutPart) &&

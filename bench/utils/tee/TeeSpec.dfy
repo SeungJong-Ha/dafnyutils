@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "TeeSchema.dfy"
 
 module TeeSpec {
@@ -8,6 +9,8 @@ module TeeSpec {
   import BenchWorld
   import IOContract
   import Schema = TeeSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
 
 
@@ -67,12 +70,14 @@ module TeeSpec {
 
   function ReadErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "tee: " + path + ": " + ReadErrnoTextSpec(err) + "\n"
+    "tee: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+      ": " + ReadErrnoTextSpec(err) + "\n"
   }
 
   function WriteErrorMessageSpec(path: BenchWorld.Path, err: int): BenchWorld.Bytes
   {
-    "tee: " + path + ": " + WriteErrnoTextSpec(err) + "\n"
+    "tee: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+      ": " + WriteErrnoTextSpec(err) + "\n"
   }
 
   function CommandSpec(raw: Schema.TeeCmdRaw): Schema.TeeCmd
@@ -92,27 +97,21 @@ module TeeSpec {
     path: BenchWorld.Path,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
   )
   {
     if append then
-      match IOContract.ReadFileResultFields(preFs, path)
-      case Err(err) =>
-        if err == BenchWorld.NoSuchFile then
-          exists ok: bool, writeErr: int ::
-            IOContract.WriteFileContractFields(preFs, preNow, path, input, ok, writeErr, fs2) &&
-            stderr == (if ok then [] else WriteErrorMessageSpec(path, writeErr)) &&
-            exit == (if ok then 0 else 1)
-        else
-          fs2 == preFs && stderr == ReadErrorMessageSpec(path, err) && exit == 1
-      case Ok(oldData) =>
-        exists ok: bool, writeErr: int ::
-          IOContract.WriteFileContractFields(preFs, preNow, path, oldData + input, ok, writeErr, fs2) &&
-          stderr == (if ok then [] else WriteErrorMessageSpec(path, writeErr)) &&
-          exit == (if ok then 0 else 1)
+      exists ok: bool, writeErr: int ::
+        IOContract.AppendFileSpec(preFs, preProps, preNow, preCredentials, preTrustedFilesystem,
+                                  fs2, path, input, ok, writeErr) &&
+        stderr == (if ok then [] else WriteErrorMessageSpec(path, writeErr)) &&
+        exit == (if ok then 0 else 1)
     else
       exists ok: bool, writeErr: int ::
         IOContract.WriteFileContractFields(preFs, preNow, path, input, ok, writeErr, fs2) &&
@@ -130,13 +129,17 @@ module TeeSpec {
     append: bool,
     path: BenchWorld.Path,
     input: BenchWorld.Bytes,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     before: WriteState,
     after: WriteState
   )
   {
     exists stepErr: BenchWorld.Bytes, stepExit: int ::
-      WriteOneSpecFields(append, path, input, before.fs, preNow, after.fs, stepErr, stepExit) &&
+      WriteOneSpecFields(append, path, input, before.fs, preProps, preNow, preCredentials,
+                         preTrustedFilesystem, after.fs, stepErr, stepExit) &&
       after.stderr == before.stderr + stepErr &&
       after.exit == (if before.exit == 0 && stepExit == 0 then 0 else 1)
   }
@@ -146,7 +149,10 @@ module TeeSpec {
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
@@ -156,9 +162,11 @@ module TeeSpec {
       |states| == |outputs| + 1 &&
       states[0] == WriteState(preFs, [], 0) &&
       states[|outputs|] == WriteState(fs2, stderr, exit) &&
-      forall i {:trigger WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])} ::
+      forall i {:trigger WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials,
+                                          preTrustedFilesystem, states[i], states[i + 1])} ::
         0 <= i < |outputs| ==>
-          WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])
+          WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials,
+                            preTrustedFilesystem, states[i], states[i + 1])
   }
 
   twostate predicate Spec(raw: Schema.TeeCmdRaw, io: BenchIO.IO, exit: int)
@@ -179,7 +187,9 @@ module TeeSpec {
       exit == 0
     else
       exists errOut: BenchWorld.Bytes, writeExit: int ::
-        WriteOutputsSpecFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.now()), io.fs(), errOut, writeExit) &&
+        WriteOutputsSpecFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.props()),
+                               old(io.now()), old(io.credentials()), old(io.trustedFilesystem()),
+                               io.fs(), errOut, writeExit) &&
         io.stdin() == IOContract.AfterReadStdinFields(old(io.stdin())) &&
         io.stdout() == old(io.stdout()) + old(io.stdin()) &&
         io.stderr() == old(io.stderr()) + errOut &&

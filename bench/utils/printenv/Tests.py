@@ -159,6 +159,31 @@ def test_named_variables_are_printed_in_operand_order(args: list[str]) -> None:
     assert_printenv_parity(args)
 
 
+# Environment values are raw UTF-8 bytes on stdout, including multibyte code points.
+@pytest.mark.parametrize("args", [["UNICODE"], ["-0", "UNICODE"]])
+def test_unicode_environment_value_matches_coreutils(args: list[str]) -> None:
+    # upstream: coreutils/tests/misc/printenv.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        env = printenv_env()
+        env["UNICODE"] = "é☃"
+        ref = run_coreutils_utility(COREUTILS_PRINTENV, "printenv", args, cwd, env=env)
+        bench = run_bench_utility(BENCH_PRINTENV_DLL, args, cwd, env=env)
+        assert_result_matches_reference(ref, bench)
+
+
+# Listing all environment records preserves UTF-8 values without re-quoting them.
+def test_unicode_environment_listing_matches_coreutils() -> None:
+    # upstream: coreutils/tests/misc/printenv.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        env = printenv_env()
+        env["UNICODE"] = "é☃"
+        ref = run_coreutils_utility(COREUTILS_PRINTENV, "printenv", [], cwd, env=env)
+        bench = run_bench_utility(BENCH_PRINTENV_DLL, [], cwd, env=env)
+        assert_result_matches_reference(ref, bench, stdout_normalizer=normalize_records(b"\n"))
+
+
 def test_help_and_version_exit_successfully() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:

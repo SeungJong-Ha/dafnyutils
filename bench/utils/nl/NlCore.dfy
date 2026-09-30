@@ -27,29 +27,30 @@ module NlCore {
     hasDelimiter: bool,
     new outputPart: BenchWorld.Bytes
   )
-    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
+    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion, io.trustedStreamsRegion
   {
     var cmd := NlSchema.Command(raw);
     if cmd.mode == NlSchema.ModeHelp then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) + Spec.HelpText() &&
-      io.stderr() == old(io.stderr()) &&
+      io.stderr() == old(io.stderr()) + NlSchema.OptionErrorsText(cmd.optionErrors) &&
       exit == 0
     else if cmd.mode == NlSchema.ModeVersion then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) + Spec.VersionText() &&
-      io.stderr() == old(io.stderr()) &&
+      io.stderr() == old(io.stderr()) + NlSchema.OptionErrorsText(cmd.optionErrors) &&
       exit == 0
     else if cmd.mode != NlSchema.ModeRun then
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + Spec.ModeErrorMessage(cmd.mode) &&
+      io.stderr() == old(io.stderr()) + Spec.ModeErrorMessage(cmd) &&
       exit == 1
     else
       InputTraceSummary(
         cmd, old(io.fs()), old(io.stdin()), readResults, inputFragments,
         combined, inputCuts, errorFragments, errorOutput, errorCuts,
-        hadError, hasDelimiter
+        hadError, hasDelimiter,
+        old(io.trustedStreams())
       ) &&
       io.stdin() ==
       (if exists i ::
@@ -111,7 +112,8 @@ module NlCore {
     errorOutput: BenchWorld.Bytes,
     errorCuts: seq<nat>,
     hadError: bool,
-    hasDelimiter: bool
+    hasDelimiter: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     |readResults| == |cmd.inputs| &&
@@ -119,7 +121,7 @@ module NlCore {
     |errorFragments| == |cmd.inputs| &&
     (forall i :: 0 <= i < |cmd.inputs| ==>
                    Spec.ReadResultRelation(
-                     cmd, preFs, preStdin, i, readResults[i]) &&
+                     cmd, preFs, preStdin, i, readResults[i], preStreams) &&
                    inputFragments[i] ==
                    (match readResults[i]
                     case Ok(data) => NormalizeInputData(data)
@@ -382,52 +384,42 @@ module NlCore {
     ensures Spec.LinePartitionRelation(
               current + data, lines, terminated, fragments, cuts
             )
-    decreases |data|
   {
-    if |data| == 0 {
-      if |current| == 0 {
-        lines := [];
-        terminated := [];
-        fragments := [];
-        cuts := [0];
-      } else {
-        lines := [current];
-        terminated := [false];
-        fragments := [current];
-        cuts := [0, |current|];
+    var all := current + data;
+    var i := 0;
+    lines := [];
+    terminated := [];
+    fragments := [];
+    cuts := [0];
+    reveal Spec.LinePartitionRelation();
+    reveal Spec.FragmentsConcatenate();
+    while i < |all|
+      invariant 0 <= i <= |all|
+      invariant Spec.LinePartitionRelation(all[..i], lines, terminated, fragments, cuts)
+      invariant i < |all| ==> forall k: nat :: k < |terminated| ==> terminated[k]
+      decreases |all| - i
+    {
+      var j := i;
+      while j < |all| && all[j] != '\n'
+        invariant i <= j <= |all|
+        invariant forall k: nat :: i <= k < j ==> all[k] != '\n'
+        decreases |all| - j
+      {
+        j := j + 1;
       }
-      reveal Spec.LinePartitionRelation();
-      reveal Spec.FragmentsConcatenate();
-    } else if data[0] == '\n' {
-      var tailLines, tailTerminated, tailFragments, tailCuts :=
-        LinesFromMethod(data[1..], []);
-      var head := current + ['\n'];
-      lines := [current] + tailLines;
-      terminated := [true] + tailTerminated;
-      fragments := [head] + tailFragments;
-      cuts := [0] + ShiftCuts(tailCuts, |head|);
-      PrependByteFragment(head, tailFragments, data[1..], tailCuts);
-      reveal Spec.LinePartitionRelation();
-      assert current + data == head + data[1..];
-      assert forall i: nat :: i < |lines| ==>
-                                |fragments[i]| > 0 &&
-                                fragments[i] ==
-                                lines[i] + (if terminated[i] then ['\n'] else []) &&
-                                (forall j: nat :: j < |lines[i]| ==> lines[i][j] != '\n') &&
-                                (i + 1 < |lines| ==> terminated[i]) by {
-        forall i: nat | i < |lines|
-          ensures |fragments[i]| > 0 &&
-                  fragments[i] ==
-                  lines[i] + (if terminated[i] then ['\n'] else []) &&
-                  (forall j: nat :: j < |lines[i]| ==> lines[i][j] != '\n') &&
-                  (i + 1 < |lines| ==> terminated[i])
-        {
-        }
-      }
-    } else {
-      lines, terminated, fragments, cuts :=
-        LinesFromMethod(data[1..], current + [data[0]]);
-      assert current + data == (current + [data[0]]) + data[1..];
+      var line := all[i..j];
+      var hasNewline := j < |all|;
+      var next := if hasNewline then j + 1 else j;
+      var fragment := all[i..next];
+      assert '\n' !in line;
+      assert fragment == line + (if hasNewline then ['\n'] else []);
+      AppendByteFragment(fragments, all[..i], cuts, fragment);
+      assert all[..i] + fragment == all[..next];
+      lines := lines + [line];
+      terminated := terminated + [hasNewline];
+      fragments := fragments + [fragment];
+      cuts := cuts + [next];
+      i := next;
     }
   }
 
@@ -450,14 +442,16 @@ module NlCore {
     ensures found == (exists i ::
                         (0 <= i < |lines| &&
                          IsLogicalPageDelimiterLine(lines[i])))
-    decreases |lines|
   {
-    if |lines| == 0 {
-      found := false;
-    } else {
-      var here := IsLogicalPageDelimiterLine(lines[0]);
-      var later := HasDelimiterLinesMethod(lines[1..]);
-      found := here || later;
+    found := false;
+    var i := 0;
+    while i < |lines|
+      invariant 0 <= i <= |lines|
+      invariant found == (exists j :: 0 <= j < i && IsLogicalPageDelimiterLine(lines[j]))
+      decreases |lines| - i
+    {
+      found := found || IsLogicalPageDelimiterLine(lines[i]);
+      i := i + 1;
     }
   }
 
@@ -495,42 +489,36 @@ module NlCore {
     ensures Spec.FragmentsConcatenate(
               outputFragments, out, outputCuts
             )
-    decreases |lines|
   {
-    if |lines| == 0 {
-      out := [];
-      numbers := [start];
-      outputFragments := [];
-      outputCuts := [0];
-      reveal LineNumberFromSummary();
-      reveal Spec.FragmentsConcatenate();
-    } else {
-      var head := RenderLineMethod(
-        cmd, lines[0], terminated[0], start
-      );
-      var selected := ShouldNumber(
-        cmd.bodyStyle, |lines[0]| > 0
-      );
-      var next := start + (if selected then 1 else 0);
-      var tail, tailNumbers, tailFragments, tailCuts :=
-        RenderLinesMethod(cmd, lines[1..], terminated[1..], next);
-      out := head + tail;
-      numbers := [start] + tailNumbers;
-      outputFragments := [head] + tailFragments;
-      outputCuts := [0] + ShiftCuts(tailCuts, |head|);
-      PrependByteFragment(head, tailFragments, tail, tailCuts);
-      reveal LineNumberFromSummary();
-      assert forall i: nat :: i < |lines| ==>
-                                LineRenderSummary(
-                                  cmd, lines[i], terminated[i], numbers[i], outputFragments[i]
-                                ) by {
-        forall i: nat | i < |lines|
-          ensures LineRenderSummary(
-                    cmd, lines[i], terminated[i], numbers[i], outputFragments[i]
-                  )
-        {
-        }
-      }
+    out := [];
+    numbers := [start];
+    outputFragments := [];
+    outputCuts := [0];
+    reveal LineNumberFromSummary();
+    reveal Spec.FragmentsConcatenate();
+    var i := 0;
+    var number := start;
+    while i < |lines|
+      invariant 0 <= i <= |lines|
+      invariant |numbers| == i + 1
+      invariant number == numbers[i]
+      invariant LineNumberFromSummary(cmd, lines[..i], start, numbers)
+      invariant |outputFragments| == i
+      invariant forall j: nat :: j < i ==>
+        LineRenderSummary(cmd, lines[j], terminated[j], numbers[j], outputFragments[j])
+      invariant Spec.FragmentsConcatenate(outputFragments, out, outputCuts)
+      decreases |lines| - i
+    {
+      var part := RenderLineMethod(cmd, lines[i], terminated[i], number);
+      var selected := ShouldNumber(cmd.bodyStyle, |lines[i]| > 0);
+      var next := number + (if selected then 1 else 0);
+      AppendByteFragment(outputFragments, out, outputCuts, part);
+      out := out + part;
+      numbers := numbers + [next];
+      outputFragments := outputFragments + [part];
+      outputCuts := outputCuts + [|out|];
+      number := next;
+      i := i + 1;
     }
   }
 
@@ -576,27 +564,31 @@ module NlCore {
 
     if cmd.mode == NlSchema.ModeHelp {
       var help := Spec.HelpText();
-      io.AppendStdout(help);
+      var diagnostics := NlSchema.OptionErrorsText(cmd.optionErrors);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _, _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + help;
-      assert io.stderr() == preStderr;
+      assert io.stderr() == preStderr + diagnostics;
       return;
     }
 
     if cmd.mode == NlSchema.ModeVersion {
       var version := Spec.VersionText();
-      io.AppendStdout(version);
+      var diagnostics := NlSchema.OptionErrorsText(cmd.optionErrors);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _, _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + version;
-      assert io.stderr() == preStderr;
+      assert io.stderr() == preStderr + diagnostics;
       return;
     }
 
     if cmd.mode != NlSchema.ModeRun {
-      var err := Spec.ModeErrorMessage(cmd.mode);
-      io.AppendStderr(err);
+      var err := Spec.ModeErrorMessage(cmd);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -619,7 +611,8 @@ module NlCore {
       invariant |errorFragments| == i
       invariant forall j: nat :: j < i ==>
                                    Spec.ReadResultRelation(
-                                     cmd, preFs, preStdin, j, readResults[j]
+                                     cmd, preFs, preStdin, j, readResults[j],
+                                     old(io.trustedStreams())
                                    ) &&
                                    inputFragments[j] ==
                                    (match readResults[j]
@@ -650,7 +643,7 @@ module NlCore {
       match input {
         case Stdin =>
           ghost var beforeReadStdin := io.stdin();
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           assert IOContract.ReadStdinAllFields(
               beforeReadStdin, io.stdin(), data
             );
@@ -659,9 +652,10 @@ module NlCore {
           errorPiece := [];
           pieceHadError := false;
         case File(path) =>
-          readResult := io.ReadFile(path);
+          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
           assert readResult ==
-                 IOContract.ReadFileResultFields(preFs, path);
+                 IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
           if readResult.Ok? {
             piece := NormalizeInputData(readResult.v);
             errorPiece := [];
@@ -674,7 +668,8 @@ module NlCore {
       }
       reveal Spec.ReadResultRelation();
       assert Spec.ReadResultRelation(
-          cmd, preFs, preStdin, i, readResult
+          cmd, preFs, preStdin, i, readResult,
+          old(io.trustedStreams())
         );
       assert piece ==
              (match readResult
@@ -702,7 +697,8 @@ module NlCore {
           errorFragments, err, errorCuts);
       assert forall j: nat :: j < i + 1 ==>
                                 Spec.ReadResultRelation(
-                                  cmd, preFs, preStdin, j, readResults[j]
+                                  cmd, preFs, preStdin, j, readResults[j],
+                                  old(io.trustedStreams())
                                 ) &&
                                 inputFragments[j] ==
                                 (match readResults[j]
@@ -712,7 +708,8 @@ module NlCore {
                                 Spec.ErrorPiece(cmd.inputs[j], readResults[j]) by {
         forall j: nat | j < i + 1
           ensures Spec.ReadResultRelation(
-                    cmd, preFs, preStdin, j, readResults[j]
+                    cmd, preFs, preStdin, j, readResults[j],
+                    old(io.trustedStreams())
                   ) &&
                   inputFragments[j] ==
                   (match readResults[j]
@@ -832,11 +829,12 @@ module NlCore {
     }
     assert InputTraceSummary(
         cmd, preFs, preStdin, readResults, inputFragments, combined,
-        inputCuts, errorFragments, err, errorCuts, hadError, hasDelimiter
+        inputCuts, errorFragments, err, errorCuts, hadError, hasDelimiter,
+        old(io.trustedStreams())
       );
     if hasDelimiter {
       var delimiterErr := Spec.UnsupportedLogicalPageDelimiterMessage();
-      io.AppendStderr(err + delimiterErr);
+      var _, _ := io.WriteStderr(err + delimiterErr, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdout() == preStdout;
       assert io.stderr() == preStderr + err + delimiterErr;
@@ -870,10 +868,10 @@ module NlCore {
     assert OutputSummary(cmd, combined, rendered);
     outputPart := rendered;
     if |rendered| > 0 {
-      io.AppendStdout(rendered);
+      var _, _ := io.WriteStdout(rendered, BenchWorld.ThrowOnError);
     }
     if |err| > 0 {
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     }
     exit := if hadError then 1 else 0;
     assert io.stdout() == preStdout + rendered;

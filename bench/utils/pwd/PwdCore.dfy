@@ -140,7 +140,7 @@ module PwdCore {
     var helpSelected := HelpSelected(raw);
     if helpSelected {
       var out := GetHelpText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -148,7 +148,7 @@ module PwdCore {
     var versionSelected := VersionSelected(raw);
     if versionSelected {
       var out := GetVersionText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -186,10 +186,10 @@ module PwdCore {
 
     if |raw.operands| > 0 {
       var warning := GetIgnoredOperandsWarning();
-      io.AppendStderr(warning);
+      var _, _ := io.WriteStderr(warning, BenchWorld.ThrowOnError);
     }
     var out := GetCurrentDirectoryText(dir);
-    io.AppendStdout(out);
+    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     exit := 0;
     assert dir == SelectedCurrentDirFields(raw, preCwd, preEnv);
     assert CoreSummary(raw, io, exit);

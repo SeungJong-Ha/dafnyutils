@@ -275,7 +275,8 @@ module FoldCore {
           io.stdin(),
           stdoutPart,
           stderrPart,
-          hadError
+          hadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() == old(io.stdout()) + stdoutPart &&
         io.stderr() == old(io.stderr()) + stderrPart &&
@@ -311,7 +312,8 @@ module FoldCore {
                               stdoutFragment: BenchWorld.Bytes,
                               stderrFragment: BenchWorld.Bytes,
                               nextPostStdin: BenchWorld.Bytes,
-                              nextHadError: bool
+                              nextHadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires count < |cmd.inputs|
     requires Spec.InputPrefixTraceRelation(
@@ -323,9 +325,10 @@ module FoldCore {
                results,
                stdoutFragments,
                stderrFragments,
-               hadError
+               hadError,
+               preStreams
              )
-    requires result == Spec.ReadResultAt(cmd, preFs, preStdin, count)
+    requires result == Spec.ReadResultAt(cmd, preFs, preStdin, count, preStreams)
     requires match result
              case Ok(data) =>
                Spec.DataFoldRelation(
@@ -353,16 +356,17 @@ module FoldCore {
               results + [result],
               stdoutFragments + [stdoutFragment],
               stderrFragments + [stderrFragment],
-              nextHadError
+              nextHadError,
+              preStreams
             )
   {
     reveal Spec.InputPrefixTraceRelation();
     assert forall i :: 0 <= i < |results + [result]| ==>
                          (results + [result])[i] ==
-                         Spec.ReadResultAt(cmd, preFs, preStdin, i) by {
+                         Spec.ReadResultAt(cmd, preFs, preStdin, i, preStreams) by {
       forall i | 0 <= i < |results + [result]|
         ensures (results + [result])[i] ==
-                Spec.ReadResultAt(cmd, preFs, preStdin, i)
+                Spec.ReadResultAt(cmd, preFs, preStdin, i, preStreams)
       {
       }
     }
@@ -835,7 +839,7 @@ module FoldCore {
     var cmd := Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var help := GetHelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert help == Spec.HelpText();
       assert CoreSummary(raw, io, exit);
@@ -843,7 +847,7 @@ module FoldCore {
     }
     if cmd.mode == Schema.ModeVersion {
       var version := GetVersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert version == Spec.VersionText();
       assert CoreSummary(raw, io, exit);
@@ -851,7 +855,7 @@ module FoldCore {
     }
     if cmd.mode == Schema.ModeInvalidWidth {
       var msg := GetInvalidWidthMessage(cmd.invalidWidthValue);
-      io.AppendStderr(msg);
+      var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
       exit := 1;
       assert msg == Spec.InvalidWidthMessage(cmd.invalidWidthValue);
       assert CoreSummary(raw, io, exit);
@@ -881,7 +885,8 @@ module FoldCore {
                   results,
                   stdoutFragments,
                   stderrFragments,
-                  hadError
+                  hadError,
+                  old(io.trustedStreams())
                 )
       invariant output == Spec.JoinFragments(stdoutFragments)
       invariant errors == Spec.JoinFragments(stderrFragments)
@@ -891,7 +896,7 @@ module FoldCore {
       match input
       case Stdin =>
         ghost var beforeStdin := io.stdin();
-        var data := io.ReadStdinAll();
+        var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
         assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
         var piece := OutputPieceMethod(cmd, BenchWorld.Ok(data));
         assert Spec.DataFoldRelation(
@@ -902,7 +907,7 @@ module FoldCore {
         JoinFragmentsSnoc(stdoutFragments, piece);
         JoinFragmentsSnoc(stderrFragments, []);
         assert BenchWorld.Ok(data) ==
-               Spec.ReadResultAt(cmd, preFs, preStdin, i);
+               Spec.ReadResultAt(cmd, preFs, preStdin, i, old(io.trustedStreams()));
         assert io.stdin() ==
                (if Spec.HasEarlierStdin(cmd, i + 1) then [] else preStdin);
         ExtendInputPrefixTrace(
@@ -919,7 +924,8 @@ module FoldCore {
           piece,
           [],
           io.stdin(),
-          hadError
+          hadError,
+          old(io.trustedStreams())
         );
         results := results + [BenchWorld.Ok(data)];
         stdoutFragments := stdoutFragments + [piece];
@@ -928,15 +934,16 @@ module FoldCore {
         i := i + 1;
         reveal Spec.InputPrefixTraceRelation();
       case File(path) =>
-        var result := io.ReadFile(path);
-        assert result == IOContract.ReadFileResultFields(preFs, path);
+        var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+        var result := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+        assert result == IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
         HasEarlierFileStep(cmd, i);
         match result
         case Ok(data) =>
           var piece := OutputPieceMethod(cmd, result);
           JoinFragmentsSnoc(stdoutFragments, piece);
           JoinFragmentsSnoc(stderrFragments, []);
-          assert result == Spec.ReadResultAt(cmd, preFs, preStdin, i);
+          assert result == Spec.ReadResultAt(cmd, preFs, preStdin, i, old(io.trustedStreams()));
           assert io.stdin() ==
                  (if Spec.HasEarlierStdin(cmd, i + 1) then [] else preStdin);
           ExtendInputPrefixTrace(
@@ -953,7 +960,8 @@ module FoldCore {
             piece,
             [],
             io.stdin(),
-            hadError
+            hadError,
+            old(io.trustedStreams())
           );
           results := results + [result];
           stdoutFragments := stdoutFragments + [piece];
@@ -965,7 +973,7 @@ module FoldCore {
           var msg := ErrorMessageMethod(path, err);
           JoinFragmentsSnoc(stdoutFragments, []);
           JoinFragmentsSnoc(stderrFragments, msg);
-          assert result == Spec.ReadResultAt(cmd, preFs, preStdin, i);
+          assert result == Spec.ReadResultAt(cmd, preFs, preStdin, i, old(io.trustedStreams()));
           assert io.stdin() ==
                  (if Spec.HasEarlierStdin(cmd, i + 1) then [] else preStdin);
           ExtendInputPrefixTrace(
@@ -982,7 +990,8 @@ module FoldCore {
             [],
             msg,
             io.stdin(),
-            true
+            true,
+            old(io.trustedStreams())
           );
           results := results + [result];
           stdoutFragments := stdoutFragments + [[]];
@@ -995,10 +1004,11 @@ module FoldCore {
 
     reveal Spec.InputTraceRelation();
     assert Spec.InputTraceRelation(
-        cmd, preFs, preStdin, io.stdin(), output, errors, hadError
+        cmd, preFs, preStdin, io.stdin(), output, errors, hadError,
+        old(io.trustedStreams())
       );
-    io.AppendStdout(output);
-    io.AppendStderr(errors);
+    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert exists stdoutPart: BenchWorld.Bytes,
         stderrPart: BenchWorld.Bytes,
@@ -1010,13 +1020,15 @@ module FoldCore {
           io.stdin(),
           stdoutPart,
           stderrPart,
-          traceHadError
+          traceHadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() == preStdout + stdoutPart &&
         io.stderr() == preStderr + stderrPart &&
         exit == (if traceHadError then 1 else 0) by {
       assert Spec.InputTraceRelation(
-          cmd, preFs, preStdin, io.stdin(), output, errors, hadError
+          cmd, preFs, preStdin, io.stdin(), output, errors, hadError,
+          old(io.trustedStreams())
         );
     }
     assert CoreSummary(raw, io, exit);

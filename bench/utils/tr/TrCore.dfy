@@ -10,6 +10,7 @@ module TrCore {
   import IOContract
   import TrSchema
   import Spec = TrSpec
+  import Utf8 = Utf8Semantics
 
   datatype TrMode =
     | ModeRun
@@ -26,19 +27,102 @@ module TrCore {
     squeeze: bool,
     set1: BenchWorld.Bytes,
     set2: BenchWorld.Bytes,
-    squeezeSet: BenchWorld.Bytes
+    squeezeSet: BenchWorld.Bytes,
+    warnings: BenchWorld.Bytes
   )
 
   datatype SetDecode = SetOk(bytes: BenchWorld.Bytes) | SetUnsupported(operand: string)
+  datatype SetAtom = SetAtom(next: nat, bytes: BenchWorld.Bytes)
 
-  function IsAscii(ch: char): bool
+  function IsOctal(ch: char): bool
   {
-    0 <= ch as int < 128
+    '0' <= ch <= '7'
   }
 
-  function IsSetSyntaxMarker(ch: char): bool
+  function OctalValue(ch: char): int
+    requires IsOctal(ch)
   {
-    ch == '\\'
+    ch as int - '0' as int
+  }
+
+  function SimpleEscape(ch: char): char
+  {
+    if ch == 'a' then 7 as char
+    else if ch == 'b' then 8 as char
+    else if ch == 'f' then 12 as char
+    else if ch == 'n' then '\n'
+    else if ch == 'r' then '\r'
+    else if ch == 't' then '\t'
+    else if ch == 'v' then 11 as char
+    else ch
+  }
+
+  function EscapeBytes(ch: char): BenchWorld.Bytes
+  {
+    if ch == 'a' || ch == 'b' || ch == 'f' || ch == 'n' ||
+       ch == 'r' || ch == 't' || ch == 'v' then
+      [SimpleEscape(ch)]
+    else
+      Utf8.EncodeChar(ch)
+  }
+
+  function AtomAt(text: string, i: nat): SetAtom
+    requires i < |text|
+    ensures i < AtomAt(text, i).next <= |text|
+  {
+    if text[i] != '\\' then
+      SetAtom(i + 1, Utf8.EncodeChar(text[i]))
+    else if i + 1 == |text| then
+      SetAtom(i + 1, ['\\'])
+    else if IsOctal(text[i + 1]) then
+      if i + 2 < |text| && IsOctal(text[i + 2]) then
+        if i + 3 < |text| && IsOctal(text[i + 3]) &&
+           OctalValue(text[i + 1]) < 4 then
+          SetAtom(i + 4, [((OctalValue(text[i + 1]) * 64 +
+                            OctalValue(text[i + 2]) * 8 +
+                            OctalValue(text[i + 3])) as char)])
+        else
+          SetAtom(i + 3, [((OctalValue(text[i + 1]) * 8 +
+                            OctalValue(text[i + 2])) as char)])
+      else
+        SetAtom(i + 2, [(OctalValue(text[i + 1]) as char)])
+    else
+      SetAtom(i + 2, EscapeBytes(text[i + 1]))
+  } by method {
+    if text[i] != '\\' {
+      return SetAtom(i + 1, Utf8.EncodeChar(text[i]));
+    }
+    if i + 1 == |text| {
+      return SetAtom(i + 1, ['\\']);
+    }
+    if IsOctal(text[i + 1]) {
+      var first := OctalValue(text[i + 1]);
+      if i + 2 < |text| && IsOctal(text[i + 2]) {
+        var second := OctalValue(text[i + 2]);
+        if i + 3 < |text| && IsOctal(text[i + 3]) && first < 4 {
+          return SetAtom(i + 4, [((first * 64 + second * 8 +
+                                   OctalValue(text[i + 3])) as char)]);
+        }
+        return SetAtom(i + 3, [((first * 8 + second) as char)]);
+      }
+      return SetAtom(i + 2, [(first as char)]);
+    }
+    return SetAtom(i + 2, EscapeBytes(text[i + 1]));
+  }
+
+  function WarningBytesFrom(text: string, i: nat): BenchWorld.Bytes
+    requires i <= |text|
+    decreases |text| - i
+  {
+    if i == |text| then []
+    else Spec.WarningAtSpec(text, i) +
+         WarningBytesFrom(text, AtomAt(text, i).next)
+  } by method {
+    if i == |text| {
+      return [];
+    }
+    var atom := AtomAt(text, i);
+    return Spec.WarningAtSpec(text, i) + WarningBytesFrom(text, atom.next);
   }
 
   function ContainsPairFrom(text: string, i: nat, first: char, second: char): bool
@@ -67,8 +151,8 @@ module TrCore {
   }
 
   function RangeChars(lo: char, hi: char): BenchWorld.Bytes
-    requires IsAscii(lo)
-    requires IsAscii(hi)
+    requires 0 <= lo as int < 256
+    requires 0 <= hi as int < 256
     requires lo as int <= hi as int
     decreases (hi as int) - (lo as int)
   {
@@ -86,48 +170,51 @@ module TrCore {
       SetOk([])
     else if StartsUnsupportedConstruct(text, i) then
       SetUnsupported(text)
-    else if IsSetSyntaxMarker(text[i]) then
-      SetUnsupported(text)
-    else if i + 2 < |text| && text[i + 1] == '-' then
-      if IsAscii(text[i]) && IsAscii(text[i + 2]) && text[i] as int <= text[i + 2] as int then
-        match DecodeSetFrom(text, i + 3)
-        case SetOk(rest) => SetOk(RangeChars(text[i], text[i + 2]) + rest)
-        case SetUnsupported(_) => SetUnsupported(text)
-      else
-        SetUnsupported(text)
-    else if !IsAscii(text[i]) then
-      SetUnsupported(text)
     else
-      match DecodeSetFrom(text, i + 1)
-      case SetOk(rest) => SetOk([text[i]] + rest)
-      case SetUnsupported(_) => SetUnsupported(text)
+      var atom := AtomAt(text, i);
+      if atom.next < |text| && text[atom.next] == '-' && atom.next + 1 < |text| then
+        var end := AtomAt(text, atom.next + 1);
+        if |atom.bytes| == 1 && |end.bytes| == 1 &&
+           atom.bytes[0] as int < 256 && end.bytes[0] as int < 256 &&
+           atom.bytes[0] as int <= end.bytes[0] as int then
+          match DecodeSetFrom(text, end.next)
+          case SetOk(rest) => SetOk(RangeChars(atom.bytes[0], end.bytes[0]) + rest)
+          case SetUnsupported(_) => SetUnsupported(text)
+        else
+          SetUnsupported(text)
+      else
+        match DecodeSetFrom(text, atom.next)
+        case SetOk(rest) => SetOk(atom.bytes + rest)
+        case SetUnsupported(_) => SetUnsupported(text)
   } by method {
     if i == |text| {
       return SetOk([]);
     } else if StartsUnsupportedConstruct(text, i) {
       return SetUnsupported(text);
-    } else if IsSetSyntaxMarker(text[i]) {
-      return SetUnsupported(text);
-    } else if i + 2 < |text| && text[i + 1] == '-' {
-      if IsAscii(text[i]) && IsAscii(text[i + 2]) && text[i] as int <= text[i + 2] as int {
-        var tail := DecodeSetFrom(text, i + 3);
+    } else {
+      var atom := AtomAt(text, i);
+      if atom.next < |text| && text[atom.next] == '-' && atom.next + 1 < |text| {
+        var end := AtomAt(text, atom.next + 1);
+        if |atom.bytes| == 1 && |end.bytes| == 1 &&
+           atom.bytes[0] as int < 256 && end.bytes[0] as int < 256 &&
+           atom.bytes[0] as int <= end.bytes[0] as int {
+          var tail := DecodeSetFrom(text, end.next);
+          match tail
+          case SetOk(rest) =>
+            return SetOk(RangeChars(atom.bytes[0], end.bytes[0]) + rest);
+          case SetUnsupported(_) =>
+            return SetUnsupported(text);
+        } else {
+          return SetUnsupported(text);
+        }
+      } else {
+        var tail := DecodeSetFrom(text, atom.next);
         match tail
         case SetOk(rest) =>
-          return SetOk(RangeChars(text[i], text[i + 2]) + rest);
+          return SetOk(atom.bytes + rest);
         case SetUnsupported(_) =>
           return SetUnsupported(text);
-      } else {
-        return SetUnsupported(text);
       }
-    } else if !IsAscii(text[i]) {
-      return SetUnsupported(text);
-    } else {
-      var tail := DecodeSetFrom(text, i + 1);
-      match tail
-      case SetOk(rest) =>
-        return SetOk([text[i]] + rest);
-      case SetUnsupported(_) =>
-        return SetUnsupported(text);
     }
   }
 
@@ -173,9 +260,9 @@ module TrCore {
       case SetUnsupported(_) => [];
   }
 
-  // Deferred GNU behavior: classes, equivalence classes, repeats, escapes,
-  // complements, truncate mode, locale behavior, and multibyte characters are
-  // intentionally outside this ASCII byte-set benchmark slice.
+  // Deferred GNU behavior: classes, equivalence classes, repeats,
+  // complements, truncate mode and locale-dependent collation remain outside
+  // this literal-byte benchmark slice.
   function Command(raw: TrSchema.TrCmdRaw): TrCmd
   {
     var mode :=
@@ -186,9 +273,9 @@ module TrCore {
       else if |raw.operands| == 0 then
         ModeMissingOperand(Spec.MissingOperandMessageSpec())
       else if !raw.seenDelete && !raw.seenSqueeze && |raw.operands| == 1 then
-        ModeMissingOperand(Spec.MissingSet2MessageSpec())
+        ModeMissingOperand(Spec.MissingSet2MessageSpec(raw.operands[0], false))
       else if raw.seenDelete && raw.seenSqueeze && |raw.operands| == 1 then
-        ModeMissingOperand(Spec.MissingSet2MessageSpec())
+        ModeMissingOperand(Spec.MissingSet2MessageSpec(raw.operands[0], true))
       else if raw.seenDelete && !raw.seenSqueeze && |raw.operands| > 1 then
         ModeExtraOperand(raw.operands[1])
       else if |raw.operands| > 2 then
@@ -203,7 +290,11 @@ module TrCore {
     var set2 := if |raw.operands| > 1 then SetBytes(raw.operands[1]) else [];
     var squeezeSet :=
       if raw.seenSqueeze && |raw.operands| > 1 then set2 else set1;
-    TrCmd(mode, raw.seenDelete, raw.seenSqueeze, set1, set2, squeezeSet)
+    var warnings :=
+      (if |raw.operands| > 0 then WarningBytesFrom(raw.operands[0], 0) else []) +
+      (if |raw.operands| > 1 && DecodeSet(raw.operands[0]).SetOk? then
+         WarningBytesFrom(raw.operands[1], 0) else []);
+    TrCmd(mode, raw.seenDelete, raw.seenSqueeze, set1, set2, squeezeSet, warnings)
   } by method {
     var unsupported := HasUnsupportedOperand(raw.operands);
     var set1: BenchWorld.Bytes := [];
@@ -222,9 +313,9 @@ module TrCore {
       else if |raw.operands| == 0 then
         ModeMissingOperand(Spec.MissingOperandMessageSpec())
       else if !raw.seenDelete && !raw.seenSqueeze && |raw.operands| == 1 then
-        ModeMissingOperand(Spec.MissingSet2MessageSpec())
+        ModeMissingOperand(Spec.MissingSet2MessageSpec(raw.operands[0], false))
       else if raw.seenDelete && raw.seenSqueeze && |raw.operands| == 1 then
-        ModeMissingOperand(Spec.MissingSet2MessageSpec())
+        ModeMissingOperand(Spec.MissingSet2MessageSpec(raw.operands[0], true))
       else if raw.seenDelete && !raw.seenSqueeze && |raw.operands| > 1 then
         ModeExtraOperand(raw.operands[1])
       else if |raw.operands| > 2 then
@@ -236,7 +327,14 @@ module TrCore {
       else
         ModeRun;
     var squeezeSet := if raw.seenSqueeze && |raw.operands| > 1 then set2 else set1;
-    return TrCmd(mode, raw.seenDelete, raw.seenSqueeze, set1, set2, squeezeSet);
+    var warnings: BenchWorld.Bytes := [];
+    if |raw.operands| > 0 {
+      warnings := WarningBytesFrom(raw.operands[0], 0);
+      if |raw.operands| > 1 && DecodeSet(raw.operands[0]).SetOk? {
+        warnings := warnings + WarningBytesFrom(raw.operands[1], 0);
+      }
+    }
+    return TrCmd(mode, raw.seenDelete, raw.seenSqueeze, set1, set2, squeezeSet, warnings);
   }
 
   function Contains(bytes: BenchWorld.Bytes, ch: char): bool
@@ -383,12 +481,14 @@ module TrCore {
     case ModeExtraOperand(operand) =>
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + Spec.ExtraOperandMessageSpec(operand) &&
+      io.stderr() == old(io.stderr()) +
+        Spec.ExtraOperandMessageSpec(operand, |raw.operands| == 2) &&
       exit == 1
     case ModeUnsupportedSet(operand) =>
       io.stdin() == old(io.stdin()) &&
       io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + Spec.UnsupportedSetMessageSpec(operand) &&
+      io.stderr() == old(io.stderr()) + cmd.warnings +
+        Spec.UnsupportedSetMessageSpec(operand) &&
       exit == 1
     case ModeEmptySet2 =>
       io.stdin() == old(io.stdin()) &&
@@ -398,7 +498,7 @@ module TrCore {
     case ModeRun =>
       io.stdin() == IOContract.AfterReadStdinFields(old(io.stdin())) &&
       io.stdout() == old(io.stdout()) + RenderData(cmd, old(io.stdin())) &&
-      io.stderr() == old(io.stderr()) &&
+      io.stderr() == old(io.stderr()) + cmd.warnings &&
       exit == 0
   }
 
@@ -412,42 +512,44 @@ module TrCore {
 
     match cmd.mode {
       case ModeHelp =>
-        io.AppendStdout(Spec.HelpTextSpec());
+        var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
         exit := 0;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeVersion =>
-        io.AppendStdout(Spec.VersionTextSpec());
+        var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
         exit := 0;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeMissingOperand(message) =>
-        io.AppendStderr(message);
+        var _, _ := io.WriteStderr(message, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeExtraOperand(operand) =>
-        io.AppendStderr(Spec.ExtraOperandMessageSpec(operand));
+        var _, _ := io.WriteStderr(Spec.ExtraOperandMessageSpec(operand, |raw.operands| == 2), BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeUnsupportedSet(operand) =>
-        io.AppendStderr(Spec.UnsupportedSetMessageSpec(operand));
+        var _, _ := io.WriteStderr(cmd.warnings, BenchWorld.ThrowOnError);
+        var _, _ := io.WriteStderr(Spec.UnsupportedSetMessageSpec(operand), BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeEmptySet2 =>
-        io.AppendStderr(Spec.EmptySet2MessageSpec());
+        var _, _ := io.WriteStderr(Spec.EmptySet2MessageSpec(), BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       case ModeRun =>
-        var data := io.ReadStdinAll();
+        var _, _ := io.WriteStderr(cmd.warnings, BenchWorld.ThrowOnError);
+        var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
         assert IOContract.ReadStdinAllFields(preStdin, io.stdin(), data);
         assert data == preStdin;
         assert io.stdin() == IOContract.AfterReadStdinFields(preStdin);
         var out := RenderData(cmd, data);
-        io.AppendStdout(out);
+        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
         exit := 0;
     }
     assert CoreSummary(raw, io, exit);

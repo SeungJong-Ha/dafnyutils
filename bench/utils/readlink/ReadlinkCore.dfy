@@ -140,12 +140,6 @@ module ReadlinkCore {
     assert i == |path|;
   }
 
-  method ComputeQuoteFileName(path: BenchWorld.Path) returns (out: BenchWorld.Bytes)
-    ensures out == Spec.QuoteFileNameSpec(path)
-  {
-    out := Spec.QuoteFileNameSpec(path);
-  }
-
   method GetErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError) returns (out: BenchWorld.Bytes)
     ensures out == Spec.ErrorMessageSpec(path, err)
   {
@@ -303,7 +297,7 @@ module ReadlinkCore {
   }
 
   method {:vcs_split_on_every_assert} RunCore(raw: Schema.ReadlinkCmdRaw, io: BenchIO.IO) returns (exit: int)
-    modifies io.stdoutRegion, io.stderrRegion
+    modifies io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures CoreSummary(raw, io, exit)
     decreases *
   {
@@ -314,7 +308,7 @@ module ReadlinkCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -322,7 +316,7 @@ module ReadlinkCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -330,7 +324,7 @@ module ReadlinkCore {
 
     if |cmd.operands| == 0 {
       var err := GetMissingOperandMessage();
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -338,7 +332,7 @@ module ReadlinkCore {
 
     if cmd.mode == Schema.ModeUnsupportedCanonicalize {
       var err := GetUnsupportedCanonicalizeMessage();
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -356,6 +350,7 @@ module ReadlinkCore {
       invariant io.stderr() == preStderr
       invariant cwd == preCwd
       invariant RunFilesSummaryFields(cmd, cmd.operands[..i], preFs, preCwd, hadError, out, errOut)
+      modifies io.statusObservationsRegion
       decreases *
     {
       var oldI := i;
@@ -374,7 +369,7 @@ module ReadlinkCore {
         r := BenchWorld.Err(BenchWorld.NoSuchFile);
       } else if hasTrailingSlash {
         var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(actualPath, true);
-        IOContract.FileStatusImpliesMetadata(io.fs(), actualPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
+        IOContract.FileStatusStructureImpliesMetadata(io.fs(), actualPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
         var ok := rawMetadataOk1;
         var isDir := rawMetadataStatus1.kind == BenchWorld.DirectoryKind;
         var dirErr := rawMetadataErr1;
@@ -423,9 +418,9 @@ module ReadlinkCore {
       assert RunFilesSummaryFields(cmd, cmd.operands[..i], preFs, preCwd, hadError, out, errOut);
     }
     assert cmd.operands[..i] == cmd.operands;
-    io.AppendStdout(out);
+    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     var warning := GetInitialWarning(cmd);
-    io.AppendStderr(warning + errOut);
+    var _, _ := io.WriteStderr(warning + errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert CoreSummary(raw, io, exit);
   }

@@ -8,6 +8,7 @@ module PrintenvSpec {
   import Schema = PrintenvSchema
   import BenchWorld
   import IOContract
+  import Utf8 = Utf8Semantics
 
 
 
@@ -58,7 +59,7 @@ module PrintenvSpec {
     else
       exists rest: BenchWorld.Bytes ::
         EnvironmentOutputRelation(entries[1..], terminator, rest) &&
-        out == entries[0] + terminator + rest
+        out == Utf8.Encode(entries[0]) + terminator + rest
   }
 
   ghost predicate OperandResultRelation(
@@ -78,7 +79,7 @@ module PrintenvSpec {
           env, operands[1..], terminator, rest, restExit
         ) &&
         if operands[0] in env then
-          out == env[operands[0]] + terminator + rest &&
+          out == Utf8.Encode(env[operands[0]]) + terminator + rest &&
           exit == restExit
         else
           out == rest &&

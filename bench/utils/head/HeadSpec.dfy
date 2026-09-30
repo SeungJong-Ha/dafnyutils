@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "HeadSchema.dfy"
 include "HeadRecordSpec.dfy"
 
@@ -11,6 +12,7 @@ module HeadSpec {
   import IOContract
   import HeadSchema
   import HeadRecordSpec
+  import SE = StringEscaping
 
 
 
@@ -62,17 +64,12 @@ module HeadSpec {
     case Other(msg) => msg
   }
 
-  function QuotedPath(path: BenchWorld.Path): string
-  {
-    "'" + path + "'"
-  }
-
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
     if err == BenchWorld.IsDirectory then
-      Utf8.Encode("head: error reading " + QuotedPath(path) + ": " + ErrnoText(err) + "\n")
+      Utf8.Encode("head: error reading " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n")
     else
-      Utf8.Encode("head: cannot open " + QuotedPath(path) + " for reading: " + ErrnoText(err) + "\n")
+      Utf8.Encode("head: cannot open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + " for reading: " + ErrnoText(err) + "\n")
   }
 
   function InvalidCountMessage(unit: HeadSchema.CountUnit, value: string): BenchWorld.Bytes
@@ -80,7 +77,7 @@ module HeadSpec {
     var displayValue := if |value| > 0 && value[0] == '-' then value[1..] else value;
     Utf8.Encode("head: invalid number of " +
     (if unit == HeadSchema.CountLines then "lines" else "bytes") +
-    ": '" + displayValue + "'\n")
+    ": " + SE.SpecLocaleQuoteBytes(Utf8.Encode(displayValue)) + "\n")
   }
 
   function InputsFromOperands(operands: seq<string>): seq<HeadSchema.Input>
@@ -146,7 +143,7 @@ module HeadSpec {
 
   ghost predicate ReadResultRelation(
     cmd: HeadSchema.HeadCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     result: BenchWorld.Result<BenchWorld.Bytes>
@@ -161,7 +158,7 @@ module HeadSpec {
         else preStdin
       )
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate ByteSelectionRelation(
@@ -217,7 +214,7 @@ module HeadSpec {
 
   ghost predicate InputObservationRelation(
     cmd: HeadSchema.HeadCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     result: BenchWorld.Result<BenchWorld.Bytes>,
@@ -229,7 +226,7 @@ module HeadSpec {
   )
     requires i < |cmd.inputs|
   {
-    ReadResultRelation(cmd, preFs, preStdin, i, result) &&
+    ReadResultRelation(cmd, preFs, preStreams, preStdin, i, result) &&
     (match cmd.inputs[i]
      case Stdin(_) =>
        (match result
@@ -275,7 +272,7 @@ module HeadSpec {
 
   opaque ghost predicate InputTraceWitnessRelation(
     cmd: HeadSchema.HeadCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
@@ -297,7 +294,7 @@ module HeadSpec {
     |failed| == |cmd.inputs| &&
     (forall i: nat | i < |cmd.inputs| ::
        InputObservationRelation(
-         cmd, preFs, preStdin, i, results[i],
+         cmd, preFs, preStreams, preStdin, i, results[i],
          |set j: nat | j < i && successful[j]|,
          outputFragments[i], errorFragments[i], successful[i], failed[i]
        )) &&
@@ -312,7 +309,7 @@ module HeadSpec {
 
   opaque ghost predicate InputTraceRelation(
     cmd: HeadSchema.HeadCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
@@ -328,7 +325,7 @@ module HeadSpec {
       outputCuts: seq<nat>,
       errorCuts: seq<nat> ::
       InputTraceWitnessRelation(
-        cmd, preFs, preStdin, postStdin, output, errorOutput, hadError,
+        cmd, preFs, preStreams, preStdin, postStdin, output, errorOutput, hadError,
         results, outputFragments, errorFragments, successful, failed,
         outputCuts, errorCuts
       )
@@ -358,7 +355,7 @@ module HeadSpec {
         errorOutput: BenchWorld.Bytes,
         hadError: bool ::
         InputTraceRelation(
-          cmd, old(io.fs()), old(io.stdin()), io.stdin(),
+          cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), io.stdin(),
           output, errorOutput, hadError
         ) &&
         io.stdout() == old(io.stdout()) + output &&

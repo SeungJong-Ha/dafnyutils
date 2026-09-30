@@ -101,14 +101,14 @@ module CommCore {
   }
 
   ghost function InputResult(
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     input: Schema.CommInput
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     match input
     case Stdin => BenchWorld.Ok(preStdin)
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost function AfterInputRead(preStdin: BenchWorld.Bytes, input: Schema.CommInput): BenchWorld.Bytes
@@ -120,12 +120,12 @@ module CommCore {
 
   ghost function ReadFirstResult(
     cmd: Schema.CommCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
-      InputResult(preFs, preStdin, cmd.input1)
+      InputResult(preFs, preStreams, preStdin, cmd.input1)
     else
       BenchWorld.Ok([])
   }
@@ -137,12 +137,12 @@ module CommCore {
 
   ghost function ReadSecondResult(
     cmd: Schema.CommCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   ): BenchWorld.Result<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
-      InputResult(preFs, AfterFirstRead(cmd, preStdin), cmd.input2)
+      InputResult(preFs, preStreams, AfterFirstRead(cmd, preStdin), cmd.input2)
     else
       BenchWorld.Ok([])
   }
@@ -300,7 +300,7 @@ module CommCore {
       io.stderr() == old(io.stderr()) + Spec.RepeatedStdinOperandMessageSpec() &&
       exit == 1
     case ModeRun =>
-      var first := ReadFirstResult(cmd, old(io.fs()), old(io.stdin()));
+      var first := ReadFirstResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
       match first
       case Err(_) =>
         io.stdin() == AfterFirstRead(cmd, old(io.stdin())) &&
@@ -308,7 +308,7 @@ module CommCore {
         io.stderr() == old(io.stderr()) + ErrorForReads(cmd, first, BenchWorld.Ok([])) &&
         exit == 1
       case Ok(_) =>
-        var second := ReadSecondResult(cmd, old(io.fs()), old(io.stdin()));
+        var second := ReadSecondResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
         io.stdin() == AfterSecondRead(cmd, old(io.stdin())) &&
         io.stdout() == old(io.stdout()) + OutputForReads(cmd, first, second) &&
         io.stderr() == old(io.stderr()) + ErrorForReads(cmd, first, second) &&
@@ -317,15 +317,16 @@ module CommCore {
 
   method ReadInputMethod(input: Schema.CommInput, io: BenchIO.IO) returns (result: BenchWorld.Result<BenchWorld.Bytes>)
     modifies io.stdinRegion
-    ensures result == InputResult(old(io.fs()), old(io.stdin()), input)
+    ensures result == InputResult(old(io.fs()), old(io.trustedStreams()), old(io.stdin()), input)
     ensures io.stdin() == AfterInputRead(old(io.stdin()), input)
   {
     match input
     case Stdin =>
-      var data := io.ReadStdinAll();
+      var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
       result := BenchWorld.Ok(data);
     case File(path) =>
-      result := io.ReadFile(path);
+      var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
+      result := IOContract.FileReadResultFromOutcome(readData, readErr);
   }
 
   method RunCore(raw: Schema.CommCmdRaw, io: BenchIO.IO) returns (exit: int)
@@ -334,6 +335,7 @@ module CommCore {
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStreams := io.trustedStreams();
     ghost var preStdin := io.stdin();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
@@ -342,7 +344,7 @@ module CommCore {
     match cmd.mode {
       case ModeHelp =>
         var help := Spec.HelpTextSpec();
-        io.AppendStdout(help);
+        var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -350,7 +352,7 @@ module CommCore {
         return;
       case ModeVersion =>
         var version := Spec.VersionTextSpec();
-        io.AppendStdout(version);
+        var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -358,7 +360,7 @@ module CommCore {
         return;
       case ModeMissingOperand =>
         var msg := Spec.MissingOperandMessageSpec();
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -366,7 +368,7 @@ module CommCore {
         return;
       case ModeMissingOperandAfter(operand) =>
         var msg := Spec.MissingOperandAfterMessageSpec(operand);
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -374,7 +376,7 @@ module CommCore {
         return;
       case ModeExtraOperand(operand) =>
         var msg := Spec.ExtraOperandMessageSpec(operand);
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -382,7 +384,7 @@ module CommCore {
         return;
       case ModeMultipleOutputDelimiters =>
         var msg := Spec.MultipleOutputDelimitersMessageSpec();
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -390,7 +392,7 @@ module CommCore {
         return;
       case ModeRepeatedStdinOperand =>
         var msg := Spec.RepeatedStdinOperandMessageSpec();
-        io.AppendStderr(msg);
+        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -398,11 +400,11 @@ module CommCore {
         return;
       case ModeRun =>
         var first := ReadInputMethod(cmd.input1, io);
-        assert first == ReadFirstResult(cmd, preFs, preStdin);
+        assert first == ReadFirstResult(cmd, preFs, preStreams, preStdin);
         assert io.stdin() == AfterFirstRead(cmd, preStdin);
         if first.Err? {
           var err := ErrorForReads(cmd, first, BenchWorld.Ok([]));
-          io.AppendStderr(err);
+          var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
           exit := 1;
           assert io.stdout() == preStdout;
           assert io.stderr() == preStderr + ErrorForReads(cmd, first, BenchWorld.Ok([]));
@@ -411,15 +413,15 @@ module CommCore {
           ghost var stdinAfterFirst := io.stdin();
           var second := ReadInputMethod(cmd.input2, io);
           assert stdinAfterFirst == AfterFirstRead(cmd, preStdin);
-          assert second == InputResult(preFs, stdinAfterFirst, cmd.input2);
-          assert second == ReadSecondResult(cmd, preFs, preStdin);
+          assert second == InputResult(preFs, preStreams, stdinAfterFirst, cmd.input2);
+          assert second == ReadSecondResult(cmd, preFs, preStreams, preStdin);
           assert io.stdin() == AfterInputRead(stdinAfterFirst, cmd.input2);
           assert io.stdin() == AfterSecondRead(cmd, preStdin);
           var out := OutputForReads(cmd, first, second);
           var err := ErrorForReads(cmd, first, second);
           var hadError := HadRunError(cmd, first, second);
-          io.AppendStdout(out);
-          io.AppendStderr(err);
+          var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+          var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
           exit := if hadError then 1 else 0;
           assert io.stdout() == preStdout + OutputForReads(cmd, first, second);
           assert io.stderr() == preStderr + ErrorForReads(cmd, first, second);

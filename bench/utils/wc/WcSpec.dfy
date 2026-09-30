@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "WcSchema.dfy"
 
 module WcSpec {
@@ -8,6 +9,8 @@ module WcSpec {
   import BenchWorld
   import IOContract
   import WcSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
 
 
@@ -68,10 +71,7 @@ module WcSpec {
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    var displayPath :=
-      if ' ' in path then "'" + path + "'"
-      else path;
-    "wc: " + displayPath + ": " + ErrnoText(err) + "\n"
+    "wc: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n"
   }
 
   function InputsFromOperands(operands: seq<string>): seq<WcSchema.Input>
@@ -195,13 +195,14 @@ module WcSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
     case Stdin(_) =>
       result == BenchWorld.Ok(
         if exists j: nat :: j < i && IsStdinInput(cmd.inputs[j])
@@ -266,11 +267,12 @@ module WcSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    observation: InputObservation
+    observation: InputObservation,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
-    ReadResultRelation(cmd, preFs, preStdin, i, observation.result) &&
+    ReadResultRelation(cmd, preFs, preStdin, i, observation.result, preStreams) &&
     InputStepRelation(
       cmd.inputs[i],
       observation.result,
@@ -315,7 +317,8 @@ module WcSpec {
     hadError: bool,
     observations: seq<InputObservation>,
     entryCuts: seq<nat>,
-    errorCuts: seq<nat>
+    errorCuts: seq<nat>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     |observations| == |cmd.inputs| &&
@@ -325,7 +328,8 @@ module WcSpec {
          preFs,
          preStdin,
          i,
-         observations[i]
+         observations[i],
+         preStreams
        )) &&
     FragmentsConcatenate(
       ObservationEntryFragments(observations),
@@ -352,7 +356,8 @@ module WcSpec {
     postStdin: BenchWorld.Bytes,
     entries: seq<Entry>,
     errorOutput: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     exists observations: seq<InputObservation>,
@@ -368,7 +373,8 @@ module WcSpec {
         hadError,
         observations,
         entryCuts,
-        errorCuts
+        errorCuts,
+        preStreams
       )
   }
 
@@ -529,7 +535,8 @@ module WcSpec {
       ) &&
       line ==
       valuesOutput +
-      (if name == "" then [] else [' '] + name) +
+      (if name == "" then [] else
+        [' '] + (if '\n' in name then SE.SpecQuoteFBytes(Utf8.Encode(name)) else Utf8.Encode(name))) +
       ['\n']
   }
 
@@ -658,7 +665,8 @@ module WcSpec {
           io.stdin(),
           entries,
           errorOutput,
-          hadError
+          hadError,
+          old(io.trustedStreams())
         ) &&
         OutputRelation(cmd, entries, outputPart) &&
         io.stdout() == old(io.stdout()) + outputPart &&

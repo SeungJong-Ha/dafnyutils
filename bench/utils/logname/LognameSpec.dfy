@@ -1,4 +1,5 @@
 include "../../core/IO.dfy"
+include "../../core/StringEscaping.dfy"
 include "LognameSchema.dfy"
 
 module LognameSpec {
@@ -6,6 +7,7 @@ module LognameSpec {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import Schema = LognameSchema
+  import SE = StringEscaping
 
 
 
@@ -41,7 +43,7 @@ module LognameSpec {
 
   function ExtraOperandMessageSpec(op: string): BenchWorld.Bytes
   {
-    "logname: extra operand '" + op + "'\n"
+    "logname: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(op)) + "\n"
     + "Try 'logname --help' for more information.\n"
   }
 

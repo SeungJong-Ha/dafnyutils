@@ -30,11 +30,11 @@ module TrueCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := Spec.HelpTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
       exit := 0;
     } else if cmd.mode == Schema.ModeVersion {
       var out := Spec.VersionTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
       exit := 0;
     } else {
       exit := 0;

@@ -285,7 +285,220 @@ module MvCore {
     err: int
   )
 
+  ghost predicate StatusCallsFor(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>
+  )
+  {
+    Spec.StatusCallsFor(observations, first, calls)
+  }
+
+  lemma StatusCallsConcat(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    left: seq<Spec.StatusCallEvidence>,
+    right: seq<Spec.StatusCallEvidence>
+  )
+    requires StatusCallsFor(observations, first, left)
+    requires StatusCallsFor(observations, first + |left|, right)
+    ensures StatusCallsFor(observations, first, left + right)
+  {
+    forall i: nat | i < |left + right|
+      ensures IOContract.ObservedFileStatusContractFields(
+        observations, first + i, (left + right)[i].fs,
+        (left + right)[i].path, (left + right)[i].followSymlink,
+        (left + right)[i].ok, (left + right)[i].status,
+        (left + right)[i].err
+      )
+    {
+      if i >= |left| {
+        assert first + i == first + |left| + (i - |left|);
+      }
+    }
+  }
+
+  lemma StatusCallsSnoc(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    call: Spec.StatusCallEvidence
+  )
+    requires StatusCallsFor(observations, first, calls)
+    requires IOContract.ObservedFileStatusContractFields(
+      observations, first + |calls|, call.fs, call.path,
+      call.followSymlink, call.ok, call.status, call.err
+    )
+    ensures StatusCallsFor(observations, first, calls + [call])
+  {
+    StatusCallsConcat(observations, first, calls, [call]);
+  }
+
+  lemma StatusCallsAcrossEqualObservations(
+    before: BenchWorld.StatusTimeObservations,
+    after: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>
+  )
+    requires before == after
+    requires StatusCallsFor(before, first, calls)
+    ensures StatusCallsFor(after, first, calls)
+  {
+    hide StatusCallsFor;
+  }
+
+  lemma StatusCallsAtEqualOrdinal(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    equalFirst: nat,
+    calls: seq<Spec.StatusCallEvidence>
+  )
+    requires first == equalFirst
+    requires StatusCallsFor(observations, first, calls)
+    ensures StatusCallsFor(observations, equalFirst, calls)
+  {
+    hide StatusCallsFor;
+  }
+
+  lemma {:isolate_assertions} StatusCallsAppendObservedStep(
+    before: BenchWorld.StatusTimeObservations,
+    after: BenchWorld.StatusTimeObservations,
+    first: nat,
+    prefix: seq<Spec.StatusCallEvidence>,
+    step: StepEvidence
+  )
+    requires before == after
+    requires StatusCallsFor(before, first, prefix)
+    requires step.firstStatus == first + |prefix|
+    requires StatusCallsFor(after, step.firstStatus, step.statusCalls)
+    ensures StatusCallsFor(after, first, prefix + step.statusCalls)
+  {
+    StatusCallsAcrossEqualObservations(before, after, first, prefix);
+    StatusCallsAtEqualOrdinal(
+      after, step.firstStatus, first + |prefix|, step.statusCalls);
+    StatusCallsConcat(after, first, prefix, step.statusCalls);
+  }
+
+  lemma StatusCallPrefixSlice(
+    left: seq<Spec.StatusCallEvidence>,
+    right: seq<Spec.StatusCallEvidence>,
+    lo: nat,
+    hi: nat
+  )
+    requires lo <= hi <= |left|
+    ensures (left + right)[lo..hi] == left[lo..hi]
+  {
+  }
+
+  lemma StatusCallTail(
+    left: seq<Spec.StatusCallEvidence>,
+    right: seq<Spec.StatusCallEvidence>
+  )
+    ensures (left + right)[|left|..] == right
+  {
+  }
+
+  lemma {:isolate_assertions} StatusBoundsSnoc(
+    first: nat,
+    prefixCalls: seq<Spec.StatusCallEvidence>,
+    prefixBounds: seq<nat>,
+    prefixSteps: seq<StepEvidence>,
+    step: StepEvidence,
+    nextCalls: seq<Spec.StatusCallEvidence>,
+    nextBounds: seq<nat>,
+    nextSteps: seq<StepEvidence>
+  )
+    requires |prefixBounds| == |prefixSteps| + 1
+    requires prefixBounds[|prefixSteps|] == first + |prefixCalls|
+    requires forall j: nat {:trigger prefixBounds[j]} | j < |prefixSteps| ::
+      first <= prefixBounds[j] <= prefixBounds[j + 1] <=
+        first + |prefixCalls| &&
+      prefixSteps[j].firstStatus == prefixBounds[j] &&
+      prefixBounds[j + 1] ==
+        prefixBounds[j] + |prefixSteps[j].statusCalls| &&
+      prefixCalls[prefixBounds[j] - first ..
+                  prefixBounds[j + 1] - first] ==
+        prefixSteps[j].statusCalls
+    requires step.firstStatus == first + |prefixCalls|
+    requires nextCalls == prefixCalls + step.statusCalls
+    requires nextBounds == prefixBounds + [first + |nextCalls|]
+    requires nextSteps == prefixSteps + [step]
+    ensures forall j: nat {:trigger nextBounds[j]} | j < |nextSteps| ::
+      first <= nextBounds[j] <= nextBounds[j + 1] <=
+        first + |nextCalls| &&
+      nextSteps[j].firstStatus == nextBounds[j] &&
+      nextBounds[j + 1] ==
+        nextBounds[j] + |nextSteps[j].statusCalls| &&
+      nextCalls[nextBounds[j] - first ..
+                nextBounds[j + 1] - first] ==
+        nextSteps[j].statusCalls
+  {
+    StatusCallTail(prefixCalls, step.statusCalls);
+    forall j: nat {:trigger nextBounds[j]} | j < |nextSteps|
+      ensures first <= nextBounds[j] <= nextBounds[j + 1] <=
+                first + |nextCalls| &&
+              nextSteps[j].firstStatus == nextBounds[j] &&
+              nextBounds[j + 1] ==
+                nextBounds[j] + |nextSteps[j].statusCalls| &&
+              nextCalls[nextBounds[j] - first ..
+                        nextBounds[j + 1] - first] ==
+                nextSteps[j].statusCalls
+    {
+      if j < |prefixSteps| {
+        assert nextBounds[j] == prefixBounds[j];
+        assert nextBounds[j + 1] == prefixBounds[j + 1];
+        assert nextSteps[j] == prefixSteps[j];
+        assert prefixBounds[j + 1] <= first + |prefixCalls|;
+        StatusCallPrefixSlice(
+          prefixCalls, step.statusCalls,
+          prefixBounds[j] - first,
+          prefixBounds[j + 1] - first);
+      } else {
+        assert j == |prefixSteps|;
+        assert nextBounds[j] == first + |prefixCalls|;
+        assert nextCalls[|prefixCalls|..] == step.statusCalls;
+      }
+    }
+  }
+
+  lemma StatusCallsSlice(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    lo: nat,
+    hi: nat
+  )
+    requires StatusCallsFor(observations, first, calls)
+    requires lo <= hi <= |calls|
+    ensures StatusCallsFor(observations, first + lo, calls[lo..hi])
+  {
+    forall i: nat | i < |calls[lo..hi]|
+      ensures IOContract.ObservedFileStatusContractFields(
+        observations, first + lo + i,
+        calls[lo..hi][i].fs, calls[lo..hi][i].path,
+        calls[lo..hi][i].followSymlink,
+        calls[lo..hi][i].ok, calls[lo..hi][i].status,
+        calls[lo..hi][i].err)
+    {
+      assert calls[lo..hi][i] == calls[lo + i];
+    }
+  }
+
+  ghost function MetadataStatusCall(
+    fs: BenchWorld.FileSystem,
+    path: string,
+    followSymlink: bool,
+    evidence: MetadataEvidence
+  ): Spec.StatusCallEvidence
+  {
+    Spec.StatusCallEvidence(
+      fs, path, followSymlink, evidence.ok, evidence.rawStatus, evidence.err
+    )
+  }
+
   datatype MetadataEvidence = MetadataEvidence(
+    ghost ordinal: nat,
+    ghost rawStatus: BenchWorld.FileStatus,
     ok: bool,
     key: BenchWorld.HostInodeKey,
     links: BenchWorld.LinkCountObservation,
@@ -362,7 +575,9 @@ module MvCore {
     sameFile: SameFileEvidence,
     backup: BackupSelectionEvidence,
     renames: seq<RenameCallEvidence>,
-    backupFs: BenchWorld.FileSystem
+    backupFs: BenchWorld.FileSystem,
+    ghost firstStatus: nat,
+    ghost statusCalls: seq<Spec.StatusCallEvidence>
   )
 
   datatype BatchEvidence = BatchEvidence(
@@ -370,8 +585,157 @@ module MvCore {
     fsBounds: seq<BenchWorld.FileSystem>,
     outcomes: seq<Spec.MoveOutcome>,
     stdoutFragments: seq<BenchWorld.Bytes>,
+    stderrFragments: seq<BenchWorld.Bytes>,
+    ghost firstStatus: nat,
+    ghost statusCalls: seq<Spec.StatusCallEvidence>,
+    ghost statusBounds: seq<nat>
+  )
+
+  datatype DirectoryStatusEvidence =
+    | FailedDirectoryStatus(call: Spec.StatusCallEvidence)
+    | SuccessfulDirectoryStatus(
+        call: Spec.StatusCallEvidence,
+        batch: BatchEvidence
+      )
+
+  datatype RunStatusEvidence =
+    | NoRunStatus
+    | DirectoryRunStatus(value: DirectoryStatusEvidence)
+    | DirectMoveStatus(step: StepEvidence)
+    | ProbedMoveStatus(call: Spec.StatusCallEvidence, step: StepEvidence)
+
+  datatype StatusTranscript = StatusTranscript(
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>
+  )
+
+  ghost predicate BatchStatusEvidenceFor(
+    observations: BenchWorld.StatusTimeObservations,
+    evidence: BatchEvidence
+  )
+  {
+    |evidence.statusBounds| == |evidence.steps| + 1 &&
+    evidence.statusBounds[0] == evidence.firstStatus &&
+    evidence.statusBounds[|evidence.steps|] ==
+      evidence.firstStatus + |evidence.statusCalls| &&
+    StatusCallsFor(observations, evidence.firstStatus, evidence.statusCalls) &&
+    forall i: nat {:trigger evidence.statusBounds[i]} | i < |evidence.steps| ::
+      evidence.firstStatus <= evidence.statusBounds[i] <=
+        evidence.statusBounds[i + 1] <=
+        evidence.firstStatus + |evidence.statusCalls| &&
+      evidence.steps[i].firstStatus == evidence.statusBounds[i] &&
+      evidence.statusBounds[i + 1] ==
+        evidence.statusBounds[i] + |evidence.steps[i].statusCalls| &&
+      evidence.statusCalls[
+        evidence.statusBounds[i] - evidence.firstStatus ..
+        evidence.statusBounds[i + 1] - evidence.firstStatus
+      ] == evidence.steps[i].statusCalls
+  }
+
+  lemma PackageBatchStatusEvidence(
+    observations: BenchWorld.StatusTimeObservations,
+    evidence: BatchEvidence
+  )
+    requires |evidence.statusBounds| == |evidence.steps| + 1
+    requires evidence.statusBounds[0] == evidence.firstStatus
+    requires evidence.statusBounds[|evidence.steps|] ==
+             evidence.firstStatus + |evidence.statusCalls|
+    requires StatusCallsFor(observations, evidence.firstStatus,
+                            evidence.statusCalls)
+    requires forall i: nat {:trigger evidence.statusBounds[i]} | i < |evidence.steps| ::
+      evidence.firstStatus <= evidence.statusBounds[i] <=
+        evidence.statusBounds[i + 1] <=
+          evidence.firstStatus + |evidence.statusCalls| &&
+      evidence.steps[i].firstStatus == evidence.statusBounds[i] &&
+      evidence.statusBounds[i + 1] ==
+        evidence.statusBounds[i] + |evidence.steps[i].statusCalls| &&
+      evidence.statusCalls[
+        evidence.statusBounds[i] - evidence.firstStatus ..
+        evidence.statusBounds[i + 1] - evidence.firstStatus
+      ] == evidence.steps[i].statusCalls
+    ensures BatchStatusEvidenceFor(observations, evidence)
+  {
+  }
+
+  lemma BatchStatusEvidenceFromParts(
+    observations: BenchWorld.StatusTimeObservations,
+    first: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    bounds: seq<nat>,
+    steps: seq<StepEvidence>,
+    fsBounds: seq<BenchWorld.FileSystem>,
+    outcomes: seq<Spec.MoveOutcome>,
+    stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>
   )
+    requires |bounds| == |steps| + 1
+    requires bounds[0] == first
+    requires bounds[|steps|] == first + |calls|
+    requires StatusCallsFor(observations, first, calls)
+    requires forall i: nat {:trigger bounds[i]} | i < |steps| ::
+      first <= bounds[i] <= bounds[i + 1] <= first + |calls| &&
+      steps[i].firstStatus == bounds[i] &&
+      bounds[i + 1] == bounds[i] + |steps[i].statusCalls| &&
+      calls[bounds[i] - first .. bounds[i + 1] - first] ==
+        steps[i].statusCalls
+    ensures BatchStatusEvidenceFor(
+      observations,
+      BatchEvidence(steps, fsBounds, outcomes, stdoutFragments,
+                    stderrFragments, first, calls, bounds))
+  {
+    var evidence := BatchEvidence(steps, fsBounds, outcomes,
+      stdoutFragments, stderrFragments, first, calls, bounds);
+    assert forall i: nat {:trigger evidence.statusBounds[i]} | i < |evidence.steps| ::
+      evidence.firstStatus <= evidence.statusBounds[i] <=
+        evidence.statusBounds[i + 1] <=
+          evidence.firstStatus + |evidence.statusCalls| &&
+      evidence.steps[i].firstStatus == evidence.statusBounds[i] &&
+      evidence.statusBounds[i + 1] ==
+        evidence.statusBounds[i] + |evidence.steps[i].statusCalls| &&
+      evidence.statusCalls[
+        evidence.statusBounds[i] - evidence.firstStatus ..
+        evidence.statusBounds[i + 1] - evidence.firstStatus
+      ] == evidence.steps[i].statusCalls by {
+      forall i: nat {:trigger evidence.statusBounds[i]} | i < |evidence.steps|
+        ensures evidence.firstStatus <= evidence.statusBounds[i] <=
+                  evidence.statusBounds[i + 1] <=
+                    evidence.firstStatus + |evidence.statusCalls| &&
+                evidence.steps[i].firstStatus == evidence.statusBounds[i] &&
+                evidence.statusBounds[i + 1] ==
+                  evidence.statusBounds[i] + |evidence.steps[i].statusCalls| &&
+                evidence.statusCalls[
+                  evidence.statusBounds[i] - evidence.firstStatus ..
+                  evidence.statusBounds[i + 1] - evidence.firstStatus
+                ] == evidence.steps[i].statusCalls
+      {
+        assert bounds[i] == evidence.statusBounds[i];
+        assert bounds[i + 1] == evidence.statusBounds[i + 1];
+        assert steps[i] == evidence.steps[i];
+      }
+    }
+    PackageBatchStatusEvidence(observations, evidence);
+  }
+
+  ghost predicate BatchMoveStatusEvidenceFor(
+    sources: seq<string>,
+    directory: string,
+    cmd: Schema.MvCmd,
+    observations: BenchWorld.StatusTimeObservations,
+    evidence: BatchEvidence
+  )
+  {
+    BatchStatusEvidenceFor(observations, evidence) &&
+    |evidence.steps| == |sources| &&
+    (forall i: nat | i < |sources| ::
+      var normalizedSource :=
+        NormalizeSource(sources[i], cmd.stripTrailingSlashes);
+      StepStatusEvidenceFor(
+        normalizedSource,
+        TargetInDirectory(directory, normalizedSource),
+        cmd,
+        evidence.steps[i]
+      ))
+  }
 
   ghost function MakeStepEvidence(
     beforeFs: BenchWorld.FileSystem,
@@ -388,7 +752,8 @@ module MvCore {
     sameFile: SameFileEvidence,
     backup: BackupSelectionEvidence,
     renames: seq<RenameCallEvidence>,
-    backupFs: BenchWorld.FileSystem
+    backupFs: BenchWorld.FileSystem,
+    transcript: StatusTranscript
   ): StepEvidence
   {
     StepEvidence(
@@ -404,7 +769,9 @@ module MvCore {
       sameFile,
       backup,
       renames,
-      backupFs
+      backupFs,
+      transcript.first,
+      transcript.calls
     )
   }
 
@@ -424,22 +791,50 @@ module MvCore {
     evidence: MetadataEvidence
   )
   {
-    IOContract.GetFileTimesContractFields(
-      fs,
-      path,
-      followSymlink,
-      evidence.ok,
-      evidence.times.atimeSec,
-      evidence.times.atimeNsec,
-      evidence.times.mtimeSec,
-      evidence.times.mtimeNsec,
-      evidence.isDir,
-      evidence.isSymlink,
-      evidence.key.device,
-      evidence.key.inode,
-      MetadataLinkCountValue(evidence),
-      evidence.err
-    )
+    evidence.times.atimeSec == evidence.rawStatus.times.atimeSec &&
+    evidence.times.atimeNsec == evidence.rawStatus.times.atimeNsec &&
+    evidence.times.mtimeSec == evidence.rawStatus.times.mtimeSec &&
+    evidence.times.mtimeNsec == evidence.rawStatus.times.mtimeNsec &&
+    (evidence.ok ==>
+      evidence.key == evidence.rawStatus.hostKey &&
+      evidence.isDir == (evidence.rawStatus.kind == BenchWorld.DirectoryKind) &&
+      evidence.isSymlink == (evidence.rawStatus.kind == BenchWorld.SymlinkKind) &&
+      MetadataLinkCountValue(evidence) == evidence.rawStatus.linkCount) &&
+    match IOContract.GetFileStatusResultFields(fs, path, followSymlink)
+    case Ok(expected) =>
+      evidence.ok && evidence.err == 0 &&
+      evidence.key == expected.hostKey &&
+      evidence.links.LinkCountKnown? &&
+      MetadataLinkCountValue(evidence) == expected.linkCount &&
+      evidence.isDir == (expected.kind == BenchWorld.DirectoryKind) &&
+      evidence.isSymlink == (expected.kind == BenchWorld.SymlinkKind)
+    case Err(error) =>
+      !evidence.ok && evidence.err == IOContract.IOErrorErrno(error)
+  }
+
+  ghost predicate ObservedMetadataEvidenceFor(
+    observations: BenchWorld.StatusTimeObservations,
+    fs: BenchWorld.FileSystem,
+    path: string,
+    followSymlink: bool,
+    evidence: MetadataEvidence
+  )
+  {
+    MetadataEvidenceFor(fs, path, followSymlink, evidence) &&
+    var status := evidence.rawStatus;
+    IOContract.ObservedFileStatusContractFields(
+      observations, evidence.ordinal, fs, path, followSymlink,
+      evidence.ok, status, evidence.err
+    ) &&
+      (evidence.ok ==>
+        evidence.key == status.hostKey &&
+        evidence.isDir == (status.kind == BenchWorld.DirectoryKind) &&
+        evidence.isSymlink == (status.kind == BenchWorld.SymlinkKind) &&
+        MetadataLinkCountValue(evidence) == status.linkCount &&
+        evidence.times.atimeSec == status.times.atimeSec &&
+        evidence.times.atimeNsec == status.times.atimeNsec &&
+        evidence.times.mtimeSec == status.times.mtimeSec &&
+        evidence.times.mtimeNsec == status.times.mtimeNsec)
   }
 
   ghost predicate EntryNameEvidenceFor(
@@ -671,6 +1066,34 @@ module MvCore {
        )) &&
     (forall i: nat | i + 1 < |checks| :: checks[i].found) &&
     !checks[|checks| - 1].found
+  }
+
+  ghost predicate BackupStatusSuffixFor(
+    backupMode: Schema.BackupMode,
+    fs: BenchWorld.FileSystem,
+    target: string,
+    calls: seq<Spec.StatusCallEvidence>
+  )
+  {
+    if backupMode == Schema.BackupOff || backupMode == Schema.BackupSimple then
+      |calls| == 0
+    else if backupMode == Schema.BackupExisting then
+      |calls| >= 1 &&
+      Spec.StatusRequest(calls[0], fs, NumberedBackupPath(target, 1), false) &&
+      (if !calls[0].ok then
+         |calls| == 1
+       else
+         |calls| >= 2 &&
+         (forall i: nat | 1 <= i < |calls| ::
+            Spec.StatusRequest(calls[i], fs, NumberedBackupPath(target, i), false)) &&
+         (forall i: nat | 1 <= i + 1 < |calls| :: calls[i].ok) &&
+         !calls[|calls| - 1].ok)
+    else
+      |calls| >= 1 &&
+      (forall i: nat | i < |calls| ::
+        Spec.StatusRequest(calls[i], fs, NumberedBackupPath(target, i + 1), false)) &&
+      (forall i: nat | i + 1 < |calls| :: calls[i].ok) &&
+      !calls[|calls| - 1].ok
   }
 
   ghost predicate BackupSelectionEvidenceFor(
@@ -1031,6 +1454,121 @@ module MvCore {
              ExistingTargetRenameEvidenceFor(
                source, target, cmd, preCwd, evidence
              ))
+  }
+
+  ghost predicate StepStatusEvidenceFor(
+    source: string,
+    target: string,
+    cmd: Schema.MvCmd,
+    evidence: StepEvidence
+  )
+  {
+    var fs := evidence.beforeFs;
+    var calls := evidence.statusCalls;
+    |calls| >= 1 &&
+    Spec.StatusRequest(calls[0], fs, source, false) &&
+    calls[0].ok == evidence.sourceOk &&
+    calls[0].err == evidence.sourceErr &&
+    (if !evidence.sourceOk then
+       |calls| == 1
+     else
+       |calls| >= 2 &&
+       Spec.StatusRequest(calls[1], fs, target, false) &&
+       calls[1].ok == evidence.targetFound &&
+       calls[1].err == evidence.targetExistsErr &&
+       (if !evidence.targetFound ||
+           cmd.overwriteMode == Schema.OverwriteSkip ||
+           cmd.updateMode == Schema.UpdateNone ||
+           cmd.updateMode == Schema.UpdateNoneFail then
+          |calls| == 2
+        else
+          match evidence.sameFile
+          case NoSameFileCheck => false
+          case CheckedSameFile(
+            sourceMetadata, targetMetadata, sourceFollowed,
+            sourceEntry, targetEntry, sourceReferentEntry,
+            collision, decision
+          ) =>
+            |calls| >= 6 &&
+            calls[2] == MetadataStatusCall(fs, source, false, sourceMetadata) &&
+            calls[3] == MetadataStatusCall(fs, target, false, targetMetadata) &&
+            calls[4] == MetadataStatusCall(
+              fs, sourceEntry.parent, false, sourceEntry.parentMetadata
+            ) &&
+            calls[5] == MetadataStatusCall(
+              fs, targetEntry.parent, false, targetEntry.parentMetadata
+            ) &&
+            var afterEntries :=
+              if sourceMetadata.isSymlink then
+                (if sourceReferentEntry.SomeEntryNameEvidence? then 8 else 7)
+              else 6;
+              (if sourceMetadata.isSymlink then
+                 |calls| >= 7 &&
+                 (match sourceFollowed
+                  case SomeMetadataEvidence(followed) =>
+                    calls[6] == MetadataStatusCall(fs, source, true, followed)
+                  case _ => false) &&
+                 (match sourceReferentEntry
+                  case SomeEntryNameEvidence(resolvedPath, referentEntry) =>
+                    |calls| >= 8 &&
+                    calls[7] == MetadataStatusCall(
+                      fs, referentEntry.parent, false,
+                      referentEntry.parentMetadata
+                    )
+                  case FailedEntryNameEvidence(_) => true
+                  case NoEntryNameEvidence => false)
+               else
+                 true) &&
+              (if decision == Spec.RejectSameFile ||
+                  (cmd.updateMode == Schema.UpdateOlder &&
+                   !SourceNewer(
+                     sourceMetadata.times.mtimeSec,
+                     sourceMetadata.times.mtimeNsec,
+                     targetMetadata.times.mtimeSec,
+                     targetMetadata.times.mtimeNsec
+                   )) then
+                 |calls| == afterEntries
+               else
+                 var collisionNeeded :=
+                   (cmd.backupMode == Schema.BackupSimple ||
+                    cmd.backupMode == Schema.BackupExisting) &&
+                   sourceEntry.leaf == targetEntry.leaf + cmd.backupSuffix;
+                 var afterCollision := afterEntries +
+                   (if collisionNeeded then 1 else 0);
+                 afterCollision <= |calls| &&
+                 (collisionNeeded ==>
+                   (match collision
+                    case CheckedBackupCollision(_, candidate) =>
+                      calls[afterEntries] == MetadataStatusCall(
+                        fs, SimpleBackupPath(target, cmd.backupSuffix),
+                        true, candidate
+                      )
+                    case _ => false)) &&
+                 (if BackupCollisionDetected(collision) then
+                    |calls| == afterCollision
+                  else
+                    BackupStatusSuffixFor(
+                      cmd.backupMode, fs, target, calls[afterCollision..]
+                    )))))
+  }
+
+  lemma StepStatusEvidenceTransfer(
+    source: string,
+    target: string,
+    cmd: Schema.MvCmd,
+    from: StepEvidence,
+    to: StepEvidence
+  )
+    requires StepStatusEvidenceFor(source, target, cmd, from)
+    requires to.beforeFs == from.beforeFs
+    requires to.sourceOk == from.sourceOk
+    requires to.sourceErr == from.sourceErr
+    requires to.targetFound == from.targetFound
+    requires to.targetExistsErr == from.targetExistsErr
+    requires to.sameFile == from.sameFile
+    requires to.statusCalls == from.statusCalls
+    ensures StepStatusEvidenceFor(source, target, cmd, to)
+  {
   }
 
   lemma PackageSourceFailureStep(
@@ -1440,6 +1978,42 @@ module MvCore {
        i < |evidence.outcomes| && evidence.outcomes[i].failed)
   }
 
+  lemma {:isolate_assertions} PackageBatchEvidenceFor(
+    sources: seq<string>,
+    directory: string,
+    cmd: Schema.MvCmd,
+    beforeFs: BenchWorld.FileSystem,
+    preCwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    hadError: bool,
+    out: BenchWorld.Bytes,
+    err: BenchWorld.Bytes,
+    evidence: BatchEvidence
+  )
+    requires |evidence.steps| == |sources|
+    requires |evidence.fsBounds| == |sources| + 1
+    requires |evidence.outcomes| == |sources|
+    requires |evidence.stdoutFragments| == |sources|
+    requires |evidence.stderrFragments| == |sources|
+    requires evidence.fsBounds[0] == beforeFs
+    requires evidence.fsBounds[|evidence.fsBounds| - 1] == afterFs
+    requires forall i: nat | i < |sources| ::
+      BatchStepEvidenceFor(
+        sources[i], directory, cmd,
+        evidence.fsBounds[i], preCwd, evidence.fsBounds[i + 1],
+        evidence.outcomes[i], evidence.stdoutFragments[i],
+        evidence.stderrFragments[i], evidence.steps[i])
+    requires Spec.ConcatenateFragments(evidence.stdoutFragments) == out
+    requires Spec.ConcatenateFragments(evidence.stderrFragments) == err
+    requires hadError <==>
+      exists i: nat ::
+        i < |evidence.outcomes| && evidence.outcomes[i].failed
+    ensures BatchEvidenceFor(
+      sources, directory, cmd, beforeFs, preCwd, afterFs,
+      hadError, out, err, evidence)
+  {
+  }
+
   lemma ConcatenateFragmentsSnoc(
     fragments: seq<BenchWorld.Bytes>,
     fragment: BenchWorld.Bytes
@@ -1630,24 +2204,40 @@ module MvCore {
     target: string,
     index: nat,
     io: BenchIO.IO
-  ) returns (path: string, ghost checks: seq<BackupCheckEvidence>)
+  ) returns (path: string, ghost checks: seq<BackupCheckEvidence>, ghost calls: seq<Spec.StatusCallEvidence>)
     requires index >= 1
+    modifies io.statusObservationsRegion
     ensures BackupChecksFor(target, index, old(io.fs()), checks)
     ensures path == checks[|checks| - 1].candidate
+    ensures io.statusCursor() == old(io.statusCursor()) + |calls|
+    ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), calls)
+    ensures |calls| == |checks|
+    ensures forall i: nat | i < |calls| ::
+              Spec.StatusRequest(
+                calls[i], old(io.fs()), NumberedBackupPath(target, index + i), false
+              ) &&
+              calls[i].ok == checks[i].found &&
+              calls[i].err == checks[i].err
     decreases *
   {
+    ghost var firstStatus := io.statusCursor();
     var candidate := NumberedBackupPath(target, index);
     var rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6 := io.GetFileStatus(candidate, false);
-    IOContract.FileStatusImpliesMetadata(io.fs(), candidate, false, rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), candidate, false, rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6);
     var found := rawMetadataOk6;
     var err := rawMetadataErr6;
     ghost var check := BackupCheckEvidence(candidate, found, err);
+    ghost var call := Spec.StatusCallEvidence(old(io.fs()), candidate, false,
+                                         rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6);
     if found {
       ghost var tail: seq<BackupCheckEvidence>;
-      path, tail := FindUnusedNumberedBackupPath(
+      ghost var tailCalls: seq<Spec.StatusCallEvidence>;
+      path, tail, tailCalls := FindUnusedNumberedBackupPath(
         target, index + 1, io
       );
       checks := [check] + tail;
+      calls := [call] + tailCalls;
+      StatusCallsConcat(io.statusObservations(), firstStatus, [call], tailCalls);
       assert IOContract.PathExistsContractFields(
           old(io.fs()), candidate, false, true, err
         );
@@ -1689,57 +2279,72 @@ module MvCore {
     } else {
       path := candidate;
       checks := [check];
+      calls := [call];
       assert IOContract.PathExistsContractFields(old(io.fs()), candidate, false, false, err);
     }
     assert BackupChecksFor(target, index, old(io.fs()), checks);
   }
 
-  method PickBackupPath(
+  method {:isolate_assertions} PickBackupPath(
     target: string,
     backupMode: Schema.BackupMode,
     suffix: string,
     io: BenchIO.IO
-  ) returns (path: string, ghost evidence: BackupSelectionEvidence)
+  ) returns (path: string, ghost evidence: BackupSelectionEvidence,
+             ghost calls: seq<Spec.StatusCallEvidence>)
+    modifies io.statusObservationsRegion
     ensures BackupSelectionEvidenceFor(
               target, backupMode, suffix, old(io.fs()), evidence
             )
     ensures backupMode != Schema.BackupOff ==>
               evidence.SelectedBackup? &&
               evidence.backupPath == path
+    ensures io.statusCursor() == old(io.statusCursor()) + |calls|
+    ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), calls)
+    ensures BackupStatusSuffixFor(backupMode, old(io.fs()), target, calls)
     decreases *
   {
+    ghost var firstStatus := io.statusCursor();
     if backupMode == Schema.BackupOff {
       path := "";
       evidence := NoBackupSelection;
+      calls := [];
       return;
     }
     if backupMode == Schema.BackupSimple {
       path := SimpleBackupPath(target, suffix);
       evidence := SelectedBackup(path, [], false, false, 0);
+      calls := [];
       return;
     }
     if backupMode == Schema.BackupExisting {
       var numberedSeed := NumberedBackupPath(target, 1);
       var rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5 := io.GetFileStatus(numberedSeed, false);
-      IOContract.FileStatusImpliesMetadata(io.fs(), numberedSeed, false, rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5);
+      IOContract.FileStatusStructureImpliesMetadata(io.fs(), numberedSeed, false, rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5);
       var found := rawMetadataOk5;
       var err := rawMetadataErr5;
+      ghost var seedCall := Spec.StatusCallEvidence(old(io.fs()), numberedSeed, false,
+                                               rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5);
       if !found {
         path := SimpleBackupPath(target, suffix);
         evidence := SelectedBackup(path, [], true, found, err);
+        calls := [seedCall];
         assert IOContract.PathExistsContractFields(old(io.fs()), numberedSeed, false, false, err);
         return;
       }
       ghost var checks: seq<BackupCheckEvidence>;
-      path, checks := FindUnusedNumberedBackupPath(target, 1, io);
+      ghost var numberedCalls: seq<Spec.StatusCallEvidence>;
+      path, checks, numberedCalls := FindUnusedNumberedBackupPath(target, 1, io);
       evidence := SelectedBackup(path, checks, true, found, err);
+      calls := [seedCall] + numberedCalls;
+      StatusCallsConcat(io.statusObservations(), firstStatus, [seedCall], numberedCalls);
       assert IOContract.PathExistsContractFields(
           old(io.fs()), numberedSeed, false, true, err
         );
       return;
     }
     ghost var checks: seq<BackupCheckEvidence>;
-    path, checks := FindUnusedNumberedBackupPath(target, 1, io);
+    path, checks, calls := FindUnusedNumberedBackupPath(target, 1, io);
     evidence := SelectedBackup(path, checks, false, false, 0);
   }
 
@@ -1748,12 +2353,19 @@ module MvCore {
     followSymlink: bool,
     io: BenchIO.IO
   ) returns (evidence: MetadataEvidence)
+    modifies io.statusObservationsRegion
     ensures MetadataEvidenceFor(
               old(io.fs()), path, followSymlink, evidence
             )
+    ensures ObservedMetadataEvidenceFor(
+              io.statusObservations(), old(io.fs()), path, followSymlink, evidence
+            )
+    ensures evidence.ordinal == old(io.statusCursor())
+    ensures io.statusCursor() == old(io.statusCursor()) + 1
   {
+    ghost var ordinal := io.statusCursor();
     var ok, status, err := io.GetFileStatus(path, followSymlink);
-    IOContract.FileStatusImpliesMetadata(io.fs(), path, followSymlink, ok, status, err);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), path, followSymlink, ok, status, err);
     var atimeSec := status.times.atimeSec;
     var atimeNsec := status.times.atimeNsec;
     var mtimeSec := status.times.mtimeSec;
@@ -1768,6 +2380,8 @@ module MvCore {
       links := BenchWorld.LinkCountKnown(linkCount as nat);
     }
     evidence := MetadataEvidence(
+      ordinal,
+      status,
       ok,
       BenchWorld.HostInodeKey(device, inode),
       links,
@@ -1784,7 +2398,13 @@ module MvCore {
     path: string,
     io: BenchIO.IO
   ) returns (evidence: EntryNameEvidence)
+    modifies io.statusObservationsRegion
     ensures EntryNameEvidenceFor(old(io.fs()), path, evidence)
+    ensures io.statusCursor() == old(io.statusCursor()) + 1
+    ensures evidence.parentMetadata.ordinal == old(io.statusCursor())
+    ensures ObservedMetadataEvidenceFor(
+              io.statusObservations(), old(io.fs()), evidence.parent,
+              false, evidence.parentMetadata)
     decreases *
   {
     var leaf := BasenameCore.ComputeBasenameValue(path);
@@ -1974,6 +2594,134 @@ module MvCore {
          stderr2 == preStderr + step.outcome.stderrFragment)
   }
 
+  ghost predicate DirectoryStatusEvidenceFor(
+    sources: seq<string>,
+    directory: string,
+    cmd: Schema.MvCmd,
+    beforeFs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    evidence: DirectoryStatusEvidence
+  )
+  {
+    match evidence
+    case FailedDirectoryStatus(call) =>
+      calls == [call] &&
+      Spec.StatusRequest(call, beforeFs, directory, true) &&
+      (!call.ok || call.status.kind != BenchWorld.DirectoryKind) &&
+      afterFs == beforeFs &&
+      afterStdout == beforeStdout && exit == 1
+    case SuccessfulDirectoryStatus(call, batch) =>
+      calls == [call] + batch.statusCalls &&
+      Spec.StatusRequest(call, beforeFs, directory, true) &&
+      call.ok && call.status.kind == BenchWorld.DirectoryKind &&
+      batch.firstStatus == firstStatus + 1 &&
+      BatchMoveStatusEvidenceFor(
+        sources, directory, cmd, observations, batch
+      ) &&
+      exists hadError: bool, out: BenchWorld.Bytes, err: BenchWorld.Bytes ::
+        BatchEvidenceFor(
+          sources, directory, cmd, beforeFs, cwd, afterFs,
+          hadError, out, err, batch
+        ) &&
+        exit == (if hadError then 1 else 0) &&
+        afterStdout == beforeStdout + out &&
+        afterStderr == beforeStderr + err
+  }
+
+  ghost predicate RunStatusEvidenceFor(
+    raw: Schema.MvCmdRaw,
+    beforeFs: BenchWorld.FileSystem,
+    cwd: BenchWorld.Path,
+    afterFs: BenchWorld.FileSystem,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    evidence: RunStatusEvidence
+  )
+  {
+    var cmd := Schema.Command(raw);
+    afterStatus == firstStatus + |calls| &&
+    StatusCallsFor(observations, firstStatus, calls) &&
+    (if cmd.mode != Schema.ModeRun ||
+        (cmd.targetDirectory != "" && cmd.noTargetDirectory) ||
+        |cmd.operands| == 0 ||
+        (cmd.targetDirectory == "" && |cmd.operands| == 1) ||
+        (cmd.targetDirectory == "" && cmd.noTargetDirectory &&
+         |cmd.operands| > 2) then
+       evidence == NoRunStatus && |calls| == 0
+     else if cmd.targetDirectory != "" then
+       match evidence
+       case DirectoryRunStatus(directoryEvidence) =>
+         DirectoryStatusEvidenceFor(
+           cmd.operands, cmd.targetDirectory, cmd,
+           beforeFs, cwd, afterFs,
+           beforeStdout, afterStdout, beforeStderr, afterStderr,
+           exit, observations, firstStatus, calls, directoryEvidence
+         )
+       case _ => false
+     else if |cmd.operands| == 2 then
+       var source := NormalizeSource(
+         cmd.operands[0], cmd.stripTrailingSlashes
+       );
+       var destination := cmd.operands[1];
+       if cmd.noTargetDirectory then
+         match evidence
+         case DirectMoveStatus(step) =>
+           calls == step.statusCalls &&
+           step.firstStatus == firstStatus &&
+           step.beforeFs == beforeFs && step.afterFs == afterFs &&
+           StepEvidenceFor(source, destination, cmd, cwd, step) &&
+           StepStatusEvidenceFor(source, destination, cmd, step) &&
+           exit == (if step.outcome.failed then 1 else 0) &&
+           afterStdout == beforeStdout + step.outcome.stdoutFragment &&
+           afterStderr == beforeStderr + step.outcome.stderrFragment
+         case _ => false
+       else
+         match evidence
+         case ProbedMoveStatus(call, step) =>
+           calls == [call] + step.statusCalls &&
+           Spec.StatusRequest(call, beforeFs, destination, true) &&
+           step.firstStatus == firstStatus + 1 &&
+           step.beforeFs == beforeFs && step.afterFs == afterFs &&
+           var target :=
+             if call.ok && call.status.kind == BenchWorld.DirectoryKind then
+               TargetInDirectory(destination, source)
+             else destination;
+           StepEvidenceFor(source, target, cmd, cwd, step) &&
+           StepStatusEvidenceFor(source, target, cmd, step) &&
+           exit == (if step.outcome.failed then 1 else 0) &&
+           afterStdout == beforeStdout + step.outcome.stdoutFragment &&
+           afterStderr == beforeStderr + step.outcome.stderrFragment
+         case _ => false
+     else
+       var directory := cmd.operands[|cmd.operands| - 1];
+       var sources := cmd.operands[..|cmd.operands| - 1];
+       match evidence
+       case DirectoryRunStatus(directoryEvidence) =>
+         DirectoryStatusEvidenceFor(
+           sources, directory, cmd,
+           beforeFs, cwd, afterFs,
+           beforeStdout, afterStdout, beforeStderr, afterStderr,
+           exit, observations, firstStatus, calls, directoryEvidence
+         )
+       case _ => false)
+  }
+
   ghost predicate CoreSummaryIO(
     raw: Schema.MvCmdRaw,
     preFs: BenchWorld.FileSystem,
@@ -2045,14 +2793,18 @@ module MvCore {
       old(io.stderr()),
       io,
       exit
-    )
+    ) &&
+    exists calls: seq<Spec.StatusCallEvidence> ::
+      io.statusCursor() == old(io.statusCursor()) + |calls| &&
+      StatusCallsFor(io.statusObservations(), old(io.statusCursor()), calls)
   }
 
   method {:isolate_assertions} RunCore(
     raw: Schema.MvCmdRaw,
     io: BenchIO.IO
-  ) returns (exit: int)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+  ) returns (exit: int, ghost calls: seq<Spec.StatusCallEvidence>,
+             ghost runEvidence: RunStatusEvidence)
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures CoreSummary(raw, io, exit)
     ensures CoreSummaryIO(
               raw,
@@ -2063,16 +2815,26 @@ module MvCore {
               io,
               exit
             )
+    ensures io.statusCursor() == old(io.statusCursor()) + |calls|
+    ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), calls)
+    ensures RunStatusEvidenceFor(
+              raw, old(io.fs()), old(io.cwd()), io.fs(),
+              old(io.stdout()), io.stdout(), old(io.stderr()), io.stderr(),
+              exit, io.statusObservations(), old(io.statusCursor()),
+              io.statusCursor(), calls, runEvidence)
     decreases *
   {
     ghost var preFs := io.fs();
     ghost var preCwd := io.cwd();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
+    ghost var firstStatus := io.statusCursor();
+    calls := [];
+    runEvidence := NoRunStatus;
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeInvalidBackup {
       var err := GetInvalidBackupArgumentMessage(cmd.invalidBackupArg);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2080,7 +2842,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeInvalidUpdate {
       var err := GetInvalidUpdateArgumentMessage(cmd.invalidUpdateArg);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2088,7 +2850,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2096,7 +2858,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2104,7 +2866,7 @@ module MvCore {
 
     if cmd.targetDirectory != "" && cmd.noTargetDirectory {
       var err := GetTargetDirectoryConflictMessage();
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2112,21 +2874,46 @@ module MvCore {
 
     if |cmd.operands| == 0 {
       var err := GetMissingFileOperandMessage();
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
     }
 
     if cmd.targetDirectory != "" {
-      exit := RunIntoDirectory(cmd.operands, cmd.targetDirectory, true, cmd, io);
+      ghost var directoryEvidence: DirectoryStatusEvidence;
+      exit, calls, directoryEvidence := RunIntoDirectory(
+        cmd.operands, cmd.targetDirectory, true, cmd, io
+      );
+      runEvidence := DirectoryRunStatus(directoryEvidence);
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
+      assert cmd.mode == Schema.ModeRun;
+      assert !cmd.noTargetDirectory;
+      assert |cmd.operands| > 0;
+      assert io.statusCursor() == firstStatus + |calls|;
+      assert StatusCallsFor(
+        io.statusObservations(), firstStatus, calls
+      );
+      assert DirectoryStatusEvidenceFor(
+        cmd.operands, cmd.targetDirectory, cmd,
+        preFs, preCwd, io.fs(),
+        preStdout, io.stdout(), preStderr, io.stderr(),
+        exit, io.statusObservations(), firstStatus,
+        calls, directoryEvidence
+      );
+      assert RunStatusEvidenceFor(
+        raw, preFs, preCwd, io.fs(),
+        preStdout, io.stdout(), preStderr, io.stderr(),
+        exit, io.statusObservations(), firstStatus,
+        io.statusCursor(), calls, runEvidence
+      );
+      assert CoreSummary(raw, io, exit);
       return;
     }
 
     if |cmd.operands| == 1 {
       var err := GetMissingDestinationMessage(cmd.operands[0]);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2134,7 +2921,7 @@ module MvCore {
 
     if cmd.noTargetDirectory && |cmd.operands| > 2 {
       var err := GetExtraOperandMessage(cmd.operands[2]);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2147,9 +2934,15 @@ module MvCore {
       var dirOk := false;
       var isDir := false;
       var dirErr := 0;
+      ghost var directoryCall := Spec.StatusCallEvidence(
+        preFs, dest, true, false, BenchWorld.DEFAULT_FILE_STATUS, 0
+      );
       if !cmd.noTargetDirectory {
         var rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4 := io.GetFileStatus(dest, true);
-        IOContract.FileStatusImpliesMetadata(io.fs(), dest, true, rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4);
+        directoryCall := Spec.StatusCallEvidence(preFs, dest, true,
+          rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4);
+        calls := [directoryCall];
+        IOContract.FileStatusStructureImpliesMetadata(io.fs(), dest, true, rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4);
         dirOk := rawMetadataOk4;
         isDir := rawMetadataStatus4.kind == BenchWorld.DirectoryKind;
         dirErr := rawMetadataErr4;
@@ -2161,9 +2954,21 @@ module MvCore {
       var hadError, out, errOut, step := MoveOne(
         source, target, cmd, io
       );
+      assert StatusCallsFor(io.statusObservations(), firstStatus, calls);
+      assert step.firstStatus == firstStatus + |calls|;
+      assert StatusCallsFor(
+        io.statusObservations(), firstStatus + |calls|,
+        step.statusCalls
+      );
+      StatusCallsConcat(io.statusObservations(), firstStatus,
+                        calls, step.statusCalls);
+      calls := calls + step.statusCalls;
+      runEvidence :=
+        if cmd.noTargetDirectory then DirectMoveStatus(step)
+        else ProbedMoveStatus(directoryCall, step);
       ghost var movedFs := io.fs();
-      io.AppendStdout(out);
-      io.AppendStderr(errOut);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
       exit := if hadError then 1 else 0;
       assert preMoveFs == preFs;
       assert (exit == 1) == hadError;
@@ -2182,7 +2987,10 @@ module MvCore {
             [preFs, movedFs],
             [step.outcome],
             [step.outcome.stdoutFragment],
-            [step.outcome.stderrFragment]
+            [step.outcome.stderrFragment],
+            step.firstStatus,
+            step.statusCalls,
+            [step.firstStatus, step.firstStatus + |step.statusCalls|]
           );
           assert Spec.ConcatenateFragments(
               [step.outcome.stdoutFragment]
@@ -2204,7 +3012,31 @@ module MvCore {
               step
             );
           hide BatchStepEvidenceFor();
-          assert BatchEvidenceFor(
+          assert forall i: nat | i < 1 ::
+            BatchStepEvidenceFor(
+              [cmd.operands[0]][i], dest, cmd,
+              batch.fsBounds[i], preCwd, batch.fsBounds[i + 1],
+              batch.outcomes[i], batch.stdoutFragments[i],
+              batch.stderrFragments[i], batch.steps[i]
+            );
+          assert step.outcome.failed == hadError;
+          assert |batch.outcomes| == 1;
+          assert batch.outcomes[0] == step.outcome;
+          assert (exists i: nat :: i < |batch.outcomes| &&
+            batch.outcomes[i].failed) <==> batch.outcomes[0].failed by {
+            if exists i: nat :: i < |batch.outcomes| &&
+              batch.outcomes[i].failed {
+              var i: nat :| i < |batch.outcomes| &&
+                batch.outcomes[i].failed;
+              assert i == 0;
+            } else if batch.outcomes[0].failed {
+              assert 0 < |batch.outcomes|;
+            }
+          }
+          assert hadError <==>
+            exists i: nat :: i < |batch.outcomes| &&
+              batch.outcomes[i].failed;
+          PackageBatchEvidenceFor(
               [cmd.operands[0]],
               dest,
               cmd,
@@ -2338,20 +3170,62 @@ module MvCore {
         );
       hide RunTwoOperandEvidenceFields();
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
+      assert io.statusCursor() == firstStatus + |calls|;
+      assert StatusCallsFor(
+        io.statusObservations(), firstStatus, calls
+      );
+      if cmd.noTargetDirectory {
+        assert calls == step.statusCalls;
+        assert step.firstStatus == firstStatus;
+        assert step.beforeFs == preFs && step.afterFs == io.fs();
+      } else {
+        assert calls == [directoryCall] + step.statusCalls;
+        assert Spec.StatusRequest(
+          directoryCall, preFs, dest, true
+        );
+        assert step.firstStatus == firstStatus + 1;
+        assert step.beforeFs == preFs && step.afterFs == io.fs();
+      }
+      assert RunStatusEvidenceFor(
+        raw, preFs, preCwd, io.fs(),
+        preStdout, io.stdout(), preStderr, io.stderr(),
+        exit, io.statusObservations(), firstStatus,
+        io.statusCursor(), calls, runEvidence
+      );
+      assert CoreSummary(raw, io, exit);
       return;
     }
 
     var directory := cmd.operands[|cmd.operands| - 1];
     var sources := cmd.operands[..|cmd.operands| - 1];
-    exit := RunIntoDirectory(sources, directory, false, cmd, io);
+    ghost var directoryEvidence: DirectoryStatusEvidence;
+    exit, calls, directoryEvidence := RunIntoDirectory(
+      sources, directory, false, cmd, io
+    );
+    runEvidence := DirectoryRunStatus(directoryEvidence);
     assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
+    assert RunStatusEvidenceFor(
+      raw, preFs, preCwd, io.fs(),
+      preStdout, io.stdout(), preStderr, io.stderr(),
+      exit, io.statusObservations(), firstStatus,
+      io.statusCursor(), calls, runEvidence
+    );
+    assert CoreSummary(raw, io, exit);
   }
 
-  method CheckTargetDirectory(directory: string, io: BenchIO.IO) returns (ok: bool, err: int)
+  method CheckTargetDirectory(directory: string, io: BenchIO.IO)
+    returns (ok: bool, err: int, ghost call: Spec.StatusCallEvidence)
+    modifies io.statusObservationsRegion
     ensures TargetDirectoryCheckSummaryFields(directory, old(io.fs()), ok, err)
+    ensures Spec.StatusRequest(call, old(io.fs()), directory, true)
+    ensures ok == (call.ok && call.status.kind == BenchWorld.DirectoryKind)
+    ensures io.statusCursor() == old(io.statusCursor()) + 1
+    ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), [call])
   {
     var rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3 := io.GetFileStatus(directory, true);
-    IOContract.FileStatusImpliesMetadata(io.fs(), directory, true, rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3);
+    call := Spec.StatusCallEvidence(old(io.fs()), directory, true,
+      rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), directory, true, rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3);
     var statOk := rawMetadataOk3;
     var isDir := rawMetadataStatus3.kind == BenchWorld.DirectoryKind;
     var statErr := rawMetadataErr3;
@@ -2363,14 +3237,15 @@ module MvCore {
     }
   }
 
-  method RunIntoDirectory(
+  method {:isolate_assertions} RunIntoDirectory(
     sources: seq<string>,
     directory: string,
     explicitTargetDirectory: bool,
     cmd: Schema.MvCmd,
     io: BenchIO.IO
-  ) returns (exit: int)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+  ) returns (exit: int, ghost calls: seq<Spec.StatusCallEvidence>,
+             ghost evidence: DirectoryStatusEvidence)
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures RunIntoDirectoryEvidenceFields(
               sources,
               directory,
@@ -2385,16 +3260,27 @@ module MvCore {
               io.stderr(),
               exit
             )
+    ensures io.statusCursor() == old(io.statusCursor()) + |calls|
+    ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), calls)
+    ensures DirectoryStatusEvidenceFor(
+              sources, directory, cmd,
+              old(io.fs()), old(io.cwd()), io.fs(),
+              old(io.stdout()), io.stdout(), old(io.stderr()), io.stderr(),
+              exit, io.statusObservations(), old(io.statusCursor()),
+              calls, evidence)
     decreases *
   {
     ghost var preFs := io.fs();
     ghost var preCwd := io.cwd();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
-    var dirOk, dirErr := CheckTargetDirectory(directory, io);
+    ghost var firstStatus := io.statusCursor();
+    var dirOk, dirErr, dirCall := CheckTargetDirectory(directory, io);
+    calls := [dirCall];
     if !dirOk {
+      evidence := FailedDirectoryStatus(dirCall);
       var err := GetTargetFailureMessage(directory, explicitTargetDirectory, dirErr);
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert TargetDirectoryCheckSummaryFields(directory, preFs, false, dirErr);
       assert RunIntoDirectoryEvidenceFields(
@@ -2408,9 +3294,18 @@ module MvCore {
     var hadError, out, errOut, batch := MoveSourcesIntoDirectory(
       sources, directory, cmd, io
     );
+    assert StatusCallsFor(io.statusObservations(), firstStatus, [dirCall]);
+    assert batch.firstStatus == firstStatus + 1;
+    assert StatusCallsFor(
+      io.statusObservations(), firstStatus + 1, batch.statusCalls
+    );
+    StatusCallsConcat(io.statusObservations(), firstStatus,
+                      [dirCall], batch.statusCalls);
+    calls := [dirCall] + batch.statusCalls;
+    evidence := SuccessfulDirectoryStatus(dirCall, batch);
     ghost var movedFs := io.fs();
-    io.AppendStdout(out);
-    io.AppendStderr(errOut);
+    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert dirErr == 0;
     assert (exit == 1) == hadError;
@@ -2436,15 +3331,21 @@ module MvCore {
       errOut: BenchWorld.Bytes,
       ghost step: StepEvidence
     )
-    modifies io.fsRegion
+    modifies io.fsRegion, io.statusObservationsRegion
     ensures StepEvidenceFor(source, target, cmd, old(io.cwd()), step)
+    ensures StepStatusEvidenceFor(source, target, cmd, step)
     ensures step.beforeFs == old(io.fs())
     ensures step.afterFs == io.fs()
     ensures step.outcome == Spec.MoveOutcome(out, errOut, hadError)
+    ensures step.firstStatus == old(io.statusCursor())
+    ensures io.statusCursor() == step.firstStatus + |step.statusCalls|
+    ensures StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls)
     decreases *
   {
     ghost var preFs := io.fs();
     ghost var preCwd := io.cwd();
+    ghost var firstStatus := io.statusCursor();
+    ghost var statusCalls: seq<Spec.StatusCallEvidence> := [];
     hadError := false;
     out := [];
     errOut := [];
@@ -2455,7 +3356,14 @@ module MvCore {
     ghost var backupFs := preFs;
 
     var rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2 := io.GetFileStatus(source, false);
-    IOContract.FileStatusImpliesMetadata(io.fs(), source, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
+    ghost var nextStatusCall := Spec.StatusCallEvidence(
+      preFs, source, false,
+      rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2
+    );
+    StatusCallsSnoc(io.statusObservations(), firstStatus,
+                    statusCalls, nextStatusCall);
+    statusCalls := statusCalls + [nextStatusCall];
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), source, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
     var sourceOk := rawMetadataOk2;
     var sourceIsDir := rawMetadataStatus2.kind == BenchWorld.DirectoryKind;
     var sourceErr := rawMetadataErr2;
@@ -2466,16 +3374,29 @@ module MvCore {
         preFs, io.fs(), out, errOut, hadError,
         sourceOk, sourceIsDir, sourceErr,
         false, false, 0,
-        sameFileEvidence, backupEvidence, renameCalls, backupFs
+        sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
       );
       PackageSourceFailureStep(
         source, target, cmd, preCwd, step
       );
+      assert StepStatusEvidenceFor(source, target, cmd, step);
+      assert step.firstStatus == firstStatus;
+      assert step.statusCalls == statusCalls;
+      assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+      assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
       return;
     }
 
     var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(target, false);
-    IOContract.FileStatusImpliesMetadata(io.fs(), target, false, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
+    nextStatusCall := Spec.StatusCallEvidence(
+      preFs, target, false,
+      rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1
+    );
+    StatusCallsSnoc(io.statusObservations(), firstStatus,
+                    statusCalls, nextStatusCall);
+    statusCalls := statusCalls + [nextStatusCall];
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), target, false, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
     var found := rawMetadataOk1;
     var existsErr := rawMetadataErr1;
     if found {
@@ -2487,11 +3408,17 @@ module MvCore {
           preFs, io.fs(), out, errOut, hadError,
           sourceOk, sourceIsDir, sourceErr,
           true, found, existsErr,
-          sameFileEvidence, backupEvidence, renameCalls, backupFs
+          sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
         );
         PackageOverwriteSkipStep(
           source, target, cmd, preCwd, step
         );
+        assert StepStatusEvidenceFor(source, target, cmd, step);
+        assert step.firstStatus == firstStatus;
+        assert step.statusCalls == statusCalls;
+        assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+        assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
         return;
       }
 
@@ -2503,11 +3430,17 @@ module MvCore {
           preFs, io.fs(), out, errOut, hadError,
           sourceOk, sourceIsDir, sourceErr,
           true, found, existsErr,
-          sameFileEvidence, backupEvidence, renameCalls, backupFs
+          sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
         );
         PackageUpdateNoneStep(
           source, target, cmd, preCwd, step
         );
+        assert StepStatusEvidenceFor(source, target, cmd, step);
+        assert step.firstStatus == firstStatus;
+        assert step.statusCalls == statusCalls;
+        assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+        assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
         return;
       }
 
@@ -2518,16 +3451,31 @@ module MvCore {
           preFs, io.fs(), out, errOut, hadError,
           sourceOk, sourceIsDir, sourceErr,
           true, found, existsErr,
-          sameFileEvidence, backupEvidence, renameCalls, backupFs
+          sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
         );
         PackageUpdateNoneFailStep(
           source, target, cmd, preCwd, step
         );
+        assert StepStatusEvidenceFor(source, target, cmd, step);
+        assert step.firstStatus == firstStatus;
+        assert step.statusCalls == statusCalls;
+        assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+        assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
         return;
       }
 
       var sourceMetadata := CaptureMetadata(source, false, io);
+      nextStatusCall := MetadataStatusCall(preFs, source, false, sourceMetadata);
+      StatusCallsSnoc(io.statusObservations(), firstStatus,
+                      statusCalls, nextStatusCall);
+      statusCalls := statusCalls + [nextStatusCall];
       var targetMetadata := CaptureMetadata(target, false, io);
+      nextStatusCall := MetadataStatusCall(preFs, target, false, targetMetadata);
+      StatusCallsSnoc(io.statusObservations(), firstStatus,
+                      statusCalls, nextStatusCall);
+      statusCalls := statusCalls + [nextStatusCall];
+      assert io.statusCursor() == firstStatus + |statusCalls|;
       StrictMetadataSuccess(
         preFs, source, sourceIsDir, sourceErr, sourceMetadata
       );
@@ -2535,7 +3483,19 @@ module MvCore {
         preFs, target, existsErr, targetMetadata
       );
       var sourceEntry := CaptureEntryName(source, io);
+      nextStatusCall := MetadataStatusCall(
+        preFs, sourceEntry.parent, false, sourceEntry.parentMetadata);
+      StatusCallsSnoc(io.statusObservations(), firstStatus,
+                      statusCalls, nextStatusCall);
+      statusCalls := statusCalls + [nextStatusCall];
+      assert io.statusCursor() == firstStatus + |statusCalls|;
       var targetEntry := CaptureEntryName(target, io);
+      nextStatusCall := MetadataStatusCall(
+        preFs, targetEntry.parent, false, targetEntry.parentMetadata);
+      StatusCallsSnoc(io.statusObservations(), firstStatus,
+                      statusCalls, nextStatusCall);
+      statusCalls := statusCalls + [nextStatusCall];
+      assert io.statusCursor() == firstStatus + |statusCalls|;
       var sourceFollowed: OptionalMetadataEvidence :=
         NoMetadataEvidence;
       var sourceReferentEntry: OptionalEntryNameEvidence :=
@@ -2543,6 +3503,11 @@ module MvCore {
       if sourceMetadata.isSymlink {
         assert io.fs() == preFs;
         var followed := CaptureMetadata(source, true, io);
+        nextStatusCall := MetadataStatusCall(preFs, source, true, followed);
+        StatusCallsSnoc(io.statusObservations(), firstStatus,
+                        statusCalls, nextStatusCall);
+        statusCalls := statusCalls + [nextStatusCall];
+        assert io.statusCursor() == firstStatus + |statusCalls|;
         assert MetadataEvidenceFor(preFs, source, true, followed);
         sourceFollowed := SomeMetadataEvidence(followed);
         var resolveOk, resolvedSource, resolveErr :=
@@ -2552,6 +3517,12 @@ module MvCore {
               preFs, preCwd, source, true, resolvedSource, 0
             );
           var referentEntry := CaptureEntryName(resolvedSource, io);
+          nextStatusCall := MetadataStatusCall(
+            preFs, referentEntry.parent, false,
+            referentEntry.parentMetadata);
+          StatusCallsSnoc(io.statusObservations(), firstStatus,
+                          statusCalls, nextStatusCall);
+          statusCalls := statusCalls + [nextStatusCall];
           sourceReferentEntry :=
             SomeEntryNameEvidence(resolvedSource, referentEntry);
         } else {
@@ -2560,6 +3531,43 @@ module MvCore {
             );
           sourceReferentEntry :=
             FailedEntryNameEvidence(resolveErr);
+        }
+      }
+      assert io.statusCursor() == firstStatus + |statusCalls|;
+      ghost var afterEntries :=
+        if sourceMetadata.isSymlink then
+          (if sourceReferentEntry.SomeEntryNameEvidence? then 8 else 7)
+        else 6;
+      assert |statusCalls| == afterEntries;
+      assert Spec.StatusRequest(statusCalls[0], preFs, source, false);
+      assert Spec.StatusRequest(statusCalls[1], preFs, target, false);
+      assert statusCalls[2] == MetadataStatusCall(
+        preFs, source, false, sourceMetadata
+      );
+      assert statusCalls[3] == MetadataStatusCall(
+        preFs, target, false, targetMetadata
+      );
+      assert statusCalls[4] == MetadataStatusCall(
+        preFs, sourceEntry.parent, false, sourceEntry.parentMetadata
+      );
+      assert statusCalls[5] == MetadataStatusCall(
+        preFs, targetEntry.parent, false, targetEntry.parentMetadata
+      );
+      if sourceMetadata.isSymlink {
+        match sourceFollowed {
+          case SomeMetadataEvidence(followed) =>
+            assert statusCalls[6] == MetadataStatusCall(
+              preFs, source, true, followed
+            );
+          case _ =>
+        }
+        match sourceReferentEntry {
+          case SomeEntryNameEvidence(_, referentEntry) =>
+            assert statusCalls[7] == MetadataStatusCall(
+              preFs, referentEntry.parent, false,
+              referentEntry.parentMetadata
+            );
+          case _ =>
         }
       }
       var sameEntry :=
@@ -2631,11 +3639,17 @@ module MvCore {
           preFs, io.fs(), out, errOut, hadError,
           sourceOk, sourceIsDir, sourceErr,
           true, found, existsErr,
-          sameFileEvidence, backupEvidence, renameCalls, backupFs
+          sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
         );
         PackageSameFileRejectStep(
           source, target, cmd, preCwd, step
         );
+        assert StepStatusEvidenceFor(source, target, cmd, step);
+        assert step.firstStatus == firstStatus;
+        assert step.statusCalls == statusCalls;
+        assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+        assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
         return;
       }
       assert sameFileDecision == Spec.ContinueMove;
@@ -2654,11 +3668,17 @@ module MvCore {
             preFs, io.fs(), out, errOut, hadError,
             sourceOk, sourceIsDir, sourceErr,
             true, found, existsErr,
-            sameFileEvidence, backupEvidence, renameCalls, backupFs
+            sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
           );
           PackageUpdateOlderSkipStep(
             source, target, cmd, preCwd, step
           );
+          assert StepStatusEvidenceFor(source, target, cmd, step);
+          assert step.firstStatus == firstStatus;
+          assert step.statusCalls == statusCalls;
+          assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+          assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
           return;
         }
       }
@@ -2672,6 +3692,18 @@ module MvCore {
       {
         var candidateMetadata := CaptureMetadata(
           SimpleBackupPath(target, cmd.backupSuffix), true, io
+        );
+        nextStatusCall := MetadataStatusCall(
+          preFs, SimpleBackupPath(target, cmd.backupSuffix), true,
+          candidateMetadata);
+        StatusCallsSnoc(io.statusObservations(), firstStatus,
+                        statusCalls, nextStatusCall);
+        statusCalls := statusCalls + [nextStatusCall];
+        assert io.statusCursor() == firstStatus + |statusCalls|;
+        assert |statusCalls| == afterEntries + 1;
+        assert statusCalls[afterEntries] == MetadataStatusCall(
+          preFs, SimpleBackupPath(target, cmd.backupSuffix), true,
+          candidateMetadata
         );
         collisionEvidence := CheckedBackupCollision(
           sourceMetadata, candidateMetadata
@@ -2704,6 +3736,10 @@ module MvCore {
         if candidateMetadata.ok &&
            candidateMetadata.key == sourceMetadata.key
         {
+          assert BackupCollisionDetected(collisionEvidence);
+          assert statusCalls[afterEntries].ok;
+          assert statusCalls[afterEntries].status.hostKey ==
+            statusCalls[2].status.hostKey;
           hadError := true;
           errOut :=
             GetBackupWouldDestroySourceMessage(source, target);
@@ -2711,11 +3747,17 @@ module MvCore {
             preFs, io.fs(), out, errOut, hadError,
             sourceOk, sourceIsDir, sourceErr,
             true, found, existsErr,
-            sameFileEvidence, backupEvidence, renameCalls, backupFs
+            sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
           );
           PackageExistingTargetRenameStep(
             source, target, cmd, preCwd, step
           );
+          assert StepStatusEvidenceFor(source, target, cmd, step);
+          assert step.firstStatus == firstStatus;
+          assert step.statusCalls == statusCalls;
+          assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+          assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
           return;
         }
       }
@@ -2730,14 +3772,41 @@ module MvCore {
           collisionEvidence
         );
       assert !BackupCollisionDetected(collisionEvidence);
+      ghost var collisionNeeded :=
+        (cmd.backupMode == Schema.BackupSimple ||
+         cmd.backupMode == Schema.BackupExisting) &&
+        sourceEntry.leaf == targetEntry.leaf + cmd.backupSuffix;
+      ghost var afterCollision := afterEntries +
+        (if collisionNeeded then 1 else 0);
+      assert |statusCalls| == afterCollision;
+      assert io.statusCursor() == firstStatus + |statusCalls|;
+      assert io.fs() == preFs;
 
       if cmd.backupMode != Schema.BackupOff {
         ghost var fsBeforeBackup := io.fs();
-        var backupPath, selectedBackup := PickBackupPath(
+        var backupPath, selectedBackup, backupCalls := PickBackupPath(
           target, cmd.backupMode, cmd.backupSuffix, io
+        );
+        StatusCallsConcat(io.statusObservations(), firstStatus,
+                          statusCalls, backupCalls);
+        statusCalls := statusCalls + backupCalls;
+        assert io.statusCursor() == firstStatus + |statusCalls|;
+        assert statusCalls[afterCollision..] == backupCalls;
+        assert BackupStatusSuffixFor(
+          cmd.backupMode, preFs, target, statusCalls[afterCollision..]
         );
         backupEvidence := selectedBackup;
         assert fsBeforeBackup == preFs;
+        assert io.fs() == preFs;
+        ghost var backupStatusTemplate := MakeStepEvidence(
+          preFs, preFs, [], [], false,
+          sourceOk, sourceIsDir, sourceErr,
+          true, found, existsErr,
+          sameFileEvidence, backupEvidence, [], preFs,
+          StatusTranscript(firstStatus, statusCalls)
+        );
+        assert StepStatusEvidenceFor(
+          source, target, cmd, backupStatusTemplate);
         var okBackup, backupErr := io.RenamePath(target, backupPath);
         ghost var afterBackupFs := io.fs();
         backupFs := afterBackupFs;
@@ -2759,15 +3828,23 @@ module MvCore {
             preFs, io.fs(), out, errOut, hadError,
             sourceOk, sourceIsDir, sourceErr,
             true, found, existsErr,
-            sameFileEvidence, backupEvidence, renameCalls, backupFs
+            sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
           );
           PackageExistingTargetRenameStep(
             source, target, cmd, preCwd, step
           );
+          StepStatusEvidenceTransfer(
+            source, target, cmd, backupStatusTemplate, step);
+          assert step.firstStatus == firstStatus;
+          assert step.statusCalls == statusCalls;
+          assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+          assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
           return;
         }
 
         var okRenameWithBackup, renameErrWithBackup := io.RenamePath(source, target);
+        assert io.statusCursor() == firstStatus + |statusCalls|;
         ghost var afterRenameFs := io.fs();
         ghost var sourceCall := RenameCallEvidence(
           okRenameWithBackup,
@@ -2817,18 +3894,28 @@ module MvCore {
           preFs, io.fs(), out, errOut, hadError,
           sourceOk, sourceIsDir, sourceErr,
           true, found, existsErr,
-          sameFileEvidence, backupEvidence, renameCalls, backupFs
+          sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
         );
         PackageExistingTargetRenameStep(
           source, target, cmd, preCwd, step
         );
+        StepStatusEvidenceTransfer(
+          source, target, cmd, backupStatusTemplate, step);
+        assert step.firstStatus == firstStatus;
+        assert step.statusCalls == statusCalls;
+        assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
+        assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
         return;
       }
 
       assert cmd.backupMode == Schema.BackupOff;
     }
 
+    assert io.fs() == preFs;
+    assert io.statusCursor() == firstStatus + |statusCalls|;
     var okRename, renameErr := io.RenamePath(source, target);
+    assert io.statusCursor() == firstStatus + |statusCalls|;
     ghost var afterRenameFs := io.fs();
     assert IOContract.RenamePathContractFields(
         preFs,
@@ -2866,8 +3953,12 @@ module MvCore {
       preFs, io.fs(), out, errOut, hadError,
       sourceOk, sourceIsDir, sourceErr,
       true, found, existsErr,
-      sameFileEvidence, backupEvidence, renameCalls, backupFs
+      sameFileEvidence, backupEvidence, renameCalls, backupFs,
+        StatusTranscript(firstStatus, statusCalls)
     );
+    assert step.firstStatus == firstStatus;
+    assert step.statusCalls == statusCalls;
+    assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
     if found {
       PackageExistingTargetRenameStep(
         source, target, cmd, preCwd, step
@@ -2877,6 +3968,8 @@ module MvCore {
         source, target, cmd, preCwd, step
       );
     }
+    assert StepStatusEvidenceFor(source, target, cmd, step);
+    assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
   }
 
   method {:vcs_split_on_every_assert} MoveSourcesIntoDirectory(
@@ -2890,15 +3983,24 @@ module MvCore {
       errOut: BenchWorld.Bytes,
       ghost batch: BatchEvidence
     )
-    modifies io.fsRegion
+    modifies io.fsRegion, io.statusObservationsRegion
     ensures BatchEvidenceFor(
               sources, directory, cmd, old(io.fs()), old(io.cwd()), io.fs(),
               hadError, out, errOut, batch
             )
+    ensures batch.firstStatus == old(io.statusCursor())
+    ensures io.statusCursor() == batch.firstStatus + |batch.statusCalls|
+    ensures StatusCallsFor(io.statusObservations(), batch.firstStatus, batch.statusCalls)
+    ensures BatchStatusEvidenceFor(io.statusObservations(), batch)
+    ensures BatchMoveStatusEvidenceFor(
+              sources, directory, cmd, io.statusObservations(), batch)
     decreases *
   {
     ghost var preFs := io.fs();
     ghost var preCwd := io.cwd();
+    ghost var firstStatus := io.statusCursor();
+    ghost var statusCalls: seq<Spec.StatusCallEvidence> := [];
+    ghost var statusBounds: seq<nat> := [firstStatus];
     ghost var steps: seq<StepEvidence> := [];
     ghost var fsBounds: seq<BenchWorld.FileSystem> := [preFs];
     ghost var outcomes: seq<Spec.MoveOutcome> := [];
@@ -2915,6 +4017,21 @@ module MvCore {
       invariant |outcomes| == |steps|
       invariant |stdoutFragments| == |steps|
       invariant |stderrFragments| == |steps|
+      invariant io.statusCursor() == firstStatus + |statusCalls|
+      invariant StatusCallsFor(io.statusObservations(), firstStatus, statusCalls)
+      invariant |statusBounds| == |steps| + 1
+      invariant statusBounds[0] == firstStatus
+      invariant statusBounds[|steps|] == firstStatus + |statusCalls|
+      invariant forall j: nat {:trigger statusBounds[j]} | j < |steps| ::
+                  firstStatus <= statusBounds[j] <=
+                    statusBounds[j + 1] <= firstStatus + |statusCalls| &&
+                  steps[j].firstStatus == statusBounds[j] &&
+                  statusBounds[j + 1] ==
+                    statusBounds[j] + |steps[j].statusCalls| &&
+                  statusCalls[
+                    statusBounds[j] - firstStatus ..
+                    statusBounds[j + 1] - firstStatus
+                  ] == steps[j].statusCalls
       invariant fsBounds[0] == preFs
       invariant fsBounds[|fsBounds| - 1] == io.fs()
       invariant forall j: nat | j < |steps| ::
@@ -2928,6 +4045,15 @@ module MvCore {
                     outcomes[j],
                     stdoutFragments[j],
                     stderrFragments[j],
+                    steps[j]
+                  )
+      invariant forall j: nat | j < |steps| ::
+                  var normalizedSource :=
+                    NormalizeSource(sources[j], cmd.stripTrailingSlashes);
+                  StepStatusEvidenceFor(
+                    normalizedSource,
+                    TargetInDirectory(directory, normalizedSource),
+                    cmd,
                     steps[j]
                   )
       invariant Spec.ConcatenateFragments(stdoutFragments) == out
@@ -2944,6 +4070,11 @@ module MvCore {
       ghost var prefixOutcomes := outcomes;
       ghost var prefixStdoutFragments := stdoutFragments;
       ghost var prefixStderrFragments := stderrFragments;
+      ghost var prefixStatusBounds := statusBounds;
+      ghost var prefixStatusCalls := statusCalls;
+      ghost var observationsBeforeStep := io.statusObservations();
+      assert StatusCallsFor(
+        observationsBeforeStep, firstStatus, statusCalls);
       ghost var fsBeforeStep := io.fs();
       var source := sources[i];
       var normalizedSource := NormalizeSource(source, cmd.stripTrailingSlashes);
@@ -2952,8 +4083,20 @@ module MvCore {
       var stepError, stepOut, stepErr, step := MoveOne(
         normalizedSource, target, cmd, io
       );
+      assert io.statusObservations() == observationsBeforeStep;
+      assert step.firstStatus == firstStatus + |statusCalls|;
+      StatusCallsAppendObservedStep(
+        observationsBeforeStep, io.statusObservations(),
+        firstStatus, statusCalls, step);
+      statusCalls := statusCalls + step.statusCalls;
+      assert statusCalls == prefixStatusCalls + step.statusCalls;
+      StatusCallTail(prefixStatusCalls, step.statusCalls);
+      statusBounds := statusBounds + [firstStatus + |statusCalls|];
       ghost var nextOutcome := step.outcome;
       steps := steps + [step];
+      StatusBoundsSnoc(firstStatus, prefixStatusCalls,
+        prefixStatusBounds, prefixSteps, step,
+        statusCalls, statusBounds, steps);
       fsBounds := fsBounds + [step.afterFs];
       outcomes := outcomes + [nextOutcome];
       stdoutFragments :=
@@ -3050,13 +4193,30 @@ module MvCore {
       i := i + 1;
     }
     assert sources[..i] == sources;
+    BatchStatusEvidenceFromParts(io.statusObservations(), firstStatus,
+      statusCalls, statusBounds, steps, fsBounds, outcomes,
+      stdoutFragments, stderrFragments);
     batch := BatchEvidence(
       steps,
       fsBounds,
       outcomes,
       stdoutFragments,
-      stderrFragments
+      stderrFragments,
+      firstStatus,
+      statusCalls,
+      statusBounds
     );
+    assert batch.firstStatus == firstStatus;
+    assert batch.statusCalls == statusCalls;
+    assert batch.statusBounds == statusBounds;
+    assert batch.steps == steps;
+    assert |batch.statusBounds| == |batch.steps| + 1;
+    assert batch.statusBounds[0] == batch.firstStatus;
+    assert batch.statusBounds[|batch.steps|] ==
+           batch.firstStatus + |batch.statusCalls|;
+    assert StatusCallsFor(io.statusObservations(), batch.firstStatus,
+                          batch.statusCalls);
+    assert BatchStatusEvidenceFor(io.statusObservations(), batch);
     assert forall j: nat | j < |sources| ::
         BatchStepEvidenceFor(
           sources[j],
@@ -3070,9 +4230,8 @@ module MvCore {
           batch.stderrFragments[j],
           batch.steps[j]
         );
-    assert BatchEvidenceFor(
-        sources, directory, cmd, preFs, preCwd, io.fs(),
-        hadError, out, errOut, batch
-      );
+    PackageBatchEvidenceFor(
+      sources, directory, cmd, preFs, preCwd, io.fs(),
+      hadError, out, errOut, batch);
   }
 }

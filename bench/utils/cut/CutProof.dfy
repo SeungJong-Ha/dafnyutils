@@ -15,14 +15,17 @@ module CutProof {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
     requires Core.InputReadCore(
-               command, preFs, preStdin, index, result
+               command, preFs, preStdin, index, result,
+               preStreams
              )
     ensures Spec.InputReadRelation(
-              command, preFs, preStdin, index, result
+              command, preFs, preStdin, index, result,
+              preStreams
             )
   {
     reveal Core.InputReadCore();
@@ -56,7 +59,8 @@ module CutProof {
   )
     requires Core.InputTraceCore(
                command, old(io.fs()), old(io.stdin()), |command.inputs|,
-               readResults, stdoutFragments, stderrFragments
+               readResults, stdoutFragments, stderrFragments,
+               old(io.trustedStreams())
              )
     ensures Spec.InputTraceRelation(
               command,
@@ -71,7 +75,8 @@ module CutProof {
     reveal Core.InputTraceCore();
     assert forall i: nat :: i < |command.inputs| ==>
                               Spec.InputReadRelation(
-                                command, old(io.fs()), old(io.stdin()), i, readResults[i]
+                                command, old(io.fs()), old(io.stdin()), i, readResults[i],
+                                old(io.trustedStreams())
                               ) &&
                               match command.inputs[i]
                               case Stdin =>
@@ -96,7 +101,8 @@ module CutProof {
       forall i: nat | i < |command.inputs|
         ensures
           Spec.InputReadRelation(
-            command, old(io.fs()), old(io.stdin()), i, readResults[i]
+            command, old(io.fs()), old(io.stdin()), i, readResults[i],
+            old(io.trustedStreams())
           ) &&
           match command.inputs[i]
           case Stdin =>
@@ -120,7 +126,8 @@ module CutProof {
                Spec.ErrorMessage(path, readError))
       {
         InputReadCoreRefines(
-          command, old(io.fs()), old(io.stdin()), i, readResults[i]
+          command, old(io.fs()), old(io.stdin()), i, readResults[i],
+          old(io.trustedStreams())
         );
         OutputPieceRefines(command, readResults[i]);
         match command.inputs[i]
@@ -152,7 +159,8 @@ module CutProof {
                 stderrFragments: seq<BenchWorld.Bytes> :|
         Core.InputTraceCore(
           raw, old(io.fs()), old(io.stdin()), |raw.inputs|,
-          readResults, stdoutFragments, stderrFragments
+          readResults, stdoutFragments, stderrFragments,
+          old(io.trustedStreams())
         ) &&
         io.stdin() ==
         (if exists i ::

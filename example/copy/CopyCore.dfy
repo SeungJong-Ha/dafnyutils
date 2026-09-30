@@ -9,8 +9,8 @@ module CopyCore {
     ensures CopySpec.CopyResult(io, readErr, writeErr)
   {
     var data;
-    data, readErr := io.ReadStdinWithOutcome();
+    data, readErr := io.ReadStdin(BenchIO.BenchWorld.ReturnError);
     var committed;
-    committed, writeErr := io.WriteStdoutWithOutcome(data);
+    committed, writeErr := io.WriteStdout(data, BenchIO.BenchWorld.ReturnError);
   }
 }

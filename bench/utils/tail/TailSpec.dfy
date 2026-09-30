@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "TailSchema.dfy"
 include "TailRecordSpec.dfy"
 
@@ -11,6 +12,7 @@ module TailSpec {
   import IOContract
   import TailSchema
   import TailRecordSpec
+  import SE = StringEscaping
 
 
 
@@ -68,25 +70,20 @@ module TailSpec {
     case Other(msg) => msg
   }
 
-  function QuotedPath(path: BenchWorld.Path): string
-  {
-    "'" + path + "'"
-  }
-
-  function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
+  opaque function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
     if err == BenchWorld.IsDirectory then
-      Utf8.Encode("tail: error reading " + QuotedPath(path) + ": " + ErrnoText(err) + "\n")
+      "tail: error reading " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + ": " + Utf8.Encode(ErrnoText(err)) + "\n"
     else
-      Utf8.Encode("tail: cannot open " + QuotedPath(path) + " for reading: " + ErrnoText(err) + "\n")
+      "tail: cannot open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + " for reading: " + Utf8.Encode(ErrnoText(err)) + "\n"
   }
 
   function InvalidCountMessage(unit: TailSchema.CountUnit, value: string): BenchWorld.Bytes
   {
     var displayValue := if |value| > 0 && value[0] == '-' then value[1..] else value;
     Utf8.Encode("tail: invalid number of " +
-    (if unit == TailSchema.CountLines then "lines" else "bytes") +
-    ": '" + displayValue + "'\n")
+    (if unit == TailSchema.CountLines then "lines" else "bytes") + ": ") +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(displayValue)) + "\n"
   }
 
   function StandardInputName(): string
@@ -96,7 +93,7 @@ module TailSpec {
 
   function HeaderText(name: string): BenchWorld.Bytes
   {
-    "==> " + name + " <==\n"
+    "==> " + Utf8.Encode(name) + " <==\n"
   }
 
   function InputsFromOperands(operands: seq<string>): seq<TailSchema.Input>
@@ -168,7 +165,8 @@ module TailSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
@@ -177,7 +175,7 @@ module TailSpec {
       result == BenchWorld.Ok(
         if exists j: nat :: j < i && cmd.inputs[j].Stdin? then [] else preStdin
       )
-    case File(path) => result == IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate DropFirstBytesRelation(
@@ -312,11 +310,12 @@ module TailSpec {
     preStdin: BenchWorld.Bytes,
     i: nat,
     observation: InputObservation,
-    priorHeaderCount: nat
+    priorHeaderCount: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
-    ReadResultRelation(cmd, preFs, preStdin, i, observation.result) &&
+    ReadResultRelation(cmd, preFs, preStdin, i, observation.result, preStreams) &&
     OutputFragmentRelation(
       cmd,
       cmd.inputs[i],
@@ -375,7 +374,8 @@ module TailSpec {
     observations: seq<InputObservation>,
     headerCounts: seq<nat>,
     stdoutCuts: seq<nat>,
-    stderrCuts: seq<nat>
+    stderrCuts: seq<nat>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     |observations| == |cmd.inputs| &&
@@ -392,7 +392,8 @@ module TailSpec {
          preStdin,
          i,
          observations[i],
-         headerCounts[i]
+         headerCounts[i],
+         preStreams
        )) &&
     FragmentsConcatenate(
       ObservationStdoutFragments(observations),
@@ -416,7 +417,8 @@ module TailSpec {
     postStdin: BenchWorld.Bytes,
     stdoutPart: BenchWorld.Bytes,
     stderrPart: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     exists observations: seq<InputObservation>,
@@ -434,7 +436,8 @@ module TailSpec {
         observations,
         headerCounts,
         stdoutCuts,
-        stderrCuts
+        stderrCuts,
+        preStreams
       )
   }
 
@@ -471,7 +474,8 @@ module TailSpec {
           io.stdin(),
           stdoutPart,
           stderrPart,
-          hadError
+          hadError,
+          old(io.trustedStreams())
         ) &&
         io.stdout() == old(io.stdout()) + stdoutPart &&
         io.stderr() == old(io.stderr()) + stderrPart &&

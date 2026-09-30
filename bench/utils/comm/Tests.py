@@ -348,3 +348,17 @@ def test_deferred_comm_regressions_inventory() -> None:
 def test_comm_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Operand-count errors use C-locale byte quoting.
+@pytest.mark.parametrize("args", [["x'y"], ["a", "b", "é"]])
+def test_escape_audit_operand_count(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_comm_parity(args, Path(tmp_dir), check_stderr=True)
+
+
+# File errors use GNU's shell quoting with colon forcing.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_comm_parity([path, "other"], Path(tmp_dir), check_stderr=True)

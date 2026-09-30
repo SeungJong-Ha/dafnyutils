@@ -115,8 +115,6 @@ def run_bench_touch(args: list[str], cwd: Path) -> tuple[bytes, bytes, int]:
     completed = run_candidate(
         BENCH_TOUCH_DLL,
         args,
-        runtime_files=[TOUCH_TIME_PARSER],
-        python_helpers=True,
         cwd=cwd,
         check=False,
         stdout=subprocess.PIPE,
@@ -189,8 +187,6 @@ def run_touch_with_stdout_target(
                 Path(command[1]),
                 args,
                 cwd=cwd,
-                runtime_files=[TOUCH_TIME_PARSER],
-                python_helpers=True,
                 check=False,
                 stdout=stdout_stream,
                 stderr=subprocess.PIPE,
@@ -1355,3 +1351,49 @@ def test_deferred_touch_regressions_placeholder() -> None:
 def test_touch_verify_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     verify_touch_target(target)
+
+
+# Invalid date and time values quote apostrophes, controls, and UTF-8 bytes.
+@pytest.mark.parametrize(
+    "option,value",
+    [("-d", "a'b"), ("-d", "a\tb"), ("-t", "é"), ("--time", "a\\b")],
+)
+def test_value_diagnostic_escaping_matches_coreutils(option: str, value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = [option, value, "missing/x"]
+        ref = run_system_touch(args, cwd)
+        bench = run_bench_touch(args, cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# A failed stdout timestamp update names the original dash operand.
+def test_stdout_timestamp_error_quotes_dash_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = ["-t", "200001010000", "-"]
+        with open(os.devnull, "wb") as reference_output, open(os.devnull, "wb") as bench_output:
+            reference = subprocess.run(
+                ["touch", *args],
+                executable=str(COREUTILS_TOUCH),
+                cwd=cwd,
+                stdout=reference_output,
+                stderr=subprocess.PIPE,
+                env=parity_env(),
+                check=False,
+            )
+            bench = run_candidate(
+                BENCH_TOUCH_DLL,
+                args,
+                cwd=cwd,
+                stdout=bench_output,
+                stderr=subprocess.PIPE,
+                env=parity_env(),
+                check=False,
+            )
+        assert reference.returncode == 1
+        assert_result_matches_reference(
+            (b"", reference.stderr, reference.returncode),
+            (b"", bench.stderr, bench.returncode),
+            ignore_stderr_when_exit_nonzero=False,
+        )

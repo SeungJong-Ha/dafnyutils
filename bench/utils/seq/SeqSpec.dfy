@@ -1,5 +1,6 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
+include "../../core/StringEscaping.dfy"
 include "SeqSchema.dfy"
 
 module SeqSpec {
@@ -7,6 +8,7 @@ module SeqSpec {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import SeqSchema
+  import SE = StringEscaping
 
   datatype Decimal = Decimal(raw: string, value: int, scale: nat, negativeZero: bool)
   datatype DecimalParse = DecimalOk(number: Decimal) | DecimalErr(token: string)
@@ -261,17 +263,17 @@ module SeqSpec {
 
   function ExtraOperandMessage(token: string): BenchWorld.Bytes
   {
-    "seq: extra operand '" + Utf8.Encode(token) + "'\n" + TryHelp()
+    "seq: extra operand " + SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n" + TryHelp()
   }
 
   function InvalidNumberMessage(token: string): BenchWorld.Bytes
   {
-    "seq: invalid floating point argument: '" + Utf8.Encode(token) + "'\n" + TryHelp()
+    "seq: invalid floating point argument: " + SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n" + TryHelp()
   }
 
   function ZeroIncrementMessage(token: string): BenchWorld.Bytes
   {
-    "seq: invalid Zero increment value: '" + Utf8.Encode(token) + "'\n" + TryHelp()
+    "seq: invalid Zero increment value: " + SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n" + TryHelp()
   }
 
   ghost predicate NumberPlanRelation(args: seq<string>, plan: NumberPlan)

@@ -225,22 +225,23 @@ module NlProof {
     errorOutput: BW.Bytes,
     errorCuts: seq<nat>,
     hadError: bool,
-    hasDelimiter: bool
+    hasDelimiter: bool,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires Core.InputTraceSummary(
                cmd, preFs, preStdin, readResults, inputFragments,
                combined, inputCuts, errorFragments, errorOutput, errorCuts,
-               hadError, hasDelimiter)
+               hadError, hasDelimiter, preStreams)
     ensures Spec.InputTraceRelation(
               cmd, preFs, preStdin, readResults, inputFragments,
               combined, inputCuts, errorFragments, errorOutput, errorCuts,
-              hadError, hasDelimiter)
+              hadError, hasDelimiter, preStreams)
   {
     reveal Core.InputTraceSummary();
     reveal Spec.InputTraceRelation();
     assert forall i :: 0 <= i < |cmd.inputs| ==>
                          Spec.ReadResultRelation(
-                           cmd, preFs, preStdin, i, readResults[i]) &&
+                           cmd, preFs, preStdin, i, readResults[i], preStreams) &&
                          (match readResults[i]
                           case Ok(data) =>
                             Spec.NormalizedInputRelation(data, inputFragments[i])
@@ -250,7 +251,7 @@ module NlProof {
                          Spec.ErrorPiece(cmd.inputs[i], readResults[i]) by {
       forall i | 0 <= i < |cmd.inputs|
         ensures Spec.ReadResultRelation(
-                  cmd, preFs, preStdin, i, readResults[i]) &&
+                  cmd, preFs, preStdin, i, readResults[i], preStreams) &&
                 (match readResults[i]
                  case Ok(data) =>
                    Spec.NormalizedInputRelation(data, inputFragments[i])
@@ -316,7 +317,7 @@ module NlProof {
       InputTraceRefines(
         cmd, old(io.fs()), old(io.stdin()), readResults, inputFragments,
         combined, inputCuts, errorFragments, errorOutput, errorCuts,
-        hadError, hasDelimiter);
+        hadError, hasDelimiter, old(io.trustedStreams()));
       if !hasDelimiter {
         OutputSummaryRefines(cmd, combined, outputPart);
       }

@@ -10,15 +10,19 @@ module BenchWorld {
   // native reads or writes, but successful prefixes and the terminal errno stay
   // observable to utility code.
   datatype TrustedStreamRequest =
-    | StreamReadFile(preFs: FileSystem, path: Path)
+    | StreamReadFile(preFs: FileSystem, path: Path, mode: FileReadMode)
     | StreamReadStdin(preStdin: Bytes)
     | StreamWriteStdout(preStdout: Bytes, requested: Bytes)
     | StreamWriteStderr(preStderr: Bytes, requested: Bytes)
 
   datatype TrustedStreamResult =
-    | StreamReadFileResult(data: Bytes, err: int)
+    | StreamReadFileResult(data: Bytes, err: int, stage: FileReadStage)
     | StreamReadStdinResult(data: Bytes, remaining: Bytes, err: int)
     | StreamWriteResult(committed: nat, postOutput: Bytes, err: int)
+
+  datatype FileReadMode = FromStart | AfterSeekEnd
+  datatype FileReadStage = ReadSucceeded | OpenFailed | ReadFailed | CloseFailed
+  datatype StreamErrorPolicy = ReturnError | ThrowOnError
   datatype FileTimes = FileTimes(
     atimeSec: int,
     atimeNsec: int,
@@ -27,6 +31,17 @@ module BenchWorld {
     ctimeSec: int,
     ctimeNsec: int
   )
+
+  // Every status operation has its own ordinal, including failed operations.
+  // The immutable provider contains the actual temporal metadata at that
+  // occurrence; equal path requests need not observe equal access timestamps.
+  type StatusTimeObservations = (nat, FileSystem, Path, bool) -> FileTimes
+
+  // Parsed commands are unbound until execution supplies its observation input.
+  // This ghost context is never an alternative executable status API.
+  datatype StatusObservationContext =
+    | UnboundStatusObservations
+    | BoundStatusObservations(observations: StatusTimeObservations, firstStatus: nat)
 
   datatype TimestampUpdate =
     | Current
@@ -117,6 +132,7 @@ module BenchWorld {
       )
     | FilesystemUnlink(preFs: FileSystem, path: Path, now: int)
     | FilesystemTruncate(preFs: FileSystem, path: Path, size: nat, now: int)
+    | FilesystemAppend(preFs: FileSystem, path: Path, data: Bytes, now: int)
     | FilesystemCreateSpecialNode(
         preFs: FileSystem,
         path: Path,
@@ -147,8 +163,21 @@ module BenchWorld {
   datatype DirEntry =
     | DirEntry(name: string, isDir: bool, isSymlink: bool)
 
+  // Native directory entry type, including an explicit value for DT_UNKNOWN
+  // and host types that have no corresponding FileKind in this model.
+  datatype DirectoryEntryKind =
+    UnknownDirentKind |
+    RegularDirentKind |
+    DirectoryDirentKind |
+    SymlinkDirentKind |
+    FifoDirentKind |
+    BlockDeviceDirentKind |
+    CharacterDeviceDirentKind |
+    SocketDirentKind
+
   datatype DirHandleState =
     | DirHandleState(path: Path, remaining: set<DirEntry>)
+    | DotDirHandleState(path: Path, remaining: set<DirEntry>)
 
   const ALL_MODE_BITS: bv32 := 4095 as bv32
   const DEFAULT_FILE_MODE: bv32 := 420 as bv32

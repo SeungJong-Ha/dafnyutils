@@ -38,6 +38,179 @@ module UniqProof {
     }
   }
 
+  lemma CoreFieldStep(line: BW.Bytes, start: nat)
+    requires start < |line|
+    ensures Spec.FieldStep(
+      line, start,
+      Core.SkipNonBlanks(line, Core.SkipBlanks(line, start)))
+  {
+    var middle := Core.SkipBlanks(line, start);
+    var end := Core.SkipNonBlanks(line, middle);
+    assert Core.IsFieldBlank(line[start]) == Spec.IsFieldBlank(line[start]);
+    if Core.IsFieldBlank(line[start]) {
+      assert start < middle;
+    } else {
+      assert middle == start;
+      assert start < end;
+    }
+    assert start < end <= |line|;
+    if middle == end {
+      assert middle == |line|;
+    }
+    assert forall i: nat :: start <= i < middle ==> Spec.IsFieldBlank(line[i]) by {
+      forall i: nat | start <= i < middle
+        ensures Spec.IsFieldBlank(line[i])
+      {
+      }
+    }
+    assert forall i: nat :: middle <= i < end ==> !Spec.IsFieldBlank(line[i]) by {
+      forall i: nat | middle <= i < end
+        ensures !Spec.IsFieldBlank(line[i])
+      {
+      }
+    }
+    assert end < |line| ==> Spec.IsFieldBlank(line[end]);
+    assert start <= middle <= end;
+    assert middle == end ==> end == |line|;
+    assert start <= middle <= end &&
+      (forall i: nat :: start <= i < middle ==> Spec.IsFieldBlank(line[i])) &&
+      (forall i: nat :: middle <= i < end ==> !Spec.IsFieldBlank(line[i])) &&
+      (middle == end ==> end == |line|) &&
+      (end < |line| ==> Spec.IsFieldBlank(line[end]));
+    assert Spec.FieldStepWitness(line, start, end, middle);
+    assert Spec.FieldStep(line, start, end);
+  }
+
+  lemma {:isolate_assertions} SkipFieldsWitness(
+    line: BW.Bytes, start: nat, count: nat
+  )
+    requires start <= |line|
+    ensures Spec.FieldSkipFromRelation(
+      line, start, count, Core.SkipFieldsIndex(line, start, count))
+    decreases count
+  {
+    reveal Spec.FieldSkipFromRelation();
+    if count == 0 || start == |line| {
+      assert Spec.FieldSkipFromRelation(line, start, count, start) by {
+        assert |[start]| == 1;
+      }
+    } else {
+      var middle := Core.SkipBlanks(line, start);
+      var end := Core.SkipNonBlanks(line, middle);
+      CoreFieldStep(line, start);
+      SkipFieldsWitness(line, end, count - 1);
+      var tailCuts: seq<nat> :|
+        1 <= |tailCuts| <= count &&
+        tailCuts[0] == end &&
+        (forall i: nat :: i + 1 < |tailCuts| ==>
+          Spec.FieldStep(line, tailCuts[i], tailCuts[i + 1])) &&
+        (|tailCuts| - 1 == count - 1 || tailCuts[|tailCuts| - 1] == |line|) &&
+        Core.SkipFieldsIndex(line, end, count - 1) == tailCuts[|tailCuts| - 1];
+      var cuts := [start] + tailCuts;
+      assert forall i: nat :: i + 1 < |cuts| ==>
+        Spec.FieldStep(line, cuts[i], cuts[i + 1]) by {
+        forall i: nat | i + 1 < |cuts|
+          ensures Spec.FieldStep(line, cuts[i], cuts[i + 1])
+        {
+        }
+      }
+      assert Spec.FieldSkipFromRelation(
+        line, start, count, Core.SkipFieldsIndex(line, start, count));
+    }
+  }
+
+  lemma {:isolate_assertions} FieldStepUnique(
+    line: BW.Bytes, start: nat, first: nat, second: nat
+  )
+    requires Spec.FieldStep(line, start, first)
+    requires Spec.FieldStep(line, start, second)
+    ensures first == second
+  {
+    reveal Spec.FieldStep();
+    var middle1: nat :| Spec.FieldStepWitness(line, start, first, middle1);
+    var middle2: nat :| Spec.FieldStepWitness(line, start, second, middle2);
+    reveal Spec.FieldStepWitness();
+    if middle1 < middle2 {
+      assert middle1 < first;
+      assert Spec.IsFieldBlank(line[middle1]);
+      assert !Spec.IsFieldBlank(line[middle1]);
+    }
+    if middle2 < middle1 {
+      assert middle2 < second;
+      assert Spec.IsFieldBlank(line[middle2]);
+      assert !Spec.IsFieldBlank(line[middle2]);
+    }
+    assert middle1 == middle2;
+    if first < second {
+      assert first < |line|;
+      assert middle1 < first;
+      assert Spec.IsFieldBlank(line[first]);
+      assert !Spec.IsFieldBlank(line[first]);
+    }
+    if second < first {
+      assert second < |line|;
+      assert middle2 < second;
+      assert Spec.IsFieldBlank(line[second]);
+      assert !Spec.IsFieldBlank(line[second]);
+    }
+  }
+
+  lemma {:isolate_assertions} FieldSkipCanonical(
+    line: BW.Bytes, start: nat, count: nat, cut: nat
+  )
+    requires start <= |line|
+    requires Spec.FieldSkipFromRelation(line, start, count, cut)
+    ensures cut == Core.SkipFieldsIndex(line, start, count)
+    decreases count
+  {
+    reveal Spec.FieldSkipFromRelation();
+    var cuts: seq<nat> :|
+      1 <= |cuts| <= count + 1 &&
+      cuts[0] == start &&
+      (forall i: nat :: i + 1 < |cuts| ==>
+        Spec.FieldStep(line, cuts[i], cuts[i + 1])) &&
+      (|cuts| - 1 == count || cuts[|cuts| - 1] == |line|) &&
+      cut == cuts[|cuts| - 1];
+    if count == 0 || start == |line| {
+      if |cuts| > 1 {
+        assert Spec.FieldStep(line, start, cuts[1]);
+        reveal Spec.FieldStep();
+        assert start < cuts[1] <= |line|;
+      }
+      assert |cuts| == 1;
+    } else {
+      assert |cuts| > 1;
+      var end := Core.SkipNonBlanks(line, Core.SkipBlanks(line, start));
+      CoreFieldStep(line, start);
+      FieldStepUnique(line, start, end, cuts[1]);
+      var tailCuts := cuts[1..];
+      assert Spec.FieldSkipFromRelation(line, end, count - 1, cut) by {
+        assert forall i: nat :: i + 1 < |tailCuts| ==>
+          Spec.FieldStep(line, tailCuts[i], tailCuts[i + 1]) by {
+          forall i: nat | i + 1 < |tailCuts|
+            ensures Spec.FieldStep(line, tailCuts[i], tailCuts[i + 1])
+          {
+          }
+        }
+      }
+      FieldSkipCanonical(line, end, count - 1, cut);
+    }
+  }
+
+  lemma {:isolate_assertions} FieldSkipRelationCanonical(
+    line: BW.Bytes, count: nat, suffix: BW.Bytes
+  )
+    requires Spec.FieldSkipRelation(line, count, suffix)
+    ensures suffix == line[Core.SkipFieldsIndex(line, 0, count)..]
+  {
+    reveal Spec.FieldSkipRelation();
+    var cut: nat :|
+      Spec.FieldSkipFromRelation(line, 0, count, cut) &&
+      cut <= |line| &&
+      suffix == line[cut..];
+    FieldSkipCanonical(line, 0, count, cut);
+  }
+
   lemma LinesEqualEq(
     cmd: Schema.UniqCmd,
     a: BW.Bytes,
@@ -46,8 +219,21 @@ module UniqProof {
     ensures Core.LinesEqual(cmd, a, b) ==
             Spec.LinesEqual(cmd, a, b)
   {
-    if cmd.ignoreCase {
-      EqualFoldAsciiEq(a, b);
+    var leftCut := Core.SkipFieldsIndex(a, 0, cmd.skipFields);
+    var rightCut := Core.SkipFieldsIndex(b, 0, cmd.skipFields);
+    SkipFieldsWitness(a, 0, cmd.skipFields);
+    SkipFieldsWitness(b, 0, cmd.skipFields);
+    assert Spec.FieldSkipRelation(a, cmd.skipFields, a[leftCut..]);
+    assert Spec.FieldSkipRelation(b, cmd.skipFields, b[rightCut..]);
+    EqualFoldAsciiEq(a[leftCut..], b[rightCut..]);
+    reveal Spec.LinesEqual();
+    if Spec.LinesEqual(cmd, a, b) {
+      var left: BW.Bytes, right: BW.Bytes :|
+        Spec.FieldSkipRelation(a, cmd.skipFields, left) &&
+        Spec.FieldSkipRelation(b, cmd.skipFields, right) &&
+        (if cmd.ignoreCase then Spec.EqualFoldAscii(left, right) else left == right);
+      FieldSkipRelationCanonical(a, cmd.skipFields, left);
+      FieldSkipRelationCanonical(b, cmd.skipFields, right);
     }
   }
 
@@ -68,8 +254,11 @@ module UniqProof {
     ensures Spec.LinesEqual(cmd, line, line)
   {
     reveal Spec.LinesEqual();
+    SkipFieldsWitness(line, 0, cmd.skipFields);
+    var suffix := line[Core.SkipFieldsIndex(line, 0, cmd.skipFields)..];
+    assert Spec.FieldSkipRelation(line, cmd.skipFields, suffix);
     if cmd.ignoreCase {
-      EqualFoldAsciiReflexive(line);
+      EqualFoldAsciiReflexive(suffix);
     }
   }
 
@@ -548,15 +737,18 @@ module UniqProof {
   twostate lemma InputTraceRefines(
     cmd: Schema.UniqCmd,
     io: BenchIO.IO,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     new readResults: seq<BW.Result<BW.Bytes>>,
     new stdoutPart: BW.Bytes,
     new stderrPart: BW.Bytes,
     hadError: bool
   )
+    requires preStreams == old(io.trustedStreams())
     requires Core.InputTraceRelation(
                cmd,
                old(io.fs()),
                old(io.stdin()),
+               preStreams,
                readResults,
                stdoutPart,
                stderrPart,
@@ -603,6 +795,7 @@ module UniqProof {
       InputTraceRefines(
         cmd,
         io,
+        old(io.trustedStreams()),
         readResults,
         stdoutPart,
         stderrPart,

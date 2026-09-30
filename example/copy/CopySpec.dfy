@@ -9,10 +9,10 @@ module CopySpec {
     reads io.stdinRegion, io.stdoutRegion, io.trustedStreamsRegion
   {
     exists data: BenchWorld.Bytes, committed: nat ::
-      C.ReadStdinWithOutcomeSpec(
-        old(io.stdin()), old(io.trustedStreams()), io.stdin(), data, readErr) &&
-      C.WriteStdoutWithOutcomeSpec(
-        old(io.stdout()), old(io.trustedStreams()), io.stdout(), data, committed, writeErr)
+      C.ReadStdinSpec(
+        old(io.stdin()), old(io.trustedStreams()), io.stdin(), BenchWorld.ReturnError, data, readErr) &&
+      C.WriteStdoutSpec(
+        old(io.stdout()), old(io.trustedStreams()), io.stdout(), data, BenchWorld.ReturnError, committed, writeErr)
   }
 
   twostate predicate Spec(io: BenchIO.IO, exit: int)

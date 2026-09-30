@@ -405,10 +405,17 @@ module SeqCore {
       [current] + GenerateValues(current + step, step, count - 1)
   } by method
   {
-    if count == 0 {
-      return [];
+    var i := count;
+    var values: seq<int> := [];
+    while i > 0
+      invariant 0 <= i <= count
+      invariant values == GenerateValues(current + step * i, step, count - i)
+      decreases i
+    {
+      i := i - 1;
+      values := [current + step * i] + values;
     }
-    return [current] + GenerateValues(current + step, step, count - 1);
+    return values;
   }
 
   function DigitChar(d: int): char
@@ -516,12 +523,17 @@ module SeqCore {
       [RenderFixed(values[0], scale, firstNegativeZero)] + RenderValues(values[1..], scale, false)
   } by method
   {
-    if |values| == 0 {
-      return [];
+    var i := |values|;
+    var rendered: seq<BenchWorld.Bytes> := [];
+    while i > 0
+      invariant 0 <= i <= |values|
+      invariant rendered == RenderValues(values[i..], scale, if i == 0 then firstNegativeZero else false)
+      decreases i
+    {
+      i := i - 1;
+      rendered := [RenderFixed(values[i], scale, if i == 0 then firstNegativeZero else false)] + rendered;
     }
-    var head := RenderFixed(values[0], scale, firstNegativeZero);
-    var tail := RenderValues(values[1..], scale, false);
-    return [head] + tail;
+    return rendered;
   }
 
   function MaxWidth(items: seq<BenchWorld.Bytes>): nat
@@ -533,10 +545,17 @@ module SeqCore {
       MaxNat(|items[0]|, MaxWidth(items[1..]))
   } by method
   {
-    if |items| == 0 {
-      return 0;
+    var i := |items|;
+    var width: nat := 0;
+    while i > 0
+      invariant 0 <= i <= |items|
+      invariant width == MaxWidth(items[i..])
+      decreases i
+    {
+      i := i - 1;
+      width := MaxNat(|items[i]|, width);
     }
-    return MaxNat(|items[0]|, MaxWidth(items[1..]));
+    return width;
   }
 
   function PadNumber(text: BenchWorld.Bytes, width: nat): BenchWorld.Bytes
@@ -566,12 +585,17 @@ module SeqCore {
       [PadNumber(items[0], width)] + PadValues(items[1..], width)
   } by method
   {
-    if |items| == 0 {
-      return [];
+    var i := |items|;
+    var padded: seq<BenchWorld.Bytes> := [];
+    while i > 0
+      invariant 0 <= i <= |items|
+      invariant padded == PadValues(items[i..], width)
+      decreases i
+    {
+      i := i - 1;
+      padded := [PadNumber(items[i], width)] + padded;
     }
-    var head := PadNumber(items[0], width);
-    var tail := PadValues(items[1..], width);
-    return [head] + tail;
+    return padded;
   }
 
   function JoinItems(items: seq<BenchWorld.Bytes>, separator: BenchWorld.Bytes): BenchWorld.Bytes
@@ -585,12 +609,21 @@ module SeqCore {
       items[0] + separator + JoinItems(items[1..], separator)
   } by method
   {
-    if |items| == 0 {
-      return [];
-    } else if |items| == 1 {
-      return items[0] + ['\n'];
+    var i := |items|;
+    var out: BenchWorld.Bytes := [];
+    while i > 0
+      invariant 0 <= i <= |items|
+      invariant out == JoinItems(items[i..], separator)
+      decreases i
+    {
+      i := i - 1;
+      if i == |items| - 1 {
+        out := items[i] + ['\n'];
+      } else {
+        out := items[i] + separator + out;
+      }
     }
-    return items[0] + separator + JoinItems(items[1..], separator);
+    return out;
   }
 
   function RenderSequence(first: Decimal, step: Decimal, last: Decimal, equalWidth: bool, separator: BenchWorld.Bytes): BenchWorld.Bytes
@@ -703,8 +736,8 @@ module SeqCore {
     decreases *
   {
     var result := Evaluate(raw);
-    io.AppendStdout(result.stdout);
-    io.AppendStderr(result.stderr);
+    var _, _ := io.WriteStdout(result.stdout, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(result.stderr, BenchWorld.ThrowOnError);
     exit := result.exit;
     assert CoreSummary(raw, io, exit);
   }

@@ -57,7 +57,7 @@ module Stat {
     }
 
     method RunCore(raw: S.StatCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.stdoutRegion, io.stderrRegion
+      modifies io.statusObservationsRegion, io.stdoutRegion, io.stderrRegion
       ensures Spec.Spec(raw, io, exit)
       decreases *
     {

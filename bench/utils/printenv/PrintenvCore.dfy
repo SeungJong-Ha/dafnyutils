@@ -10,6 +10,7 @@ module PrintenvCore {
   import BenchWorld
   import IOContract
   import Spec = PrintenvSpec
+  import Utf8 = Utf8Semantics
 
   function Terminator(nullTerminated: bool): BenchWorld.Bytes
   {
@@ -24,13 +25,13 @@ module PrintenvCore {
     if |entries| == 0 then
       []
     else
-      entries[0] + terminator + RenderEnvEntries(entries[1..], terminator)
+      Utf8.Encode(entries[0]) + terminator + RenderEnvEntries(entries[1..], terminator)
   } by method {
     if |entries| == 0 {
       return [];
     } else {
       var rest := RenderEnvEntries(entries[1..], terminator);
-      return entries[0] + terminator + rest;
+      return Utf8.Encode(entries[0]) + terminator + rest;
     }
   }
 
@@ -106,7 +107,7 @@ module PrintenvCore {
     else
       match LookupEntry(operands[0], entries)
       case Missing => LookupOutput(operands[1..], entries, terminator)
-      case Found(value) => value + terminator + LookupOutput(operands[1..], entries, terminator)
+      case Found(value) => Utf8.Encode(value) + terminator + LookupOutput(operands[1..], entries, terminator)
   } by method {
     if |operands| == 0 {
       return [];
@@ -117,7 +118,7 @@ module PrintenvCore {
       case Missing =>
         return rest;
       case Found(value) =>
-        return value + terminator + rest;
+        return Utf8.Encode(value) + terminator + rest;
     }
   }
 
@@ -195,7 +196,7 @@ module PrintenvCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := Spec.HelpTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -203,7 +204,7 @@ module PrintenvCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := Spec.VersionTextSpec();
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -213,7 +214,7 @@ module PrintenvCore {
     assert IOContract.GetEnvironmentContractFields(preEnv, entries);
     var out := Output(cmd, entries);
     var status := ExitStatus(cmd, entries);
-    io.AppendStdout(out);
+    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     exit := status;
     assert io.stdout() == preStdout + out;
     assert CoreSummary(raw, io, exit);

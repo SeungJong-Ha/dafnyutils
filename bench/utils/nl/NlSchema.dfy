@@ -1,11 +1,13 @@
 include "../../core/Utf8.dfy"
 include "../../core/World.dfy"
 include "../../core/CliTypes.dfy"
+include "../../core/StringEscaping.dfy"
 
 module NlSchema {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import CliTypes
+  import SE = StringEscaping
 
   datatype NlMode =
     | ModeRun
@@ -14,6 +16,11 @@ module NlSchema {
     | ModeInvalidBodyStyle(value: string)
     | ModeUnsupportedRegexBodyStyle(value: string)
     | ModeInvalidNumberFormat(value: string)
+    | ModeInvalidOptions
+
+  datatype NlOptionError =
+    | InvalidBodyStyle(value: string)
+    | InvalidNumberFormat(value: string)
 
   datatype BodyStyle = NumberAll | NumberNonEmpty | NumberNone
   datatype NumberFormat = FormatLeft | FormatRight | FormatRightZero
@@ -27,6 +34,7 @@ module NlSchema {
     seenVersion: bool,
     helpTokenIndex: int,
     versionTokenIndex: int,
+    optionErrors: seq<NlOptionError>,
     operands: seq<string>
   )
 
@@ -35,6 +43,7 @@ module NlSchema {
     bodyStyle: BodyStyle,
     numberFormat: NumberFormat,
     separator: string,
+    optionErrors: seq<NlOptionError>,
     inputs: seq<Input>
   )
 
@@ -121,6 +130,8 @@ module NlSchema {
     var mode :=
       if specialMode != ModeRun then
         specialMode
+      else if |raw.optionErrors| > 0 then
+        ModeInvalidOptions
       else if bodyMode != ModeRun then
         bodyMode
       else if formatMode != ModeRun then
@@ -134,6 +145,7 @@ module NlSchema {
       BodyStyleValue(raw.bodyStyle),
       NumberFormatValue(raw.numberFormat),
       SeparatorValue(raw.separator),
+      raw.optionErrors,
       runInputs
     )
   }
@@ -166,32 +178,46 @@ module NlSchema {
     var seenVersion := false;
     var helpTokenIndex := -1;
     var versionTokenIndex := -1;
+    var optionErrors: seq<NlOptionError> := [];
+    var stopped := false;
 
     var i := 0;
     while i < |p.options|
       decreases |p.options| - i
     {
       var occ := p.options[i];
-      if occ.key == "nl.body_numbering" {
+      if !stopped && occ.key == "nl.body_numbering" {
         bodyStyle := occ.value;
+        match occ.value {
+          case Some(value) =>
+            if BodyStyleMode(occ.value) == ModeInvalidBodyStyle(value) {
+              optionErrors := optionErrors + [InvalidBodyStyle(value)];
+            }
+          case None =>
+        }
       }
-      if occ.key == "nl.number_format" {
+      if !stopped && occ.key == "nl.number_format" {
         numberFormat := occ.value;
+        match occ.value {
+          case Some(value) =>
+            if NumberFormatMode(occ.value) == ModeInvalidNumberFormat(value) {
+              optionErrors := optionErrors + [InvalidNumberFormat(value)];
+            }
+          case None =>
+        }
       }
-      if occ.key == "nl.number_separator" {
+      if !stopped && occ.key == "nl.number_separator" {
         separator := occ.value;
       }
-      if occ.key == "nl.help" {
+      if !stopped && occ.key == "nl.help" {
         seenHelp := true;
-        if helpTokenIndex == -1 || occ.tokenIndex < helpTokenIndex {
-          helpTokenIndex := occ.tokenIndex;
-        }
+        helpTokenIndex := occ.tokenIndex;
+        stopped := true;
       }
-      if occ.key == "nl.version" {
+      if !stopped && occ.key == "nl.version" {
         seenVersion := true;
-        if versionTokenIndex == -1 || occ.tokenIndex < versionTokenIndex {
-          versionTokenIndex := occ.tokenIndex;
-        }
+        versionTokenIndex := occ.tokenIndex;
+        stopped := true;
       }
       i := i + 1;
     }
@@ -204,6 +230,7 @@ module NlSchema {
       seenVersion,
       helpTokenIndex,
       versionTokenIndex,
+      optionErrors,
       p.positionals
     );
   }
@@ -239,6 +266,108 @@ module NlSchema {
     "Try 'nl --help' for more information.\n"
   }
 
+  function InvalidBodyStyleLine(value: string): BenchWorld.Bytes
+  {
+    "nl: invalid body numbering style: " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) + "\n"
+  }
+
+  function InvalidNumberFormatLine(value: string): BenchWorld.Bytes
+  {
+    "nl: invalid line numbering format: " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) + "\n"
+  }
+
+  function OptionErrorLine(error: NlOptionError): BenchWorld.Bytes
+  {
+    match error
+    case InvalidBodyStyle(value) => InvalidBodyStyleLine(value)
+    case InvalidNumberFormat(value) => InvalidNumberFormatLine(value)
+  }
+
+  function OptionErrorsText(errors: seq<NlOptionError>): BenchWorld.Bytes
+    decreases |errors|
+  {
+    if |errors| == 0 then
+      []
+    else
+      OptionErrorLine(errors[0]) + OptionErrorsText(errors[1..])
+  }
+
+  method PriorOptionState(
+    argv: seq<string>,
+    limit: int
+  ) returns (errors: seq<NlOptionError>, request: CliTypes.PriorRequest)
+    decreases *
+  {
+    errors := [];
+    request := CliTypes.RequestNone;
+    var i := 0;
+    while i < |argv| && i < limit
+      decreases |argv| - i
+    {
+      var token := argv[i];
+      if token == "--" {
+        return;
+      }
+      if token == "--help" {
+        request := CliTypes.RequestHelp;
+        return;
+      }
+      if token == "--version" {
+        request := CliTypes.RequestVersion;
+        return;
+      }
+
+      var value := "";
+      var hasBodyValue := false;
+      var hasFormatValue := false;
+      var consumedNext := false;
+      if token == "-b" || token == "--body-numbering" {
+        if i + 1 < |argv| && i + 1 < limit {
+          value := argv[i + 1];
+          hasBodyValue := true;
+          consumedNext := true;
+        }
+      } else if 17 <= |token| && token[..17] == "--body-numbering=" {
+        value := token[17..];
+        hasBodyValue := true;
+      } else if |token| > 2 && token[0] == '-' && token[1] == 'b' {
+        value := token[2..];
+        hasBodyValue := true;
+      } else if token == "-n" || token == "--number-format" {
+        if i + 1 < |argv| && i + 1 < limit {
+          value := argv[i + 1];
+          hasFormatValue := true;
+          consumedNext := true;
+        }
+      } else if 16 <= |token| && token[..16] == "--number-format=" {
+        value := token[16..];
+        hasFormatValue := true;
+      } else if |token| > 2 && token[0] == '-' && token[1] == 'n' {
+        value := token[2..];
+        hasFormatValue := true;
+      } else if token == "-s" || token == "--number-separator" {
+        if i + 1 < |argv| && i + 1 < limit {
+          consumedNext := true;
+        }
+      }
+
+      if hasBodyValue && BodyStyleMode(CliTypes.Some(value)) == ModeInvalidBodyStyle(value) {
+        errors := errors + [InvalidBodyStyle(value)];
+      }
+      if hasFormatValue && NumberFormatMode(CliTypes.Some(value)) == ModeInvalidNumberFormat(value) {
+        errors := errors + [InvalidNumberFormat(value)];
+      }
+
+      if consumedNext {
+        i := i + 2;
+      } else {
+        i := i + 1;
+      }
+    }
+  }
+
   method FormatParseError(e: CliTypes.ParseError) returns (b: BenchWorld.Bytes)
   {
     b := Utf8.Encode(ParseErrorText(e));
@@ -250,7 +379,22 @@ module NlSchema {
   ) returns (plan: CliTypes.CliPlan<NlCmdRaw>)
     decreases *
   {
+    var errors, request := PriorOptionState(argv, e.tokenIndex);
+    if request == CliTypes.RequestHelp {
+      plan := CliTypes.CliRun(NlCmdRaw(
+        CliTypes.None, CliTypes.None, CliTypes.None,
+        true, false, 0, -1, errors, []
+      ));
+      return;
+    }
+    if request == CliTypes.RequestVersion {
+      plan := CliTypes.CliRun(NlCmdRaw(
+        CliTypes.None, CliTypes.None, CliTypes.None,
+        false, true, -1, 0, errors, []
+      ));
+      return;
+    }
     var msg := FormatParseError(e);
-    plan := CliTypes.CliEarlyExit(1, [], msg);
+    plan := CliTypes.CliEarlyExit(1, [], OptionErrorsText(errors) + msg);
   }
 }

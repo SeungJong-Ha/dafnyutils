@@ -78,6 +78,12 @@ def assert_tail_parity(args: list[str], cwd: Path, *, input_data: bytes = b"") -
     assert_result_matches_reference(ref, bench)
 
 
+# A long single record must reach the last-line selector without stack exhaustion.
+def test_long_stdin_record_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_tail_parity(["-n", "1"], Path(tmp_dir), input_data=b"x" * 16_500)
+
+
 # Default file input emits the last ten lines.
 def test_default_last_ten_lines_from_file_matches_coreutils() -> None:
     # upstream: coreutils/tests/tail/tail.pl
@@ -569,3 +575,34 @@ def test_tail_proof_verifies() -> None:
 def test_tail_benchmark_item_verifies() -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(TAIL_VERIFY_TARGETS[4])
+
+
+# Missing file errors always quote names and escape control bytes.
+@pytest.mark.parametrize("path", ["a'b", "a\tb", "é", "a\\b"])
+def test_open_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_tail([path], cwd)
+        bench = run_bench_tail([path], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Invalid counts use C-locale quoting after GNU removes a leading minus.
+@pytest.mark.parametrize("value", ["a'b", "a\tb", "é", "-a\\b"])
+def test_invalid_count_diagnostic_escaping_matches_coreutils(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = ["-n", value]
+        ref = run_system_tail(args, cwd)
+        bench = run_bench_tail(args, cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Verbose headers preserve the UTF-8 bytes of a Unicode filename.
+def test_unicode_filename_header_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "é").write_bytes(b"x\n")
+        ref = run_system_tail(["-v", "é"], cwd)
+        bench = run_bench_tail(["-v", "é"], cwd)
+        assert_result_matches_reference(ref, bench)

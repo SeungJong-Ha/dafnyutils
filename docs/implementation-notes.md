@@ -23,19 +23,19 @@ These are method-body examples using `io: BenchIO.IO`. The method changes
 Bad — loses bytes returned with a read error and ignores write errors:
 
 ```dafny
-var data, readErr := io.ReadStdinWithOutcome();
+var data, readErr := io.ReadStdin(BenchWorld.ReturnError);
 if readErr != 0 {
   return 1; // data may still contain bytes that must be written.
 }
-var committed, writeErr := io.WriteStdoutWithOutcome(data);
+var committed, writeErr := io.WriteStdout(data, BenchWorld.ReturnError);
 return 0; // A failed write is reported as success.
 ```
 
 Good — writes the returned bytes and checks both errors:
 
 ```dafny
-var data, readErr := io.ReadStdinWithOutcome();
-var committed, writeErr := io.WriteStdoutWithOutcome(data);
+var data, readErr := io.ReadStdin(BenchWorld.ReturnError);
+var committed, writeErr := io.WriteStdout(data, BenchWorld.ReturnError);
 return if readErr == 0 && writeErr == 0 then 0 else 1;
 ```
 
@@ -70,7 +70,7 @@ lemma PartialWriteExample()
 ```
 
 `WrittenPrefix` explains one property; it is not a complete write specification.
-Use `C.WriteStdoutWithOutcomeSpec` to also connect the result and `errno` to the
+Use `C.WriteStdoutSpec` with `BenchWorld.ReturnError` to connect the result and `errno` to the
 trusted IO observation, as [CopySpec.dfy](../example/copy/CopySpec.dfy) does.
 
 **Required tests and limits**
@@ -82,10 +82,10 @@ trusted IO observation, as [CopySpec.dfy](../example/copy/CopySpec.dfy) does.
 - Use stable finite regular files, captured stdin and enough memory. Exclude
   interactive terminals, infinite/device input, concurrent changes, forced memory
   exhaustion, disk spilling and injected late read/close failures.
-- The read API returns one error code for open/read/close; it does not identify
-  the failed step. Step-specific diagnostics for injected faults need a maintainer
-  model extension. Exact output timing and buffering under asynchronous faults
-  are also outside the model.
+- `ReadFile(path, BenchWorld.FromStart)` returns the read prefix, native error
+  code and `FileReadStage`, distinguishing open/read/close failures. The current
+  utility consumers discard a prefix when the error code is nonzero. Exact
+  output timing and buffering under asynchronous faults remain outside the model.
 - Reads may update host access times; this is not a modeled filesystem change.
   Claim only the evaluator's declared observations. New observations return the
   task to `model_preparation` until maintainer review and approval.
@@ -206,8 +206,9 @@ Changing its exit assignment to `exit := 0` makes verification fail.
   scope, based on source review and representative contract/native checks.
   It does not mean the utility specification or proof is complete.
 - Each contribution must rule out the counterexamples listed in its scope.
-- A whole-read API is not an incremental stdin API. It cannot leave an unread
-  stdin suffix, so stdin behavior that stops reading early is outside the
-  current model. Logical input consumption is modeled; matching GNU's kernel
+- `ReadStdin` attempts to consume all input. A successful read leaves no suffix;
+  a failed read can return a prefix and leave remaining input. Deliberately
+  stopping after a requested byte count is outside the current API.
+  Logical input consumption is modeled; matching GNU's kernel
   read-ahead or a shared descriptor's final offset is not established by this
   API or the current stdout/stderr/filesystem comparator.

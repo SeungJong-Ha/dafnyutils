@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "ReadlinkSchema.dfy"
 
 module ReadlinkSpec {
@@ -9,6 +10,7 @@ module ReadlinkSpec {
   import IOContract
   import BenchWorld
   import Schema = ReadlinkSchema
+  import SE = StringEscaping
 
 
 
@@ -97,12 +99,7 @@ module ReadlinkSpec {
 
   function ErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "readlink: " + QuoteFileNameSpec(path) + ": " + ErrnoTextSpec(err) + "\n"
-  }
-
-  function QuoteFileNameSpec(path: BenchWorld.Path): BenchWorld.Bytes
-  {
-    if NeedsShellQuoteSpec(path) then "'" + Utf8.Encode(path) + "'" else Utf8.Encode(path)
+    "readlink: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function NeedsShellQuoteSpec(path: BenchWorld.Path): bool
@@ -120,7 +117,7 @@ module ReadlinkSpec {
   {
     errOut == ErrorMessageSpec(path, err) ||
     exists prefix: string ::
-      errOut == prefix + "/readlink: " + QuoteFileNameSpec(path) + ": " + ErrnoTextSpec(err) + "\n"
+      errOut == prefix + "/readlink: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoTextSpec(err) + "\n"
   }
 
   function OutputDelimiterSpec(cmd: Schema.ReadlinkCmd): BenchWorld.Bytes

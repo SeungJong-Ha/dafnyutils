@@ -432,7 +432,7 @@ module CatProof {
 
   lemma InputObservationRefines(
     cmd: Schema.CatCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     i: nat,
     observation: Core.InputObservation
@@ -440,14 +440,14 @@ module CatProof {
     requires i < |cmd.inputs|
     requires Core.InputObservationRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                i,
                observation
              )
     ensures Spec.ReadResultRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
               observation.result
@@ -472,7 +472,7 @@ module CatProof {
 
   lemma {:isolate_assertions} InputTraceWitnessRefines(
     cmd: Schema.CatCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     currentStdin: BW.Bytes,
     observations: seq<Core.InputObservation>,
@@ -484,7 +484,7 @@ module CatProof {
   )
     requires Core.InputTraceWitnessRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                |cmd.inputs|,
                currentStdin,
@@ -497,7 +497,7 @@ module CatProof {
              )
     ensures Spec.InputTraceRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               currentStdin,
               data,
@@ -520,7 +520,7 @@ module CatProof {
     assert forall i: nat | i < |cmd.inputs| ::
         Spec.ReadResultRelation(
           cmd,
-          preFs,
+          preFs, preStreams,
           preStdin,
           i,
           ObservationResults(observations)[i]
@@ -535,7 +535,7 @@ module CatProof {
       forall i: nat | i < |cmd.inputs|
         ensures Spec.ReadResultRelation(
                   cmd,
-                  preFs,
+                  preFs, preStreams,
                   preStdin,
                   i,
                   ObservationResults(observations)[i]
@@ -551,7 +551,7 @@ module CatProof {
         assert i < |observations|;
         InputObservationRefines(
           cmd,
-          preFs,
+          preFs, preStreams,
           preStdin,
           i,
           observations[i]
@@ -615,7 +615,7 @@ module CatProof {
           i < |observations| && Core.InputFailed(observations[i]);
         InputObservationRefines(
           cmd,
-          preFs,
+          preFs, preStreams,
           preStdin,
           i,
           observations[i]
@@ -635,7 +635,7 @@ module CatProof {
           );
         InputObservationRefines(
           cmd,
-          preFs,
+          preFs, preStreams,
           preStdin,
           i,
           observations[i]
@@ -683,7 +683,7 @@ module CatProof {
           ) =>
         InputTraceWitnessRefines(
           cmd,
-          old(io.fs()),
+          old(io.fs()), old(io.trustedStreams()),
           old(io.stdin()),
           io.stdin(),
           observations,
@@ -696,7 +696,7 @@ module CatProof {
         RenderWitnessRefines(cmd, data, processed, renderTrace);
         assert Spec.RunRelation(
             cmd,
-            old(io.fs()),
+            old(io.fs()), old(io.trustedStreams()),
             old(io.stdin()),
             io.stdin(),
             processed.out,
@@ -823,7 +823,7 @@ module CatProof {
 
   lemma InputTraceRelationFunctional(
     cmd: Schema.CatCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     postStdin1: BW.Bytes,
     data1: BW.Bytes,
@@ -841,7 +841,7 @@ module CatProof {
                errorCuts: seq<nat> ::
                Spec.InputTraceRelation(
                  cmd,
-                 preFs,
+                 preFs, preStreams,
                  preStdin,
                  postStdin1,
                  data1,
@@ -860,7 +860,7 @@ module CatProof {
                errorCuts: seq<nat> ::
                Spec.InputTraceRelation(
                  cmd,
-                 preFs,
+                 preFs, preStreams,
                  preStdin,
                  postStdin2,
                  data2,
@@ -884,7 +884,7 @@ module CatProof {
         errorCuts1: seq<nat> :|
       Spec.InputTraceRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         postStdin1,
         data1,
@@ -903,7 +903,7 @@ module CatProof {
         errorCuts2: seq<nat> :|
       Spec.InputTraceRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         postStdin2,
         data2,
@@ -1054,7 +1054,7 @@ module CatProof {
   }
 
   lemma RunRelationWitness(
-    cmd: Schema.CatCmd, preFs: BW.FileSystem, preStdin: BW.Bytes,
+    cmd: Schema.CatCmd, preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult, preStdin: BW.Bytes,
     postStdin: BW.Bytes, output: BW.Bytes, errors: BW.Bytes, exit: int
   ) returns (
     readResults: seq<BW.Result<BW.Bytes>>, data: BW.Bytes,
@@ -1062,15 +1062,15 @@ module CatProof {
     errorFragments: seq<BW.Bytes>, errorCuts: seq<nat>, hadError: bool,
     byteFragments: seq<BW.Bytes>, outputCuts: seq<nat>, numbers: seq<nat>
   )
-    requires Spec.RunRelation(cmd, preFs, preStdin, postStdin, output, errors, exit)
-    ensures Spec.InputTraceRelation(cmd, preFs, preStdin, postStdin, data,
+    requires Spec.RunRelation(cmd, preFs, preStreams, preStdin, postStdin, output, errors, exit)
+    ensures Spec.InputTraceRelation(cmd, preFs, preStreams, preStdin, postStdin, data,
       errors, hadError, readResults, dataFragments, dataCuts, errorFragments, errorCuts)
     ensures Spec.RenderRelation(cmd, data, output, byteFragments, outputCuts, numbers)
     ensures exit == (if hadError then 1 else 0)
   {
     readResults, data, dataFragments, dataCuts, errorFragments, errorCuts,
       hadError, byteFragments, outputCuts, numbers :|
-      Spec.InputTraceRelation(cmd, preFs, preStdin, postStdin, data,
+      Spec.InputTraceRelation(cmd, preFs, preStreams, preStdin, postStdin, data,
         errors, hadError, readResults, dataFragments, dataCuts, errorFragments, errorCuts) &&
       Spec.RenderRelation(cmd, data, output, byteFragments, outputCuts, numbers) &&
       exit == (if hadError then 1 else 0);
@@ -1078,7 +1078,7 @@ module CatProof {
 
   lemma RunRelationFunctional(
     cmd: Schema.CatCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     postStdin1: BW.Bytes,
     output1: BW.Bytes,
@@ -1091,7 +1091,7 @@ module CatProof {
   )
     requires Spec.RunRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                postStdin1,
                output1,
@@ -1100,7 +1100,7 @@ module CatProof {
              )
     requires Spec.RunRelation(
                cmd,
-               preFs,
+               preFs, preStreams,
                preStdin,
                postStdin2,
                output2,
@@ -1114,13 +1114,13 @@ module CatProof {
   {
     var readResults1, data1, dataFragments1, dataCuts1, errorFragments1,
         errorCuts1, hadError1, byteFragments1, outputCuts1, numbers1 :=
-      RunRelationWitness(cmd, preFs, preStdin, postStdin1, output1, errors1, exit1);
+      RunRelationWitness(cmd, preFs, preStreams, preStdin, postStdin1, output1, errors1, exit1);
     var readResults2, data2, dataFragments2, dataCuts2, errorFragments2,
         errorCuts2, hadError2, byteFragments2, outputCuts2, numbers2 :=
-      RunRelationWitness(cmd, preFs, preStdin, postStdin2, output2, errors2, exit2);
+      RunRelationWitness(cmd, preFs, preStreams, preStdin, postStdin2, output2, errors2, exit2);
     InputTraceRelationFunctional(
       cmd,
-      preFs,
+      preFs, preStreams,
       preStdin,
       postStdin1,
       data1,
@@ -1145,6 +1145,7 @@ module CatProof {
     requires old(io1.stdout()) == old(io2.stdout())
     requires old(io1.stderr()) == old(io2.stderr())
     requires old(io1.fs()) == old(io2.fs())
+    requires old(io1.trustedStreams()) == old(io2.trustedStreams())
     requires Spec.Spec(raw, io1, exit1)
     requires Spec.Spec(raw, io2, exit2)
     ensures io1.stdin() == io2.stdin()
@@ -1162,6 +1163,7 @@ module CatProof {
           Spec.RunRelation(
             cmd,
             old(io1.fs()),
+            old(io1.trustedStreams()),
             old(io1.stdin()),
             io1.stdin(),
             output,
@@ -1177,6 +1179,7 @@ module CatProof {
         Spec.RunRelation(
           cmd,
           old(io1.fs()),
+          old(io1.trustedStreams()),
           old(io1.stdin()),
           io1.stdin(),
           output1,
@@ -1189,6 +1192,7 @@ module CatProof {
           Spec.RunRelation(
             cmd,
             old(io2.fs()),
+            old(io2.trustedStreams()),
             old(io2.stdin()),
             io2.stdin(),
             output,
@@ -1204,6 +1208,7 @@ module CatProof {
         Spec.RunRelation(
           cmd,
           old(io2.fs()),
+          old(io2.trustedStreams()),
           old(io2.stdin()),
           io2.stdin(),
           output2,
@@ -1215,6 +1220,7 @@ module CatProof {
       RunRelationFunctional(
         cmd,
         old(io1.fs()),
+        old(io1.trustedStreams()),
         old(io1.stdin()),
         io1.stdin(),
         output1,

@@ -10,6 +10,7 @@ module DuCore {
   import IOContract
   import Schema = DuSchema
   import Spec = DuSpec
+  import Utf8 = Utf8Semantics
 
   function DigitChar(d: nat): char
     requires d < 10
@@ -37,7 +38,7 @@ module DuCore {
 
   function CountLine(size: nat, path: BenchWorld.Path): BenchWorld.Bytes
   {
-    NatText(size) + "\t" + path + "\n"
+    NatText(size) + "\t" + Utf8.Encode(path) + "\n"
   }
 
   function OutputPiece(
@@ -62,17 +63,17 @@ module DuCore {
 
   ghost function ReadResultCore(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     i: nat
   ): BenchWorld.Result<BenchWorld.Bytes>
     requires i < |cmd.operands|
   {
-    IOContract.ReadFileResultFields(preFs, cmd.operands[i])
+    IOContract.ObservedReadFileResultFields(preFs, preStreams, cmd.operands[i])
   }
 
   ghost function PrefixOutputCore(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     i: nat
   ): BenchWorld.Bytes
     requires i <= |cmd.operands|
@@ -81,13 +82,13 @@ module DuCore {
     if i == 0 then
       []
     else
-      PrefixOutputCore(cmd, preFs, i - 1) +
-      OutputPiece(cmd.operands[i - 1], ReadResultCore(cmd, preFs, i - 1))
+      PrefixOutputCore(cmd, preFs, preStreams, i - 1) +
+      OutputPiece(cmd.operands[i - 1], ReadResultCore(cmd, preFs, preStreams, i - 1))
   }
 
   ghost function PrefixErrorsCore(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     i: nat
   ): BenchWorld.Bytes
     requires i <= |cmd.operands|
@@ -96,21 +97,21 @@ module DuCore {
     if i == 0 then
       []
     else
-      PrefixErrorsCore(cmd, preFs, i - 1) +
-      ErrorPiece(cmd.operands[i - 1], ReadResultCore(cmd, preFs, i - 1))
+      PrefixErrorsCore(cmd, preFs, preStreams, i - 1) +
+      ErrorPiece(cmd.operands[i - 1], ReadResultCore(cmd, preFs, preStreams, i - 1))
   }
 
   ghost predicate PrefixHadErrorCore(
     cmd: Schema.DuCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     i: nat
   )
     requires i <= |cmd.operands|
     decreases i
   {
     i > 0 &&
-    (PrefixHadErrorCore(cmd, preFs, i - 1) ||
-     ReadResultCore(cmd, preFs, i - 1).Err?)
+    (PrefixHadErrorCore(cmd, preFs, preStreams, i - 1) ||
+     ReadResultCore(cmd, preFs, preStreams, i - 1).Err?)
   }
 
   twostate predicate CoreSummary(raw: Schema.DuCmdRaw, io: BenchIO.IO, exit: int)
@@ -130,9 +131,9 @@ module DuCore {
       io.stderr() == old(io.stderr()) + Spec.UnsupportedAccountingMessageSpec() &&
       exit == 1
     else
-      io.stdout() == old(io.stdout()) + PrefixOutputCore(cmd, old(io.fs()), |cmd.operands|) &&
-      io.stderr() == old(io.stderr()) + PrefixErrorsCore(cmd, old(io.fs()), |cmd.operands|) &&
-      exit == (if PrefixHadErrorCore(cmd, old(io.fs()), |cmd.operands|) then 1 else 0)
+      io.stdout() == old(io.stdout()) + PrefixOutputCore(cmd, old(io.fs()), old(io.trustedStreams()), |cmd.operands|) &&
+      io.stderr() == old(io.stderr()) + PrefixErrorsCore(cmd, old(io.fs()), old(io.trustedStreams()), |cmd.operands|) &&
+      exit == (if PrefixHadErrorCore(cmd, old(io.fs()), old(io.trustedStreams()), |cmd.operands|) then 1 else 0)
   }
 
   method RunCore(raw: Schema.DuCmdRaw, io: BenchIO.IO) returns (exit: int)
@@ -141,26 +142,27 @@ module DuCore {
     decreases *
   {
     ghost var preFs := io.fs();
+    ghost var preStreams := io.trustedStreams();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
     var cmd := Schema.Command(raw);
 
     if cmd.mode == Schema.ModeHelp {
-      io.AppendStdout(Spec.HelpTextSpec());
+      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
 
     if cmd.mode == Schema.ModeVersion {
-      io.AppendStdout(Spec.VersionTextSpec());
+      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
 
     if cmd.mode == Schema.ModeUnsupportedAccounting {
-      io.AppendStderr(Spec.UnsupportedAccountingMessageSpec());
+      var _, _ := io.WriteStderr(Spec.UnsupportedAccountingMessageSpec(), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -175,14 +177,15 @@ module DuCore {
       invariant 0 <= i <= |cmd.operands|
       invariant io.stdout() == preStdout
       invariant io.stderr() == preStderr
-      invariant output == PrefixOutputCore(cmd, preFs, i)
-      invariant err == PrefixErrorsCore(cmd, preFs, i)
-      invariant hadError == PrefixHadErrorCore(cmd, preFs, i)
+      invariant output == PrefixOutputCore(cmd, preFs, preStreams, i)
+      invariant err == PrefixErrorsCore(cmd, preFs, preStreams, i)
+      invariant hadError == PrefixHadErrorCore(cmd, preFs, preStreams, i)
       decreases |cmd.operands| - i
     {
       var path := cmd.operands[i];
-      var readResult := io.ReadFile(path);
-      assert readResult == ReadResultCore(cmd, preFs, i);
+      var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
+      var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+      assert readResult == ReadResultCore(cmd, preFs, preStreams, i);
 
       match readResult {
         case Ok(data) =>
@@ -196,16 +199,16 @@ module DuCore {
 
     assert io.stdout() == preStdout;
     assert io.stderr() == preStderr;
-    io.AppendStdout(output);
+    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr;
-    io.AppendStderr(err);
+    var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;
-    assert output == PrefixOutputCore(cmd, preFs, |cmd.operands|);
-    assert err == PrefixErrorsCore(cmd, preFs, |cmd.operands|);
-    assert hadError == PrefixHadErrorCore(cmd, preFs, |cmd.operands|);
+    assert output == PrefixOutputCore(cmd, preFs, preStreams, |cmd.operands|);
+    assert err == PrefixErrorsCore(cmd, preFs, preStreams, |cmd.operands|);
+    assert hadError == PrefixHadErrorCore(cmd, preFs, preStreams, |cmd.operands|);
     assert CoreSummary(raw, io, exit);
   }
 }

@@ -119,7 +119,13 @@ module TeeSchema {
   ) returns (plan: CliTypes.CliPlan<TeeCmdRaw>)
     decreases *
   {
-    var msg := FormatParseError(e);
-    plan := CliTypes.CliEarlyExit(1, [], msg);
+    match CliTypes.PriorHelpVersionRequest(argv, e.tokenIndex)
+    case RequestHelp =>
+      plan := CliTypes.CliRun(TeeCmdRaw(false, false, true, false, 0, -1, []));
+    case RequestVersion =>
+      plan := CliTypes.CliRun(TeeCmdRaw(false, false, false, true, -1, 0, []));
+    case RequestNone =>
+      var msg := FormatParseError(e);
+      plan := CliTypes.CliEarlyExit(1, [], msg);
   }
 }

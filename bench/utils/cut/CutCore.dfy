@@ -1247,7 +1247,8 @@ module CutCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
   {
@@ -1259,7 +1260,7 @@ module CutCore {
         else preStdin
       )
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate InputTraceCore(
@@ -1269,7 +1270,8 @@ module CutCore {
     count: nat,
     readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
-    stderrFragments: seq<BenchWorld.Bytes>
+    stderrFragments: seq<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires count <= |command.inputs|
   {
@@ -1277,7 +1279,7 @@ module CutCore {
     |stdoutFragments| == count &&
     |stderrFragments| == count &&
     forall i: nat :: i < count ==>
-                       InputReadCore(command, preFs, preStdin, i, readResults[i]) &&
+                       InputReadCore(command, preFs, preStdin, i, readResults[i], preStreams) &&
                        stdoutFragments[i] == OutputPiece(command, readResults[i]) &&
                        stderrFragments[i] == ErrorPiece(command.inputs[i], readResults[i])
   }
@@ -1305,7 +1307,8 @@ module CutCore {
         stderrFragments: seq<BenchWorld.Bytes> ::
         InputTraceCore(
           raw, old(io.fs()), old(io.stdin()), |raw.inputs|,
-          readResults, stdoutFragments, stderrFragments
+          readResults, stdoutFragments, stderrFragments,
+          old(io.trustedStreams())
         ) &&
         io.stdin() ==
         (if exists i :: 0 <= i < |raw.inputs| && raw.inputs[i].Stdin?
@@ -1333,7 +1336,7 @@ module CutCore {
 
     if raw.mode == CutSchema.ModeHelp {
       var help := Spec.HelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1345,7 +1348,7 @@ module CutCore {
 
     if raw.mode == CutSchema.ModeVersion {
       var version := Spec.VersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1380,7 +1383,8 @@ module CutCore {
                  else preStdin)
       invariant InputTraceCore(
                   raw, preFs, preStdin, i,
-                  readResults, stdoutFragments, stderrFragments
+                  readResults, stdoutFragments, stderrFragments,
+                  old(io.trustedStreams())
                 )
       invariant hadError ==
                 (exists j: nat :: j < i &&
@@ -1393,13 +1397,14 @@ module CutCore {
       match input {
         case Stdin =>
           ghost var beforeStdin := io.stdin();
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           readResult := BenchWorld.Ok(data);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           reveal InputReadCore();
         case File(path) =>
-          readResult := io.ReadFile(path);
-          assert readResult == IOContract.ReadFileResultFields(preFs, path);
+          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+          assert readResult == IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
           reveal InputReadCore();
       }
 
@@ -1415,21 +1420,23 @@ module CutCore {
       stdoutFragments := stdoutFragments + [outPiece];
       stderrFragments := stderrFragments + [errPiece];
       assert InputReadCore(
-          raw, preFs, preStdin, i, readResults[i]
+          raw, preFs, preStdin, i, readResults[i],
+          old(io.trustedStreams())
         );
       assert InputTraceCore(
           raw, preFs, preStdin, i + 1,
-          readResults, stdoutFragments, stderrFragments
+          readResults, stdoutFragments, stderrFragments,
+          old(io.trustedStreams())
         ) by {
         reveal InputTraceCore();
         assert forall j: nat :: j < i + 1 ==>
-                                  InputReadCore(raw, preFs, preStdin, j, readResults[j]) &&
+                                  InputReadCore(raw, preFs, preStdin, j, readResults[j], old(io.trustedStreams())) &&
                                   stdoutFragments[j] == OutputPiece(raw, readResults[j]) &&
                                   stderrFragments[j] ==
                                   ErrorPiece(raw.inputs[j], readResults[j]) by {
           forall j: nat | j < i + 1
             ensures
-              InputReadCore(raw, preFs, preStdin, j, readResults[j]) &&
+              InputReadCore(raw, preFs, preStdin, j, readResults[j], old(io.trustedStreams())) &&
               stdoutFragments[j] == OutputPiece(raw, readResults[j]) &&
               stderrFragments[j] ==
               ErrorPiece(raw.inputs[j], readResults[j])
@@ -1455,9 +1462,9 @@ module CutCore {
       i := i + 1;
     }
 
-    io.AppendStdout(out);
+    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + out;
-    io.AppendStderr(err);
+    var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;
     assert CoreSummary(raw, io, exit) by {
@@ -1469,7 +1476,8 @@ module CutCore {
           errFragments: seq<BenchWorld.Bytes> ::
           InputTraceCore(
             raw, old(io.fs()), old(io.stdin()), |raw.inputs|,
-            witnessReads, outFragments, errFragments
+            witnessReads, outFragments, errFragments,
+            old(io.trustedStreams())
           ) &&
           io.stdin() ==
           (if exists j ::

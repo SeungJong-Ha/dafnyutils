@@ -487,3 +487,23 @@ def test_expand_proof_verifies() -> None:
 def test_expand_benchmark_item_verifies() -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(ROOT / "bench" / "utils" / "expand" / "Expand.dfy")
+
+
+# Invalid tab operands escape their UTF-8 bytes in C-locale style.
+@pytest.mark.parametrize("value", ["é", "x'y"])
+def test_escape_audit_invalid_tabs(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_expand_parity(["-t", value], Path(tmp_dir))
+
+
+# File errors use GNU's colon-forced shell quoting.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_expand_parity([path], Path(tmp_dir))
+
+
+# Long tabbed input completes with exact GNU output instead of exhausting the call stack.
+def test_escape_audit_large_stdin() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_expand_parity(["-"], Path(tmp_dir), input_data=b"x\t" * 9000)

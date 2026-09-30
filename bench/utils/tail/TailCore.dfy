@@ -138,13 +138,14 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): BenchWorld.Result<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin(_) => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   function DropFirstBytes(data: BenchWorld.Bytes, count: nat): BenchWorld.Bytes
@@ -324,7 +325,8 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): nat
     requires i <= |cmd.inputs|
     decreases i
@@ -332,15 +334,16 @@ module TailCore {
     if i == 0 then
       0
     else
-      PrefixHeaderCountCore(cmd, preFs, preStdin, i - 1) +
-      (if ResultHasHeader(cmd, ReadResultCore(cmd, preFs, preStdin, i - 1)) then 1 else 0)
+      PrefixHeaderCountCore(cmd, preFs, preStdin, i - 1, preStreams) +
+      (if ResultHasHeader(cmd, ReadResultCore(cmd, preFs, preStdin, i - 1, preStreams)) then 1 else 0)
   }
 
   ghost function PrefixOutputCore(
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): BenchWorld.Bytes
     requires i <= |cmd.inputs|
     decreases i
@@ -348,12 +351,12 @@ module TailCore {
     if i == 0 then
       []
     else
-      PrefixOutputCore(cmd, preFs, preStdin, i - 1) +
+      PrefixOutputCore(cmd, preFs, preStdin, i - 1, preStreams) +
       OutputPiece(
         cmd,
         cmd.inputs[i - 1],
-        ReadResultCore(cmd, preFs, preStdin, i - 1),
-        PrefixHeaderCountCore(cmd, preFs, preStdin, i - 1)
+        ReadResultCore(cmd, preFs, preStdin, i - 1, preStreams),
+        PrefixHeaderCountCore(cmd, preFs, preStdin, i - 1, preStreams)
       )
   }
 
@@ -361,7 +364,8 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): BenchWorld.Bytes
     requires i <= |cmd.inputs|
     decreases i
@@ -369,15 +373,16 @@ module TailCore {
     if i == 0 then
       []
     else
-      PrefixErrorOutputCore(cmd, preFs, preStdin, i - 1) +
-      ErrorPiece(cmd.inputs[i - 1], ReadResultCore(cmd, preFs, preStdin, i - 1))
+      PrefixErrorOutputCore(cmd, preFs, preStdin, i - 1, preStreams) +
+      ErrorPiece(cmd.inputs[i - 1], ReadResultCore(cmd, preFs, preStdin, i - 1, preStreams))
   }
 
   ghost function PrefixHadErrorCore(
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): bool
     requires i <= |cmd.inputs|
     decreases i
@@ -385,17 +390,18 @@ module TailCore {
     if i == 0 then
       false
     else
-      PrefixHadErrorCore(cmd, preFs, preStdin, i - 1) ||
-      HadErrorPiece(cmd.inputs[i - 1], ReadResultCore(cmd, preFs, preStdin, i - 1))
+      PrefixHadErrorCore(cmd, preFs, preStdin, i - 1, preStreams) ||
+      HadErrorPiece(cmd.inputs[i - 1], ReadResultCore(cmd, preFs, preStdin, i - 1, preStreams))
   }
 
   ghost function RunOutputCore(
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
-    preStdin: BenchWorld.Bytes
+    preStdin: BenchWorld.Bytes,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ): BenchWorld.Bytes
   {
-    PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|)
+    PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams)
   }
 
   twostate predicate CoreSummary(raw: TailSchema.TailCmdRaw, io: BenchIO.IO, exit: int)
@@ -424,9 +430,9 @@ module TailCore {
       exit == 0
     else
       io.stdin() == PrefixStdinCore(cmd, old(io.stdin()), |cmd.inputs|) &&
-      io.stdout() == old(io.stdout()) + RunOutputCore(cmd, old(io.fs()), old(io.stdin())) &&
-      io.stderr() == old(io.stderr()) + PrefixErrorOutputCore(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|) &&
-      exit == (if PrefixHadErrorCore(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|) then 1 else 0)
+      io.stdout() == old(io.stdout()) + RunOutputCore(cmd, old(io.fs()), old(io.stdin()), old(io.trustedStreams())) &&
+      io.stderr() == old(io.stderr()) + PrefixErrorOutputCore(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|, old(io.trustedStreams())) &&
+      exit == (if PrefixHadErrorCore(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|, old(io.trustedStreams())) then 1 else 0)
   }
 
   lemma PrefixStdinCoreStep(cmd: TailSchema.TailCmd, preStdin: BenchWorld.Bytes, i: nat)
@@ -442,12 +448,13 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
-    ensures PrefixHeaderCountCore(cmd, preFs, preStdin, i + 1) ==
-            PrefixHeaderCountCore(cmd, preFs, preStdin, i) +
-            (if ResultHasHeader(cmd, ReadResultCore(cmd, preFs, preStdin, i)) then 1 else 0)
+    ensures PrefixHeaderCountCore(cmd, preFs, preStdin, i + 1, preStreams) ==
+            PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams) +
+            (if ResultHasHeader(cmd, ReadResultCore(cmd, preFs, preStdin, i, preStreams)) then 1 else 0)
   {
   }
 
@@ -455,16 +462,17 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
-    ensures PrefixOutputCore(cmd, preFs, preStdin, i + 1) ==
-            PrefixOutputCore(cmd, preFs, preStdin, i) +
+    ensures PrefixOutputCore(cmd, preFs, preStdin, i + 1, preStreams) ==
+            PrefixOutputCore(cmd, preFs, preStdin, i, preStreams) +
             OutputPiece(
               cmd,
               cmd.inputs[i],
-              ReadResultCore(cmd, preFs, preStdin, i),
-              PrefixHeaderCountCore(cmd, preFs, preStdin, i)
+              ReadResultCore(cmd, preFs, preStdin, i, preStreams),
+              PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams)
             )
   {
   }
@@ -473,12 +481,13 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
-    ensures PrefixErrorOutputCore(cmd, preFs, preStdin, i + 1) ==
-            PrefixErrorOutputCore(cmd, preFs, preStdin, i) +
-            ErrorPiece(cmd.inputs[i], ReadResultCore(cmd, preFs, preStdin, i))
+    ensures PrefixErrorOutputCore(cmd, preFs, preStdin, i + 1, preStreams) ==
+            PrefixErrorOutputCore(cmd, preFs, preStdin, i, preStreams) +
+            ErrorPiece(cmd.inputs[i], ReadResultCore(cmd, preFs, preStdin, i, preStreams))
   {
   }
 
@@ -486,12 +495,13 @@ module TailCore {
     cmd: TailSchema.TailCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
-    ensures PrefixHadErrorCore(cmd, preFs, preStdin, i + 1) ==
-            (PrefixHadErrorCore(cmd, preFs, preStdin, i) ||
-             HadErrorPiece(cmd.inputs[i], ReadResultCore(cmd, preFs, preStdin, i)))
+    ensures PrefixHadErrorCore(cmd, preFs, preStdin, i + 1, preStreams) ==
+            (PrefixHadErrorCore(cmd, preFs, preStdin, i, preStreams) ||
+             HadErrorPiece(cmd.inputs[i], ReadResultCore(cmd, preFs, preStdin, i, preStreams)))
   {
   }
 
@@ -520,7 +530,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeHelp {
       var help := GetHelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -530,7 +540,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeVersion {
       var version := GetVersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -540,7 +550,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeInvalidCount {
       var invalid := Spec.InvalidCountMessage(cmd.invalidCountUnit, cmd.invalidCountValue);
-      io.AppendStderr(invalid);
+      var _, _ := io.WriteStderr(invalid, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -568,10 +578,10 @@ module TailCore {
       invariant io.stdin() == PrefixStdinCore(cmd, preStdin, i)
       invariant io.stdout() == preStdout
       invariant io.stderr() == preStderr
-      invariant out == PrefixOutputCore(cmd, preFs, preStdin, i)
-      invariant err == PrefixErrorOutputCore(cmd, preFs, preStdin, i)
-      invariant hadError == PrefixHadErrorCore(cmd, preFs, preStdin, i)
-      invariant headers == PrefixHeaderCountCore(cmd, preFs, preStdin, i)
+      invariant out == PrefixOutputCore(cmd, preFs, preStdin, i, old(io.trustedStreams()))
+      invariant err == PrefixErrorOutputCore(cmd, preFs, preStdin, i, old(io.trustedStreams()))
+      invariant hadError == PrefixHadErrorCore(cmd, preFs, preStdin, i, old(io.trustedStreams()))
+      invariant headers == PrefixHeaderCountCore(cmd, preFs, preStdin, i, old(io.trustedStreams()))
       decreases |cmd.inputs| - i
     {
       var input := cmd.inputs[i];
@@ -579,27 +589,28 @@ module TailCore {
       match input {
         case Stdin(_) =>
           ghost var beforeStdin := io.stdin();
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           readResult := BenchWorld.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
-          PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i);
-          PrefixOutputCoreStep(cmd, preFs, preStdin, i);
-          PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i);
-          PrefixHadErrorCoreStep(cmd, preFs, preStdin, i);
+          PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+          PrefixOutputCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+          PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+          PrefixHadErrorCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
           assert beforeStdin == PrefixStdinCore(cmd, preStdin, i);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           assert data == beforeStdin;
         case File(path) =>
-          readResult := io.ReadFile(path);
+          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
+          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
       }
       if input.File? {
         PrefixStdinCoreStep(cmd, preStdin, i);
-        PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i);
-        PrefixOutputCoreStep(cmd, preFs, preStdin, i);
-        PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i);
-        PrefixHadErrorCoreStep(cmd, preFs, preStdin, i);
+        PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+        PrefixOutputCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+        PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
+        PrefixHadErrorCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
       }
-      assert readResult == ReadResultCore(cmd, preFs, preStdin, i);
+      assert readResult == ReadResultCore(cmd, preFs, preStdin, i, old(io.trustedStreams()));
 
       var piece := OutputPiece(cmd, input, readResult, headers);
       var errorPiece := ErrorPiece(input, readResult);
@@ -614,24 +625,24 @@ module TailCore {
     }
 
     if |out| > 0 {
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     } else {
       assert out == [];
       assert io.stdout() == preStdout + out;
     }
     if |err| > 0 {
-      io.AppendStderr(err);
+      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     } else {
       assert err == [];
       assert io.stderr() == preStderr + err;
     }
     exit := if hadError then 1 else 0;
 
-    assert out == RunOutputCore(cmd, preFs, preStdin);
-    assert err == PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|);
-    assert hadError == PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|);
+    assert out == RunOutputCore(cmd, preFs, preStdin, old(io.trustedStreams()));
+    assert err == PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|, old(io.trustedStreams()));
+    assert hadError == PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|, old(io.trustedStreams()));
     assert io.stdin() == PrefixStdinCore(cmd, preStdin, |cmd.inputs|);
-    assert io.stdout() == preStdout + RunOutputCore(cmd, preFs, preStdin);
-    assert io.stderr() == preStderr + PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|);
+    assert io.stdout() == preStdout + RunOutputCore(cmd, preFs, preStdin, old(io.trustedStreams()));
+    assert io.stderr() == preStderr + PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|, old(io.trustedStreams()));
   }
 }

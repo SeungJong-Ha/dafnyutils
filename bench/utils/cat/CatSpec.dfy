@@ -279,7 +279,7 @@ module CatSpec {
 
   ghost predicate ReadResultRelation(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     result: BenchWorld.Result<BenchWorld.Bytes>
@@ -294,7 +294,7 @@ module CatSpec {
         else preStdin
       )
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost function InputDataPiece(
@@ -329,7 +329,7 @@ module CatSpec {
 
   ghost predicate InputTraceRelation(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     data: BenchWorld.Bytes,
@@ -346,7 +346,7 @@ module CatSpec {
     |dataFragments| == |cmd.inputs| &&
     |errorFragments| == |cmd.inputs| &&
     (forall i: nat | i < |cmd.inputs| ::
-       ReadResultRelation(cmd, preFs, preStdin, i, readResults[i]) &&
+       ReadResultRelation(cmd, preFs, preStreams, preStdin, i, readResults[i]) &&
        dataFragments[i] == InputDataPiece(readResults[i]) &&
        errorFragments[i] == InputErrorPiece(cmd.inputs[i], readResults[i])) &&
     FragmentsConcatenate(dataFragments, data, dataCuts) &&
@@ -362,13 +362,13 @@ module CatSpec {
 
   lemma EmptyInputWitnesses(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
   )
     requires forall i: nat | i < |cmd.inputs| ::
-      ReadResultRelation(cmd, preFs, preStdin, i, BenchWorld.Ok([]))
+      ReadResultRelation(cmd, preFs, preStreams, preStdin, i, BenchWorld.Ok([]))
     ensures InputTraceRelation(
-      cmd, preFs, preStdin,
+      cmd, preFs, preStreams, preStdin,
       if CatSchema.Stdin in cmd.inputs then [] else preStdin,
       [], [], false,
       seq(|cmd.inputs|, i => BenchWorld.Ok([])),
@@ -379,7 +379,7 @@ module CatSpec {
     var results: seq<BenchWorld.Result<BenchWorld.Bytes>> :=
       seq(|cmd.inputs|, i => BenchWorld.Ok([]));
     forall i: nat | i < |cmd.inputs|
-      ensures ReadResultRelation(cmd, preFs, preStdin, i, results[i])
+      ensures ReadResultRelation(cmd, preFs, preStreams, preStdin, i, results[i])
       ensures InputDataPiece(results[i]) == []
       ensures InputErrorPiece(cmd.inputs[i], results[i]) == []
       ensures !InputFailed(cmd.inputs[i], results[i])
@@ -396,11 +396,11 @@ module CatSpec {
 
   lemma PlainStdinWitnesses(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     data: BenchWorld.Bytes
   )
     requires PlainStdinCommand(cmd)
-    ensures InputTraceRelation(cmd, preFs, data, [], data, [], false,
+    ensures InputTraceRelation(cmd, preFs, preStreams, data, [], data, [], false,
       seq(|cmd.inputs|, i => BenchWorld.Ok(if i == 0 then data else [])),
       seq(|cmd.inputs|, i => if i == 0 then data else []),
       seq(|cmd.inputs| + 1, i => if i == 0 then 0 else |data|),
@@ -410,7 +410,7 @@ module CatSpec {
       seq(|data| + 1, i => i), seq(|data|, i => 0))
   {
     forall i: nat {:trigger cmd.inputs[i]} | i < |cmd.inputs|
-      ensures ReadResultRelation(cmd, preFs, data, i,
+      ensures ReadResultRelation(cmd, preFs, preStreams, data, i,
         BenchWorld.Ok(if i == 0 then data else []))
     {
       if i > 0 { assert cmd.inputs[0] == CatSchema.Stdin; }
@@ -451,7 +451,7 @@ module CatSpec {
   }
 
   lemma PlainStdinTraceIdentity(
-    cmd: CatSchema.CatCmd, preFs: BenchWorld.FileSystem,
+    cmd: CatSchema.CatCmd, preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes, postStdin: BenchWorld.Bytes,
     data: BenchWorld.Bytes, errors: BenchWorld.Bytes, hadError: bool,
     readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
@@ -459,7 +459,7 @@ module CatSpec {
     errorFragments: seq<BenchWorld.Bytes>, errorCuts: seq<nat>
   )
     requires PlainStdinCommand(cmd)
-    requires InputTraceRelation(cmd, preFs, preStdin, postStdin, data, errors,
+    requires InputTraceRelation(cmd, preFs, preStreams, preStdin, postStdin, data, errors,
       hadError, readResults, dataFragments, dataCuts, errorFragments, errorCuts)
     ensures postStdin == [] && data == preStdin && errors == [] && !hadError
   {
@@ -505,7 +505,7 @@ module CatSpec {
 
   ghost predicate RunRelation(
     cmd: CatSchema.CatCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
@@ -514,19 +514,19 @@ module CatSpec {
   )
     ensures
       (forall i: nat | i < |cmd.inputs| ::
-        ReadResultRelation(cmd, preFs, preStdin, i, BenchWorld.Ok([]))) &&
+        ReadResultRelation(cmd, preFs, preStreams, preStdin, i, BenchWorld.Ok([]))) &&
       postStdin == (if CatSchema.Stdin in cmd.inputs then [] else preStdin) &&
       output == [] && errors == [] && exit == 0 ==>
-      RunRelation(cmd, preFs, preStdin, postStdin, output, errors, exit)
+      RunRelation(cmd, preFs, preStreams, preStdin, postStdin, output, errors, exit)
     ensures (PlainStdinCommand(cmd) && postStdin == [] && output == preStdin &&
       errors == [] && exit == 0) ==>
-      RunRelation(cmd, preFs, preStdin, postStdin, output, errors, exit)
+      RunRelation(cmd, preFs, preStreams, preStdin, postStdin, output, errors, exit)
     ensures (PlainStdinCommand(cmd) &&
-      RunRelation(cmd, preFs, preStdin, postStdin, output, errors, exit)) ==>
+      RunRelation(cmd, preFs, preStreams, preStdin, postStdin, output, errors, exit)) ==>
       postStdin == [] && output == preStdin && errors == [] && exit == 0
   {
     assert PlainStdinCommand(cmd) ==>
-      InputTraceRelation(cmd, preFs, preStdin, [], preStdin, [], false,
+      InputTraceRelation(cmd, preFs, preStreams, preStdin, [], preStdin, [], false,
         seq(|cmd.inputs|, i => BenchWorld.Ok(if i == 0 then preStdin else [])),
         seq(|cmd.inputs|, i => if i == 0 then preStdin else []),
         seq(|cmd.inputs| + 1, i => if i == 0 then 0 else |preStdin|),
@@ -534,12 +534,12 @@ module CatSpec {
       RenderRelation(cmd, preStdin, preStdin,
         seq(|preStdin|, i requires 0 <= i < |preStdin| => [preStdin[i]]),
         seq(|preStdin| + 1, i => i), seq(|preStdin|, i => 0)) by {
-      if PlainStdinCommand(cmd) { PlainStdinWitnesses(cmd, preFs, preStdin); }
+      if PlainStdinCommand(cmd) { PlainStdinWitnesses(cmd, preFs, preStreams, preStdin); }
     }
     assert (forall i: nat | i < |cmd.inputs| ::
-      ReadResultRelation(cmd, preFs, preStdin, i, BenchWorld.Ok([]))) ==>
+      ReadResultRelation(cmd, preFs, preStreams, preStdin, i, BenchWorld.Ok([]))) ==>
       InputTraceRelation(
-        cmd, preFs, preStdin,
+        cmd, preFs, preStreams, preStdin,
         if CatSchema.Stdin in cmd.inputs then [] else preStdin,
         [], [], false,
         seq(|cmd.inputs|, i => BenchWorld.Ok([])),
@@ -547,8 +547,8 @@ module CatSpec {
         seq(|cmd.inputs|, i => []), seq(|cmd.inputs| + 1, i => 0)) &&
       RenderRelation(cmd, [], [], [], [0], []) by {
       if forall i: nat | i < |cmd.inputs| ::
-          ReadResultRelation(cmd, preFs, preStdin, i, BenchWorld.Ok([])) {
-        EmptyInputWitnesses(cmd, preFs, preStdin);
+          ReadResultRelation(cmd, preFs, preStreams, preStdin, i, BenchWorld.Ok([])) {
+        EmptyInputWitnesses(cmd, preFs, preStreams, preStdin);
       }
     }
     var valid := exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
@@ -563,7 +563,7 @@ module CatSpec {
       numbers: seq<nat> ::
       InputTraceRelation(
         cmd,
-        preFs,
+        preFs, preStreams,
         preStdin,
         postStdin,
         data,
@@ -593,11 +593,11 @@ module CatSpec {
             errorCuts: seq<nat>, hadError: bool,
             byteFragments: seq<BenchWorld.Bytes>, outputCuts: seq<nat>,
             numbers: seq<nat> :|
-          InputTraceRelation(cmd, preFs, preStdin, postStdin, data, errors,
+          InputTraceRelation(cmd, preFs, preStreams, preStdin, postStdin, data, errors,
             hadError, readResults, dataFragments, dataCuts, errorFragments, errorCuts) &&
           RenderRelation(cmd, data, output, byteFragments, outputCuts, numbers) &&
           exit == (if hadError then 1 else 0);
-        PlainStdinTraceIdentity(cmd, preFs, preStdin, postStdin, data, errors,
+        PlainStdinTraceIdentity(cmd, preFs, preStreams, preStdin, postStdin, data, errors,
           hadError, readResults, dataFragments, dataCuts, errorFragments, errorCuts);
         PlainRenderIdentity(cmd, data, output, byteFragments, outputCuts, numbers);
       }
@@ -610,7 +610,7 @@ module CatSpec {
     ensures
       Command(raw).mode == CatSchema.ModeRun &&
       (forall i: nat | i < |Command(raw).inputs| ::
-        ReadResultRelation(Command(raw), old(io.fs()), old(io.stdin()), i, BenchWorld.Ok([]))) &&
+        ReadResultRelation(Command(raw), old(io.fs()), old(io.trustedStreams()), old(io.stdin()), i, BenchWorld.Ok([]))) &&
       io.stdin() == (if CatSchema.Stdin in Command(raw).inputs then [] else old(io.stdin())) &&
       io.stdout() == old(io.stdout()) && io.stderr() == old(io.stderr()) && exit == 0 ==>
       Spec(raw, io, exit)
@@ -624,11 +624,11 @@ module CatSpec {
   {
     var cmd := Command(raw);
     assert PlainStdinCommand(cmd) ==>
-      RunRelation(cmd, old(io.fs()), old(io.stdin()), [], old(io.stdin()), [], 0);
+      RunRelation(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), [], old(io.stdin()), [], 0);
     assert
       (forall i: nat | i < |cmd.inputs| ::
-        ReadResultRelation(cmd, old(io.fs()), old(io.stdin()), i, BenchWorld.Ok([]))) ==>
-      RunRelation(cmd, old(io.fs()), old(io.stdin()),
+        ReadResultRelation(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), i, BenchWorld.Ok([]))) ==>
+      RunRelation(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()),
         if CatSchema.Stdin in cmd.inputs then [] else old(io.stdin()), [], [], 0);
     if cmd.mode == CatSchema.ModeHelp then
       io.stdin() == old(io.stdin()) &&
@@ -644,7 +644,7 @@ module CatSpec {
       exists output: BenchWorld.Bytes, errors: BenchWorld.Bytes ::
         RunRelation(
           cmd,
-          old(io.fs()),
+          old(io.fs()), old(io.trustedStreams()),
           old(io.stdin()),
           io.stdin(),
           output,

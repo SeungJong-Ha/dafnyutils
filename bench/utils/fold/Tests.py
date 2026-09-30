@@ -84,6 +84,15 @@ def test_width_option_wraps_file_line_matches_coreutils() -> None:
         assert_fold_parity(["-b", "-w", "4", "input.txt"], cwd)
 
 
+# A historical numeric option sets the wrap width, including four-digit widths.
+@pytest.mark.parametrize(("option", "length"), [("-7", 10), ("-7022", 7030)])
+def test_historical_numeric_width_wraps_line_matches_coreutils(option: str, length: int) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        build_fold_once_if_needed()
+        assert_fold_parity([option], cwd, input_data=b"x" * length + b"\n")
+
+
 # Spaces mode wraps at the last blank that fits before the width boundary.
 def test_spaces_mode_wraps_at_previous_blank_matches_coreutils() -> None:
     # upstream: coreutils/tests/fold/fold.pl
@@ -137,6 +146,39 @@ def test_nonnumeric_width_diagnostic_matches_coreutils() -> None:
         ref = run_system_fold(["--width", "-b"], cwd)
         bench = run_bench_fold(["--width", "-b"], cwd)
         assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Invalid widths use C-locale byte escapes, including apostrophes and UTF-8 bytes.
+@pytest.mark.parametrize(
+    "value",
+    [".z'0h", "bad\\width", "bad\twidth", "bad\nwidth", "bad\x01width", 'bad"width', "폭", ""],
+)
+def test_quoted_width_diagnostic_matches_coreutils(value: str) -> None:
+    # upstream: coreutils/gnulib-tests/test-xstrtol.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        build_fold_once_if_needed()
+        args = ["-w", value]
+        assert_result_matches_reference(
+            run_system_fold(args, cwd),
+            run_bench_fold(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Quoted numeric widths retain the GNU out-of-range errno suffix.
+@pytest.mark.parametrize("value", ["0", "000"])
+def test_quoted_width_range_diagnostic_matches_coreutils(value: str) -> None:
+    # upstream: coreutils/gnulib-tests/test-xstrtol.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        build_fold_once_if_needed()
+        args = ["--width", value]
+        assert_result_matches_reference(
+            run_system_fold(args, cwd),
+            run_bench_fold(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
 
 
 # Earlier invalid widths are reported before a later missing width value.

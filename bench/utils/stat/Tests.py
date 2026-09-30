@@ -169,3 +169,15 @@ def test_help_and_version_exit_successfully(args: list[str]) -> None:
 def test_stat_dafny_verifies(target: Path) -> None:
     # upstream: none - verifies the repository's Dafny proof surface
     run_dafny_verify(target)
+
+
+# Missing names use GNU's always-quoted shell path rendering.
+@pytest.mark.parametrize("path", ["a'b", "a\tb", "é", "a\\b"])
+def test_missing_path_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        env = parity_env()
+        args = ["-c", "%s", path]
+        ref = run_coreutils_utility(COREUTILS_STAT, "stat", args, cwd, env=env)
+        bench = run_bench_utility(BENCH_STAT_DLL, args, cwd, env=env)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

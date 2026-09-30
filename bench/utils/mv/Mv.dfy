@@ -52,12 +52,14 @@ module Mv {
     }
 
     method RunCore(raw: MvSchema.MvCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
       ensures MS.Spec(raw, io, exit)
       decreases *
     {
-      exit := Core.RunCore(raw, io);
-      MP.CoreSummaryImpliesSpec(raw, io, exit);
+      ghost var statusCalls: seq<MS.StatusCallEvidence>;
+      ghost var runEvidence: Core.RunStatusEvidence;
+      exit, statusCalls, runEvidence := Core.RunCore(raw, io);
+      MP.CoreSummaryImpliesSpec(raw, io, exit, statusCalls, runEvidence);
     }
   }
 }

@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "CutSchema.dfy"
 
 module CutSpec {
@@ -9,6 +10,7 @@ module CutSpec {
   import BenchWorld
   import IOContract
   import CutSchema
+  import SE = StringEscaping
 
   function HelpText(): BenchWorld.Bytes
   {
@@ -57,25 +59,9 @@ module CutSpec {
     case Other(msg) => msg
   }
 
-  function PathQuoteChar(ch: char): bool
-  {
-    ch == ' ' || ch == '=' || ch == ':' || ch == '|' || ch == ';'
-  }
-
-  function PathNeedsQuotes(path: BenchWorld.Path): bool
-    decreases |path|
-  {
-    |path| > 0 && (PathQuoteChar(path[0]) || PathNeedsQuotes(path[1..]))
-  }
-
-  function DisplayPath(path: BenchWorld.Path): string
-  {
-    if PathNeedsQuotes(path) then "'" + path + "'" else path
-  }
-
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "cut: " + DisplayPath(path) + ": " + ErrnoText(err) + "\n"
+    "cut: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n"
   }
 
   function RangeContains(range: CutSchema.Range, pos: int): bool
@@ -273,7 +259,8 @@ module CutSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
   {
@@ -285,7 +272,7 @@ module CutSpec {
         else preStdin
       )
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   twostate predicate InputTraceRelation(
@@ -307,7 +294,8 @@ module CutSpec {
       |stderrFragments| == |command.inputs| &&
       (forall i :: 0 <= i < |command.inputs| ==>
                      InputReadRelation(
-                       command, old(io.fs()), old(io.stdin()), i, readResults[i]
+                       command, old(io.fs()), old(io.stdin()), i, readResults[i],
+                       old(io.trustedStreams())
                      ) &&
                      match command.inputs[i]
                      case Stdin =>

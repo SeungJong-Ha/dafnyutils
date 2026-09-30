@@ -494,7 +494,7 @@ module ChmodCore {
     isDir: bool,
     io: BenchIO.IO
   ) returns (ok: bool)
-    modifies io.stdoutRegion, io.stderrRegion
+    modifies io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures var result := CoreSuccessfulChangeResult(
                             cmd,
                             plan,
@@ -517,21 +517,21 @@ module ChmodCore {
       var observed := rawModeStatus1.mode;
       if !postOk {
         if !cmd.silent {
-          io.AppendStderr(
+          var _, _ := io.WriteStderr(
             GettingNewAttributesMessageCore(path, ErrnoTextCore(postErr))
-          );
+          , BenchWorld.ThrowOnError);
         }
         if cmd.verbose {
-          io.AppendStdout(RetainedMessageCore(path, requestedAfter));
+          var _, _ := io.WriteStdout(RetainedMessageCore(path, requestedAfter), BenchWorld.ThrowOnError);
         }
         var failedNaive := CoreNaiveMode(plan, before, isDir);
         var failedSurprise := CoreDiagnoseSurprise(
           cmd, plan, before, requestedAfter, isDir
         );
         if failedSurprise {
-          io.AppendStderr(
+          var _, _ := io.WriteStderr(
             SurpriseModeMessageCore(path, requestedAfter, failedNaive)
-          );
+          , BenchWorld.ThrowOnError);
         }
         ok := !failedSurprise;
         reveal IOContract.GetFileModeContractFields;
@@ -541,12 +541,12 @@ module ChmodCore {
     }
     var out := CoreSuccessStdout(cmd, path, before, after);
     if |out| > 0 {
-      io.AppendStdout(out);
+      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     }
     var naive := CoreNaiveMode(plan, before, isDir);
     var surprise := CoreDiagnoseSurprise(cmd, plan, before, after, isDir);
     if surprise {
-      io.AppendStderr(SurpriseModeMessageCore(path, after, naive));
+      var _, _ := io.WriteStderr(SurpriseModeMessageCore(path, after, naive), BenchWorld.ThrowOnError);
     }
     ok := !surprise;
     reveal IOContract.GetFileModeContractFields;
@@ -886,7 +886,7 @@ module ChmodCore {
     path: string,
     io: BenchIO.IO
   ) returns (ok: bool)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures var result := CorePathStep(
                             cmd, plan, cwd, old(io.fs()), path, old(io.now())
                           );
@@ -903,7 +903,7 @@ module ChmodCore {
     var follow := ShouldDereferenceCore(cmd);
     var metadataFollow := if CoreUsesPhysicalTopLevelMetadata(cmd) then false else follow;
     var rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2 := io.GetFileStatus(actual, false);
-    IOContract.FileStatusImpliesMetadata(io.fs(), actual, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), actual, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
     var linkOk := rawMetadataOk2;
     var isLink := rawMetadataStatus2.kind == BenchWorld.SymlinkKind;
     assert (linkOk && isLink) ==
@@ -922,17 +922,17 @@ module ChmodCore {
         IOContract.FileStatusImpliesMode(io.fs(), actual, true, followedOk, rawModeStatus2, followedErr);
         if !followedOk && followedErr != 2 {
           if !cmd.silent {
-            io.AppendStderr(AccessErrorMessageCore(path, ErrnoTextCore(followedErr)));
+            var _, _ := io.WriteStderr(AccessErrorMessageCore(path, ErrnoTextCore(followedErr)), BenchWorld.ThrowOnError);
           }
           if cmd.verbose {
-            io.AppendStdout(AccessFailureMessageCore(path));
+            var _, _ := io.WriteStdout(AccessFailureMessageCore(path), BenchWorld.ThrowOnError);
           }
           ok := false;
           return;
         }
       }
       if cmd.verbose {
-        io.AppendStdout(NeitherChangedMessageCore(path));
+        var _, _ := io.WriteStdout(NeitherChangedMessageCore(path), BenchWorld.ThrowOnError);
       }
       ok := true;
       return;
@@ -950,31 +950,31 @@ module ChmodCore {
       }
       if !cmd.silent {
         if CoreUsesExplicitPhysicalDereference(cmd) && linkOk && isLink {
-          io.AppendStderr(CannotDereferenceMessageCore(path, getErr));
+          var _, _ := io.WriteStderr(CannotDereferenceMessageCore(path, getErr), BenchWorld.ThrowOnError);
         } else if CoreIsDanglingSymlinkFailure(linkOk && isLink, getErr) {
-          io.AppendStderr(DanglingSymlinkMessageCore(path));
+          var _, _ := io.WriteStderr(DanglingSymlinkMessageCore(path), BenchWorld.ThrowOnError);
         } else {
-          io.AppendStderr(AccessErrorMessageCore(path, ErrnoTextCore(getErr)));
+          var _, _ := io.WriteStderr(AccessErrorMessageCore(path, ErrnoTextCore(getErr)), BenchWorld.ThrowOnError);
         }
       }
       if cmd.verbose {
-        io.AppendStdout(AccessFailureMessageCore(path));
+        var _, _ := io.WriteStdout(AccessFailureMessageCore(path), BenchWorld.ThrowOnError);
       }
       ok := false;
       return;
     }
 
     var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(actual, metadataFollow);
-    IOContract.FileStatusImpliesMetadata(io.fs(), actual, metadataFollow, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
+    IOContract.FileStatusStructureImpliesMetadata(io.fs(), actual, metadataFollow, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
     var dirOk := rawMetadataOk1;
     var isDir := rawMetadataStatus1.kind == BenchWorld.DirectoryKind;
     var dirErr := rawMetadataErr1;
     if !dirOk {
       if !cmd.silent {
-        io.AppendStderr(AccessErrorMessageCore(path, ErrnoTextCore(dirErr)));
+        var _, _ := io.WriteStderr(AccessErrorMessageCore(path, ErrnoTextCore(dirErr)), BenchWorld.ThrowOnError);
       }
       if cmd.verbose {
-        io.AppendStdout(AccessFailureMessageCore(path));
+        var _, _ := io.WriteStdout(AccessFailureMessageCore(path), BenchWorld.ThrowOnError);
       }
       ok := false;
       return;
@@ -984,10 +984,10 @@ module ChmodCore {
     var setOk, setErr := io.SetFileMode(actual, follow, desired);
     if !setOk {
       if cmd.verbose {
-        io.AppendStdout(FailedChangeMessageCore(path, before, desired));
+        var _, _ := io.WriteStdout(FailedChangeMessageCore(path, before, desired), BenchWorld.ThrowOnError);
       }
       if !cmd.silent {
-        io.AppendStderr(ChangeErrorMessageCore(path, ErrnoTextCore(setErr)));
+        var _, _ := io.WriteStderr(ChangeErrorMessageCore(path, ErrnoTextCore(setErr)), BenchWorld.ThrowOnError);
       }
       ok := false;
       return;
@@ -1047,7 +1047,7 @@ module ChmodCore {
     io: BenchIO.IO
   ) returns (allOk: bool)
     requires i <= |files|
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures var result := CoreRunFilesFrom(
                             files, i, cmd, plan, cwd, old(io.fs()), old(io.now())
                           );
@@ -1149,7 +1149,7 @@ module ChmodCore {
   }
 
   method RunCore(raw: Schema.ChmodCmdRaw, io: BenchIO.IO) returns (exit: int)
-    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+    modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
     ensures CoreSummary(raw, io, exit)
   {
     ghost var preFs := io.fs();
@@ -1160,25 +1160,25 @@ module ChmodCore {
     var cmd := Schema.Command(raw);
 
     if cmd.mode == Schema.ModeHelp {
-      io.AppendStdout(HelpTextCore());
+      var _, _ := io.WriteStdout(HelpTextCore(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if cmd.mode == Schema.ModeVersion {
-      io.AppendStdout(VersionTextCore());
+      var _, _ := io.WriteStdout(VersionTextCore(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if cmd.seenReference && cmd.diagnoseSurprises {
-      io.AppendStderr(CombineModeReferenceMessageCore());
+      var _, _ := io.WriteStderr(CombineModeReferenceMessageCore(), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if |cmd.files| == 0 {
-      io.AppendStderr(MissingOperandMessageCore(cmd));
+      var _, _ := io.WriteStderr(MissingOperandMessageCore(cmd), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -1192,7 +1192,7 @@ module ChmodCore {
       IOContract.FileStatusImpliesMode(io.fs(), refActual, true, refOk, rawModeStatus4, refErr);
       var refMode := rawModeStatus4.mode;
       if !refOk {
-        io.AppendStderr(ReferenceErrorMessageCore(cmd.referenceFile, ErrnoTextCore(refErr)));
+        var _, _ := io.WriteStderr(ReferenceErrorMessageCore(cmd.referenceFile, ErrnoTextCore(refErr)), BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreReferenceFailure(cmd, preFs, preCwd);
         assert CoreReferenceFailureOutcome(
@@ -1206,13 +1206,13 @@ module ChmodCore {
     }
 
     if !cmd.seenReference && !Schema.IsValidModeExpr(cmd.modeExpr) {
-      io.AppendStderr(InvalidModeMessageCore(cmd.modeExpr));
+      var _, _ := io.WriteStderr(InvalidModeMessageCore(cmd.modeExpr), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if cmd.recursive {
-      io.AppendStderr(UnsupportedRecursiveMessageCore());
+      var _, _ := io.WriteStderr(UnsupportedRecursiveMessageCore(), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;

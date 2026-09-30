@@ -518,8 +518,8 @@ module ExprCore {
     decreases *
   {
     var result := EvaluateArgs(raw.args);
-    io.AppendStdout(result.0);
-    io.AppendStderr(result.1);
+    var _, _ := io.WriteStdout(result.0, BenchWorld.ThrowOnError);
+    var _, _ := io.WriteStderr(result.1, BenchWorld.ThrowOnError);
     exit := result.2;
   }
 }

@@ -49,7 +49,8 @@ module TailProof {
     cmd: Schema.TailCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    i: nat
+    i: nat,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires i < |cmd.inputs|
     ensures Spec.ReadResultRelation(
@@ -57,7 +58,8 @@ module TailProof {
               preFs,
               preStdin,
               i,
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStdin, i, preStreams),
+              preStreams
             )
   {
     PrefixStdinCharacterization(cmd, preStdin, i);
@@ -380,18 +382,19 @@ module TailProof {
     cmd: Schema.TailCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    count: nat
+    count: nat,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   ): seq<Spec.InputObservation>
     requires count <= |cmd.inputs|
-    ensures |CoreObservations(cmd, preFs, preStdin, count)| == count
+    ensures |CoreObservations(cmd, preFs, preStdin, count, preStreams)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      var prior := CoreObservations(cmd, preFs, preStdin, count - 1);
+      var prior := CoreObservations(cmd, preFs, preStdin, count - 1, preStreams);
       var i := count - 1;
-      var result := Core.ReadResultCore(cmd, preFs, preStdin, i);
+      var result := Core.ReadResultCore(cmd, preFs, preStdin, i, preStreams);
       prior + [
         Spec.InputObservation(
           result,
@@ -399,7 +402,7 @@ module TailProof {
             cmd,
             cmd.inputs[i],
             result,
-            Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i)
+            Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams)
           ),
           Core.ErrorPiece(cmd.inputs[i], result),
           Core.HadErrorPiece(cmd.inputs[i], result),
@@ -412,28 +415,29 @@ module TailProof {
     cmd: Schema.TailCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    count: nat
+    count: nat,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     requires count <= |cmd.inputs|
-    ensures Core.PrefixHadErrorCore(cmd, preFs, preStdin, count) ==
+    ensures Core.PrefixHadErrorCore(cmd, preFs, preStdin, count, preStreams) ==
             (exists i: nat ::
-               i < |CoreObservations(cmd, preFs, preStdin, count)| &&
-               CoreObservations(cmd, preFs, preStdin, count)[i].failed)
+               i < |CoreObservations(cmd, preFs, preStdin, count, preStreams)| &&
+               CoreObservations(cmd, preFs, preStdin, count, preStreams)[i].failed)
     decreases count
   {
     if count > 0 {
-      CoreObservationsFailure(cmd, preFs, preStdin, count - 1);
-      var prior := CoreObservations(cmd, preFs, preStdin, count - 1);
-      var observations := CoreObservations(cmd, preFs, preStdin, count);
+      CoreObservationsFailure(cmd, preFs, preStdin, count - 1, preStreams);
+      var prior := CoreObservations(cmd, preFs, preStdin, count - 1, preStreams);
+      var observations := CoreObservations(cmd, preFs, preStdin, count, preStreams);
       var i := count - 1;
       var failed := Core.HadErrorPiece(
         cmd.inputs[i],
-        Core.ReadResultCore(cmd, preFs, preStdin, i)
+        Core.ReadResultCore(cmd, preFs, preStdin, i, preStreams)
       );
       assert observations[i].failed == failed;
       if failed {
         assert exists j: nat :: j < |observations| && observations[j].failed;
-        assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count);
+        assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count, preStreams);
       } else {
         if exists j: nat :: j < |observations| && observations[j].failed {
           var j: nat :| j < |observations| && observations[j].failed;
@@ -451,13 +455,13 @@ module TailProof {
           (exists j: nat :: j < |observations| && observations[j].failed) ==
           (exists j: nat :: j < |prior| && prior[j].failed);
       }
-      assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count) ==
+      assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count, preStreams) ==
              (exists j: nat :: j < |observations| && observations[j].failed);
-      assert observations == CoreObservations(cmd, preFs, preStdin, count);
-      assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count) ==
+      assert observations == CoreObservations(cmd, preFs, preStdin, count, preStreams);
+      assert Core.PrefixHadErrorCore(cmd, preFs, preStdin, count, preStreams) ==
              (exists j: nat ::
-                j < |CoreObservations(cmd, preFs, preStdin, count)| &&
-                CoreObservations(cmd, preFs, preStdin, count)[j].failed);
+                j < |CoreObservations(cmd, preFs, preStdin, count, preStreams)| &&
+                CoreObservations(cmd, preFs, preStdin, count, preStreams)[j].failed);
     }
   }
 
@@ -465,7 +469,8 @@ module TailProof {
     cmd: Schema.TailCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    count: nat
+    count: nat,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   ) returns (
       observations: seq<Spec.InputObservation>,
       headerCounts: seq<nat>,
@@ -473,12 +478,12 @@ module TailProof {
       stderrCuts: seq<nat>
     )
     requires count <= |cmd.inputs|
-    ensures observations == CoreObservations(cmd, preFs, preStdin, count)
+    ensures observations == CoreObservations(cmd, preFs, preStdin, count, preStreams)
     ensures |observations| == count
     ensures |headerCounts| == |observations| + 1
     ensures headerCounts[0] == 0
     ensures headerCounts[|headerCounts| - 1] ==
-            Core.PrefixHeaderCountCore(cmd, preFs, preStdin, count)
+            Core.PrefixHeaderCountCore(cmd, preFs, preStdin, count, preStreams)
     ensures forall i: nat {:trigger headerCounts[i], headerCounts[i + 1]} |
               i < |observations| ::
               headerCounts[i + 1] ==
@@ -490,16 +495,17 @@ module TailProof {
                 preStdin,
                 i,
                 observations[i],
-                headerCounts[i]
+                headerCounts[i],
+                preStreams
               )
     ensures Spec.FragmentsConcatenate(
               Spec.ObservationStdoutFragments(observations),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, count),
+              Core.PrefixOutputCore(cmd, preFs, preStdin, count, preStreams),
               stdoutCuts
             )
     ensures Spec.FragmentsConcatenate(
               Spec.ObservationStderrFragments(observations),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count, preStreams),
               stderrCuts
             )
     decreases count
@@ -512,14 +518,14 @@ module TailProof {
       assert Spec.FragmentsConcatenate([], [], [0]);
     } else {
       var priorObservations, priorHeaderCounts, priorStdoutCuts, priorStderrCuts :=
-        BuildPrefixWitness(cmd, preFs, preStdin, count - 1);
+        BuildPrefixWitness(cmd, preFs, preStdin, count - 1, preStreams);
       var i := count - 1;
-      var result := Core.ReadResultCore(cmd, preFs, preStdin, i);
+      var result := Core.ReadResultCore(cmd, preFs, preStdin, i, preStreams);
       var stdoutFragment := Core.OutputPiece(
         cmd,
         cmd.inputs[i],
         result,
-        Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i)
+        Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams)
       );
       var stderrFragment := Core.ErrorPiece(cmd.inputs[i], result);
       var failed := Core.HadErrorPiece(cmd.inputs[i], result);
@@ -537,28 +543,33 @@ module TailProof {
         (if hasHeader then 1 else 0)
       ];
       stdoutCuts := priorStdoutCuts +
-      [|Core.PrefixOutputCore(cmd, preFs, preStdin, count)|];
+      [|Core.PrefixOutputCore(cmd, preFs, preStdin, count, preStreams)|];
       stderrCuts := priorStderrCuts +
-      [|Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count)|];
-      ReadResultGivesRelation(cmd, preFs, preStdin, i);
+      [|Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count, preStreams)|];
+      ReadResultGivesRelation(cmd, preFs, preStdin, i, preStreams);
       OutputPieceGivesRelation(
         cmd,
         cmd.inputs[i],
         result,
-        Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i)
+        Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams)
       );
       assert priorHeaderCounts[|priorHeaderCounts| - 1] ==
-             Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i);
+             Core.PrefixHeaderCountCore(cmd, preFs, preStdin, i, preStreams);
+      Core.PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i, preStreams);
+      Core.PrefixOutputCoreStep(cmd, preFs, preStdin, i, preStreams);
+      Core.PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i, preStreams);
+      assert headerCounts[|headerCounts| - 1] ==
+             Core.PrefixHeaderCountCore(cmd, preFs, preStdin, count, preStreams);
       ObservationFragmentsAppend(priorObservations, observation);
       AppendFragment(
         Spec.ObservationStdoutFragments(priorObservations),
-        Core.PrefixOutputCore(cmd, preFs, preStdin, i),
+        Core.PrefixOutputCore(cmd, preFs, preStdin, i, preStreams),
         priorStdoutCuts,
         stdoutFragment
       );
       AppendFragment(
         Spec.ObservationStderrFragments(priorObservations),
-        Core.PrefixErrorOutputCore(cmd, preFs, preStdin, i),
+        Core.PrefixErrorOutputCore(cmd, preFs, preStdin, i, preStreams),
         priorStderrCuts,
         stderrFragment
       );
@@ -569,7 +580,8 @@ module TailProof {
             preStdin,
             j,
             observations[j],
-            headerCounts[j]
+            headerCounts[j],
+            preStreams
           ) by {
         forall j: nat {:trigger observations[j]} | j < |observations|
           ensures Spec.InputObservationRelation(
@@ -578,7 +590,8 @@ module TailProof {
                     preStdin,
                     j,
                     observations[j],
-                    headerCounts[j]
+                    headerCounts[j],
+                    preStreams
                   )
         {
           if j < |priorObservations| {
@@ -595,34 +608,37 @@ module TailProof {
   lemma CoreSummaryImpliesTrace(
     cmd: Schema.TailCmd,
     preFs: BW.FileSystem,
-    preStdin: BW.Bytes
+    preStdin: BW.Bytes,
+    preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult
   )
     ensures Spec.InputTraceRelation(
               cmd,
               preFs,
               preStdin,
               Core.PrefixStdinCore(cmd, preStdin, |cmd.inputs|),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|)
+              Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
+              Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
+              preStreams
             )
   {
     var observations, headerCounts, stdoutCuts, stderrCuts :=
-      BuildPrefixWitness(cmd, preFs, preStdin, |cmd.inputs|);
-    CoreObservationsFailure(cmd, preFs, preStdin, |cmd.inputs|);
+      BuildPrefixWitness(cmd, preFs, preStdin, |cmd.inputs|, preStreams);
+    CoreObservationsFailure(cmd, preFs, preStdin, |cmd.inputs|, preStreams);
     PrefixStdinCharacterization(cmd, preStdin, |cmd.inputs|);
     assert Spec.InputTraceWitnessRelation(
         cmd,
         preFs,
         preStdin,
         Core.PrefixStdinCore(cmd, preStdin, |cmd.inputs|),
-        Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-        Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-        Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|),
+        Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
+        Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
+        Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|, preStreams),
         observations,
         headerCounts,
         stdoutCuts,
-        stderrCuts
+        stderrCuts,
+        preStreams
       );
   }
 
@@ -641,7 +657,7 @@ module TailProof {
     } else if cmd.mode == Schema.ModeInvalidCount {
     } else if Core.SuppressZeroTrailingSelection(cmd) {
     } else {
-      CoreSummaryImpliesTrace(cmd, old(io.fs()), old(io.stdin()));
+      CoreSummaryImpliesTrace(cmd, old(io.fs()), old(io.stdin()), old(io.trustedStreams()));
     }
   }
 }

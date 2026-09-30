@@ -56,14 +56,14 @@ module HeadProof {
 
   lemma ReadResultRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
     ensures Spec.ReadResultRelation(
-              cmd, preFs, preStdin, i,
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              cmd, preFs, preStreams, preStdin, i,
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
             )
   {
     PrefixStdinRelation(cmd, preStdin, i);
@@ -236,7 +236,7 @@ module HeadProof {
 
   ghost function SuccessfulIndicesCore(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): set<nat>
@@ -245,37 +245,37 @@ module HeadProof {
     set i: nat |
     i < count &&
     Core.IsSuccessfulRead(
-      Core.ReadResultCore(cmd, preFs, preStdin, i)
+      Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
     )
   }
 
   lemma PrefixSuccessCountCardinality(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires count <= |cmd.inputs|
-    ensures Core.PrefixSuccessCountCore(cmd, preFs, preStdin, count) ==
-            |SuccessfulIndicesCore(cmd, preFs, preStdin, count)|
+    ensures Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, count) ==
+            |SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, count)|
     decreases count
   {
     if count > 0 {
       PrefixSuccessCountCardinality(
-        cmd, preFs, preStdin, count - 1
+        cmd, preFs, preStreams, preStdin, count - 1
       );
       var previous := SuccessfulIndicesCore(
-        cmd, preFs, preStdin, count - 1
+        cmd, preFs, preStreams, preStdin, count - 1
       );
       var currentSuccessful := Core.IsSuccessfulRead(
-        Core.ReadResultCore(cmd, preFs, preStdin, count - 1)
+        Core.ReadResultCore(cmd, preFs, preStreams, preStdin, count - 1)
       );
-      assert SuccessfulIndicesCore(cmd, preFs, preStdin, count) ==
+      assert SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, count) ==
              (if currentSuccessful
               then previous + {count - 1}
               else previous) by {
         assert forall i: nat ::
-            (i in SuccessfulIndicesCore(cmd, preFs, preStdin, count)) ==
+            (i in SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, count)) ==
             (i in (if currentSuccessful
                    then previous + {count - 1}
                    else previous));
@@ -286,44 +286,44 @@ module HeadProof {
 
   lemma InputObservationRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
     ensures Spec.InputObservationRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
-              Core.ReadResultCore(cmd, preFs, preStdin, i),
-              Core.PrefixSuccessCountCore(cmd, preFs, preStdin, i),
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i),
+              Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, i),
               Core.OutputPiece(
                 cmd,
                 cmd.inputs[i],
-                Core.ReadResultCore(cmd, preFs, preStdin, i),
-                Core.PrefixSuccessCountCore(cmd, preFs, preStdin, i)
+                Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i),
+                Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, i)
               ),
               Core.ErrorPiece(
                 cmd.inputs[i],
-                Core.ReadResultCore(cmd, preFs, preStdin, i)
+                Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
               ),
               Core.IsSuccessfulRead(
-                Core.ReadResultCore(cmd, preFs, preStdin, i)
+                Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
               ),
               Core.HadErrorPiece(
                 cmd.inputs[i],
-                Core.ReadResultCore(cmd, preFs, preStdin, i)
+                Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
               )
             )
   {
-    ReadResultRelation(cmd, preFs, preStdin, i);
+    ReadResultRelation(cmd, preFs, preStreams, preStdin, i);
     HeaderForInputEq(
       cmd,
       cmd.inputs[i],
-      Core.PrefixSuccessCountCore(cmd, preFs, preStdin, i)
+      Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, i)
     );
-    match Core.ReadResultCore(cmd, preFs, preStdin, i)
+    match Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
     case Ok(data) =>
       DataSelectionRelation(cmd, data);
     case Err(_) =>
@@ -331,90 +331,90 @@ module HeadProof {
 
   ghost function CoreResults(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<BW.Result<BW.Bytes>>
     requires count <= |cmd.inputs|
   {
     seq(count, i requires 0 <= i < count =>
-      Core.ReadResultCore(cmd, preFs, preStdin, i as nat))
+      Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i as nat))
   }
 
   ghost function CoreOutputFragments(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<BW.Bytes>
     requires count <= |cmd.inputs|
-    ensures |CoreOutputFragments(cmd, preFs, preStdin, count)| == count
+    ensures |CoreOutputFragments(cmd, preFs, preStreams, preStdin, count)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      CoreOutputFragments(cmd, preFs, preStdin, count - 1) +
+      CoreOutputFragments(cmd, preFs, preStreams, preStdin, count - 1) +
       [Core.OutputPiece(
          cmd,
          cmd.inputs[count - 1],
-         Core.ReadResultCore(cmd, preFs, preStdin, count - 1),
-         Core.PrefixSuccessCountCore(cmd, preFs, preStdin, count - 1)
+         Core.ReadResultCore(cmd, preFs, preStreams, preStdin, count - 1),
+         Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, count - 1)
        )]
   }
 
   ghost function CoreErrorFragments(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<BW.Bytes>
     requires count <= |cmd.inputs|
-    ensures |CoreErrorFragments(cmd, preFs, preStdin, count)| == count
+    ensures |CoreErrorFragments(cmd, preFs, preStreams, preStdin, count)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      CoreErrorFragments(cmd, preFs, preStdin, count - 1) +
+      CoreErrorFragments(cmd, preFs, preStreams, preStdin, count - 1) +
       [Core.ErrorPiece(
          cmd.inputs[count - 1],
-         Core.ReadResultCore(cmd, preFs, preStdin, count - 1)
+         Core.ReadResultCore(cmd, preFs, preStreams, preStdin, count - 1)
        )]
   }
 
   ghost function CoreOutputCuts(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<nat>
     requires count <= |cmd.inputs|
-    ensures |CoreOutputCuts(cmd, preFs, preStdin, count)| == count + 1
+    ensures |CoreOutputCuts(cmd, preFs, preStreams, preStdin, count)| == count + 1
     decreases count
   {
     if count == 0 then
       [0]
     else
-      CoreOutputCuts(cmd, preFs, preStdin, count - 1) +
-      [|Core.PrefixOutputCore(cmd, preFs, preStdin, count)|]
+      CoreOutputCuts(cmd, preFs, preStreams, preStdin, count - 1) +
+      [|Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, count)|]
   }
 
   ghost function CoreErrorCuts(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<nat>
     requires count <= |cmd.inputs|
-    ensures |CoreErrorCuts(cmd, preFs, preStdin, count)| == count + 1
+    ensures |CoreErrorCuts(cmd, preFs, preStreams, preStdin, count)| == count + 1
     decreases count
   {
     if count == 0 then
       [0]
     else
-      CoreErrorCuts(cmd, preFs, preStdin, count - 1) +
-      [|Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count)|]
+      CoreErrorCuts(cmd, preFs, preStreams, preStdin, count - 1) +
+      [|Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, count)|]
   }
 
   lemma FragmentsConcatenateSnoc(
@@ -469,15 +469,15 @@ module HeadProof {
 
   lemma {:isolate_assertions} OutputFragmentsConcatenateCore(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires count <= |cmd.inputs|
     ensures Spec.FragmentsConcatenate(
-              CoreOutputFragments(cmd, preFs, preStdin, count),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, count),
-              CoreOutputCuts(cmd, preFs, preStdin, count)
+              CoreOutputFragments(cmd, preFs, preStreams, preStdin, count),
+              Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, count),
+              CoreOutputCuts(cmd, preFs, preStreams, preStdin, count)
             )
     decreases count
   {
@@ -486,24 +486,24 @@ module HeadProof {
     } else {
       var previous := count - 1;
       OutputFragmentsConcatenateCore(
-        cmd, preFs, preStdin, previous
+        cmd, preFs, preStreams, preStdin, previous
       );
       var piece := Core.OutputPiece(
         cmd,
         cmd.inputs[previous],
-        Core.ReadResultCore(cmd, preFs, preStdin, previous),
-        Core.PrefixSuccessCountCore(cmd, preFs, preStdin, previous)
+        Core.ReadResultCore(cmd, preFs, preStreams, preStdin, previous),
+        Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, previous)
       );
-      Core.PrefixOutputCoreStep(cmd, preFs, preStdin, previous);
-      assert CoreOutputFragments(cmd, preFs, preStdin, count) ==
-             CoreOutputFragments(cmd, preFs, preStdin, previous) + [piece];
-      assert CoreOutputCuts(cmd, preFs, preStdin, count) ==
-             CoreOutputCuts(cmd, preFs, preStdin, previous) +
-             [|Core.PrefixOutputCore(cmd, preFs, preStdin, count)|];
+      Core.PrefixOutputCoreStep(cmd, preFs, preStreams, preStdin, previous);
+      assert CoreOutputFragments(cmd, preFs, preStreams, preStdin, count) ==
+             CoreOutputFragments(cmd, preFs, preStreams, preStdin, previous) + [piece];
+      assert CoreOutputCuts(cmd, preFs, preStreams, preStdin, count) ==
+             CoreOutputCuts(cmd, preFs, preStreams, preStdin, previous) +
+             [|Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, count)|];
       FragmentsConcatenateSnoc(
-        CoreOutputFragments(cmd, preFs, preStdin, previous),
-        Core.PrefixOutputCore(cmd, preFs, preStdin, previous),
-        CoreOutputCuts(cmd, preFs, preStdin, previous),
+        CoreOutputFragments(cmd, preFs, preStreams, preStdin, previous),
+        Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, previous),
+        CoreOutputCuts(cmd, preFs, preStreams, preStdin, previous),
         piece
       );
     }
@@ -511,15 +511,15 @@ module HeadProof {
 
   lemma {:isolate_assertions} ErrorFragmentsConcatenateCore(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires count <= |cmd.inputs|
     ensures Spec.FragmentsConcatenate(
-              CoreErrorFragments(cmd, preFs, preStdin, count),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count),
-              CoreErrorCuts(cmd, preFs, preStdin, count)
+              CoreErrorFragments(cmd, preFs, preStreams, preStdin, count),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, count),
+              CoreErrorCuts(cmd, preFs, preStreams, preStdin, count)
             )
     decreases count
   {
@@ -528,22 +528,22 @@ module HeadProof {
     } else {
       var previous := count - 1;
       ErrorFragmentsConcatenateCore(
-        cmd, preFs, preStdin, previous
+        cmd, preFs, preStreams, preStdin, previous
       );
       var piece := Core.ErrorPiece(
         cmd.inputs[previous],
-        Core.ReadResultCore(cmd, preFs, preStdin, previous)
+        Core.ReadResultCore(cmd, preFs, preStreams, preStdin, previous)
       );
-      Core.PrefixErrorOutputCoreStep(cmd, preFs, preStdin, previous);
-      assert CoreErrorFragments(cmd, preFs, preStdin, count) ==
-             CoreErrorFragments(cmd, preFs, preStdin, previous) + [piece];
-      assert CoreErrorCuts(cmd, preFs, preStdin, count) ==
-             CoreErrorCuts(cmd, preFs, preStdin, previous) +
-             [|Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count)|];
+      Core.PrefixErrorOutputCoreStep(cmd, preFs, preStreams, preStdin, previous);
+      assert CoreErrorFragments(cmd, preFs, preStreams, preStdin, count) ==
+             CoreErrorFragments(cmd, preFs, preStreams, preStdin, previous) + [piece];
+      assert CoreErrorCuts(cmd, preFs, preStreams, preStdin, count) ==
+             CoreErrorCuts(cmd, preFs, preStreams, preStdin, previous) +
+             [|Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, count)|];
       FragmentsConcatenateSnoc(
-        CoreErrorFragments(cmd, preFs, preStdin, previous),
-        Core.PrefixErrorOutputCore(cmd, preFs, preStdin, previous),
-        CoreErrorCuts(cmd, preFs, preStdin, previous),
+        CoreErrorFragments(cmd, preFs, preStreams, preStdin, previous),
+        Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, previous),
+        CoreErrorCuts(cmd, preFs, preStreams, preStdin, previous),
         piece
       );
     }
@@ -551,157 +551,157 @@ module HeadProof {
 
   lemma FragmentsConcatenateCore(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires count <= |cmd.inputs|
     ensures Spec.FragmentsConcatenate(
-              CoreOutputFragments(cmd, preFs, preStdin, count),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, count),
-              CoreOutputCuts(cmd, preFs, preStdin, count)
+              CoreOutputFragments(cmd, preFs, preStreams, preStdin, count),
+              Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, count),
+              CoreOutputCuts(cmd, preFs, preStreams, preStdin, count)
             )
     ensures Spec.FragmentsConcatenate(
-              CoreErrorFragments(cmd, preFs, preStdin, count),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count),
-              CoreErrorCuts(cmd, preFs, preStdin, count)
+              CoreErrorFragments(cmd, preFs, preStreams, preStdin, count),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, count),
+              CoreErrorCuts(cmd, preFs, preStreams, preStdin, count)
             )
   {
-    OutputFragmentsConcatenateCore(cmd, preFs, preStdin, count);
-    ErrorFragmentsConcatenateCore(cmd, preFs, preStdin, count);
+    OutputFragmentsConcatenateCore(cmd, preFs, preStreams, preStdin, count);
+    ErrorFragmentsConcatenateCore(cmd, preFs, preStreams, preStdin, count);
   }
 
   ghost function CoreSuccessful(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<bool>
     requires count <= |cmd.inputs|
-    ensures |CoreSuccessful(cmd, preFs, preStdin, count)| == count
+    ensures |CoreSuccessful(cmd, preFs, preStreams, preStdin, count)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      CoreSuccessful(cmd, preFs, preStdin, count - 1) +
+      CoreSuccessful(cmd, preFs, preStreams, preStdin, count - 1) +
       [Core.IsSuccessfulRead(
-         Core.ReadResultCore(cmd, preFs, preStdin, count - 1)
+         Core.ReadResultCore(cmd, preFs, preStreams, preStdin, count - 1)
        )]
   }
 
   ghost function CoreFailed(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   ): seq<bool>
     requires count <= |cmd.inputs|
-    ensures |CoreFailed(cmd, preFs, preStdin, count)| == count
+    ensures |CoreFailed(cmd, preFs, preStreams, preStdin, count)| == count
     decreases count
   {
     if count == 0 then
       []
     else
-      CoreFailed(cmd, preFs, preStdin, count - 1) +
+      CoreFailed(cmd, preFs, preStreams, preStdin, count - 1) +
       [Core.HadErrorPiece(
          cmd.inputs[count - 1],
-         Core.ReadResultCore(cmd, preFs, preStdin, count - 1)
+         Core.ReadResultCore(cmd, preFs, preStreams, preStdin, count - 1)
        )]
   }
 
   lemma CoreSuccessfulIndex(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat,
     i: nat
   )
     requires count <= |cmd.inputs|
     requires i < count
-    ensures CoreSuccessful(cmd, preFs, preStdin, count)[i] ==
+    ensures CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[i] ==
             Core.IsSuccessfulRead(
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
             )
     decreases count
   {
     if i + 1 < count {
-      CoreSuccessfulIndex(cmd, preFs, preStdin, count - 1, i);
+      CoreSuccessfulIndex(cmd, preFs, preStreams, preStdin, count - 1, i);
     }
   }
 
   lemma CoreFailedIndex(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat,
     i: nat
   )
     requires count <= |cmd.inputs|
     requires i < count
-    ensures CoreFailed(cmd, preFs, preStdin, count)[i] ==
+    ensures CoreFailed(cmd, preFs, preStreams, preStdin, count)[i] ==
             Core.HadErrorPiece(
               cmd.inputs[i],
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
             )
     decreases count
   {
     if i + 1 < count {
-      CoreFailedIndex(cmd, preFs, preStdin, count - 1, i);
+      CoreFailedIndex(cmd, preFs, preStreams, preStdin, count - 1, i);
     }
   }
 
   lemma CoreOutputFragmentsIndex(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat,
     i: nat
   )
     requires count <= |cmd.inputs|
     requires i < count
-    ensures CoreOutputFragments(cmd, preFs, preStdin, count)[i] ==
+    ensures CoreOutputFragments(cmd, preFs, preStreams, preStdin, count)[i] ==
             Core.OutputPiece(
               cmd,
               cmd.inputs[i],
-              Core.ReadResultCore(cmd, preFs, preStdin, i),
-              Core.PrefixSuccessCountCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i),
+              Core.PrefixSuccessCountCore(cmd, preFs, preStreams, preStdin, i)
             )
     decreases count
   {
     if i + 1 < count {
       CoreOutputFragmentsIndex(
-        cmd, preFs, preStdin, count - 1, i
+        cmd, preFs, preStreams, preStdin, count - 1, i
       );
     }
   }
 
   lemma CoreErrorFragmentsIndex(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat,
     i: nat
   )
     requires count <= |cmd.inputs|
     requires i < count
-    ensures CoreErrorFragments(cmd, preFs, preStdin, count)[i] ==
+    ensures CoreErrorFragments(cmd, preFs, preStreams, preStdin, count)[i] ==
             Core.ErrorPiece(
               cmd.inputs[i],
-              Core.ReadResultCore(cmd, preFs, preStdin, i)
+              Core.ReadResultCore(cmd, preFs, preStreams, preStdin, i)
             )
     decreases count
   {
     if i + 1 < count {
       CoreErrorFragmentsIndex(
-        cmd, preFs, preStdin, count - 1, i
+        cmd, preFs, preStreams, preStdin, count - 1, i
       );
     }
   }
 
   lemma InputObservationAt(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat,
     i: nat
@@ -710,47 +710,47 @@ module HeadProof {
     requires i < count
     ensures Spec.InputObservationRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               i,
-              CoreResults(cmd, preFs, preStdin, count)[i],
+              CoreResults(cmd, preFs, preStreams, preStdin, count)[i],
               |set j: nat |
-              j < i && CoreSuccessful(cmd, preFs, preStdin, count)[j]|,
-              CoreOutputFragments(cmd, preFs, preStdin, count)[i],
-              CoreErrorFragments(cmd, preFs, preStdin, count)[i],
-              CoreSuccessful(cmd, preFs, preStdin, count)[i],
-              CoreFailed(cmd, preFs, preStdin, count)[i]
+              j < i && CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[j]|,
+              CoreOutputFragments(cmd, preFs, preStreams, preStdin, count)[i],
+              CoreErrorFragments(cmd, preFs, preStreams, preStdin, count)[i],
+              CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[i],
+              CoreFailed(cmd, preFs, preStreams, preStdin, count)[i]
             )
   {
-    PrefixSuccessCountCardinality(cmd, preFs, preStdin, i);
+    PrefixSuccessCountCardinality(cmd, preFs, preStreams, preStdin, i);
     assert (set j: nat |
-            j < i && CoreSuccessful(cmd, preFs, preStdin, count)[j]) ==
-           SuccessfulIndicesCore(cmd, preFs, preStdin, i) by {
+            j < i && CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[j]) ==
+           SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, i) by {
       assert forall j: nat ::
           (j in (set k: nat |
-                 k < i && CoreSuccessful(cmd, preFs, preStdin, count)[k])) ==
-          (j in SuccessfulIndicesCore(cmd, preFs, preStdin, i)) by {
+                 k < i && CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[k])) ==
+          (j in SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, i)) by {
         forall j: nat
           ensures
             (j in (set k: nat |
                    k < i &&
-                   CoreSuccessful(cmd, preFs, preStdin, count)[k])) ==
-            (j in SuccessfulIndicesCore(cmd, preFs, preStdin, i))
+                   CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[k])) ==
+            (j in SuccessfulIndicesCore(cmd, preFs, preStreams, preStdin, i))
         {
           if j < i {
-            CoreSuccessfulIndex(cmd, preFs, preStdin, count, j);
+            CoreSuccessfulIndex(cmd, preFs, preStreams, preStdin, count, j);
           }
         }
       }
     }
-    CoreOutputFragmentsIndex(cmd, preFs, preStdin, count, i);
-    CoreErrorFragmentsIndex(cmd, preFs, preStdin, count, i);
-    InputObservationRelation(cmd, preFs, preStdin, i);
+    CoreOutputFragmentsIndex(cmd, preFs, preStreams, preStdin, count, i);
+    CoreErrorFragmentsIndex(cmd, preFs, preStreams, preStdin, count, i);
+    InputObservationRelation(cmd, preFs, preStreams, preStdin, i);
   }
 
   lemma AllInputObservations(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
@@ -758,80 +758,80 @@ module HeadProof {
     ensures forall i: nat | i < count ::
               Spec.InputObservationRelation(
                 cmd,
-                preFs,
+                preFs, preStreams,
                 preStdin,
                 i,
-                CoreResults(cmd, preFs, preStdin, count)[i],
+                CoreResults(cmd, preFs, preStreams, preStdin, count)[i],
                 |set j: nat |
-                j < i && CoreSuccessful(cmd, preFs, preStdin, count)[j]|,
-                CoreOutputFragments(cmd, preFs, preStdin, count)[i],
-                CoreErrorFragments(cmd, preFs, preStdin, count)[i],
-                CoreSuccessful(cmd, preFs, preStdin, count)[i],
-                CoreFailed(cmd, preFs, preStdin, count)[i]
+                j < i && CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[j]|,
+                CoreOutputFragments(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreErrorFragments(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreFailed(cmd, preFs, preStreams, preStdin, count)[i]
               )
   {
     forall i: nat | i < count
       ensures Spec.InputObservationRelation(
                 cmd,
-                preFs,
+                preFs, preStreams,
                 preStdin,
                 i,
-                CoreResults(cmd, preFs, preStdin, count)[i],
+                CoreResults(cmd, preFs, preStreams, preStdin, count)[i],
                 |set j: nat |
-                j < i && CoreSuccessful(cmd, preFs, preStdin, count)[j]|,
-                CoreOutputFragments(cmd, preFs, preStdin, count)[i],
-                CoreErrorFragments(cmd, preFs, preStdin, count)[i],
-                CoreSuccessful(cmd, preFs, preStdin, count)[i],
-                CoreFailed(cmd, preFs, preStdin, count)[i]
+                j < i && CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[j]|,
+                CoreOutputFragments(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreErrorFragments(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreSuccessful(cmd, preFs, preStreams, preStdin, count)[i],
+                CoreFailed(cmd, preFs, preStreams, preStdin, count)[i]
               )
     {
-      InputObservationAt(cmd, preFs, preStdin, count, i);
+      InputObservationAt(cmd, preFs, preStreams, preStdin, count, i);
     }
   }
 
   lemma PrefixHadErrorRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
   )
     requires count <= |cmd.inputs|
-    ensures Core.PrefixHadErrorCore(cmd, preFs, preStdin, count) ==
+    ensures Core.PrefixHadErrorCore(cmd, preFs, preStreams, preStdin, count) ==
             (exists i: nat ::
-               i < count && CoreFailed(cmd, preFs, preStdin, count)[i])
+               i < count && CoreFailed(cmd, preFs, preStreams, preStdin, count)[i])
     decreases count
   {
     if count > 0 {
-      PrefixHadErrorRelation(cmd, preFs, preStdin, count - 1);
+      PrefixHadErrorRelation(cmd, preFs, preStreams, preStdin, count - 1);
       Core.PrefixHadErrorCoreStep(
-        cmd, preFs, preStdin, count - 1
+        cmd, preFs, preStreams, preStdin, count - 1
       );
       assert (exists i: nat ::
-                i < count && CoreFailed(cmd, preFs, preStdin, count)[i]) ==
+                i < count && CoreFailed(cmd, preFs, preStreams, preStdin, count)[i]) ==
              ((exists i: nat
-                 {:trigger CoreFailed(cmd, preFs, preStdin, count - 1)[i]} ::
+                 {:trigger CoreFailed(cmd, preFs, preStreams, preStdin, count - 1)[i]} ::
                  i < count - 1 &&
-                 CoreFailed(cmd, preFs, preStdin, count - 1)[i]) ||
-              CoreFailed(cmd, preFs, preStdin, count)[count - 1]) by {
+                 CoreFailed(cmd, preFs, preStreams, preStdin, count - 1)[i]) ||
+              CoreFailed(cmd, preFs, preStreams, preStdin, count)[count - 1]) by {
         if exists i: nat ::
-            i < count && CoreFailed(cmd, preFs, preStdin, count)[i] {
+            i < count && CoreFailed(cmd, preFs, preStreams, preStdin, count)[i] {
           var i: nat :|
-            i < count && CoreFailed(cmd, preFs, preStdin, count)[i];
+            i < count && CoreFailed(cmd, preFs, preStreams, preStdin, count)[i];
           if i < count - 1 {
-            CoreFailedIndex(cmd, preFs, preStdin, count, i);
-            CoreFailedIndex(cmd, preFs, preStdin, count - 1, i);
+            CoreFailedIndex(cmd, preFs, preStreams, preStdin, count, i);
+            CoreFailedIndex(cmd, preFs, preStreams, preStdin, count - 1, i);
           } else {
             assert i == count - 1;
           }
         } else if exists i: nat
-            {:trigger CoreFailed(cmd, preFs, preStdin, count - 1)[i]} ::
+            {:trigger CoreFailed(cmd, preFs, preStreams, preStdin, count - 1)[i]} ::
             i < count - 1 &&
-            CoreFailed(cmd, preFs, preStdin, count - 1)[i] {
+            CoreFailed(cmd, preFs, preStreams, preStdin, count - 1)[i] {
           var i: nat :|
             i < count - 1 &&
-            CoreFailed(cmd, preFs, preStdin, count - 1)[i];
-          CoreFailedIndex(cmd, preFs, preStdin, count, i);
-          CoreFailedIndex(cmd, preFs, preStdin, count - 1, i);
+            CoreFailed(cmd, preFs, preStreams, preStdin, count - 1)[i];
+          CoreFailedIndex(cmd, preFs, preStreams, preStdin, count, i);
+          CoreFailedIndex(cmd, preFs, preStreams, preStdin, count - 1, i);
         }
       }
     }
@@ -839,7 +839,7 @@ module HeadProof {
 
   lemma InputTraceWitnessImpliesRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     postStdin: BW.Bytes,
     output: BW.Bytes,
@@ -854,12 +854,12 @@ module HeadProof {
     errorCuts: seq<nat>
   )
     requires Spec.InputTraceWitnessRelation(
-               cmd, preFs, preStdin, postStdin, output, errorOutput, hadError,
+               cmd, preFs, preStreams, preStdin, postStdin, output, errorOutput, hadError,
                results, outputFragments, errorFragments, successful, failed,
                outputCuts, errorCuts
              )
     ensures Spec.InputTraceRelation(
-              cmd, preFs, preStdin, postStdin, output, errorOutput, hadError
+              cmd, preFs, preStreams, preStdin, postStdin, output, errorOutput, hadError
             )
   {
     reveal Spec.InputTraceRelation();
@@ -867,66 +867,66 @@ module HeadProof {
 
   lemma {:isolate_assertions} CoreInputTraceWitnessRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes
   )
     ensures Spec.InputTraceWitnessRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               Core.PrefixStdinCore(cmd, preStdin, |cmd.inputs|),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreResults(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreOutputFragments(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreErrorFragments(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreSuccessful(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreFailed(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreOutputCuts(cmd, preFs, preStdin, |cmd.inputs|),
-              CoreErrorCuts(cmd, preFs, preStdin, |cmd.inputs|)
+              Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixHadErrorCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreResults(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreOutputFragments(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreErrorFragments(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreSuccessful(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreFailed(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreOutputCuts(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              CoreErrorCuts(cmd, preFs, preStreams, preStdin, |cmd.inputs|)
             )
   {
     var count := |cmd.inputs|;
-    AllInputObservations(cmd, preFs, preStdin, count);
-    FragmentsConcatenateCore(cmd, preFs, preStdin, count);
+    AllInputObservations(cmd, preFs, preStreams, preStdin, count);
+    FragmentsConcatenateCore(cmd, preFs, preStreams, preStdin, count);
     PrefixStdinRelation(cmd, preStdin, count);
-    PrefixHadErrorRelation(cmd, preFs, preStdin, count);
+    PrefixHadErrorRelation(cmd, preFs, preStreams, preStdin, count);
     reveal Spec.InputTraceWitnessRelation();
   }
 
   lemma {:isolate_assertions} InputTraceRelation(
     cmd: Schema.HeadCmd,
-    preFs: BW.FileSystem,
+    preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes
   )
     ensures Spec.InputTraceRelation(
               cmd,
-              preFs,
+              preFs, preStreams,
               preStdin,
               Core.PrefixStdinCore(cmd, preStdin, |cmd.inputs|),
-              Core.PrefixOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixErrorOutputCore(cmd, preFs, preStdin, |cmd.inputs|),
-              Core.PrefixHadErrorCore(cmd, preFs, preStdin, |cmd.inputs|)
+              Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|),
+              Core.PrefixHadErrorCore(cmd, preFs, preStreams, preStdin, |cmd.inputs|)
             )
   {
     var count := |cmd.inputs|;
-    CoreInputTraceWitnessRelation(cmd, preFs, preStdin);
+    CoreInputTraceWitnessRelation(cmd, preFs, preStreams, preStdin);
     InputTraceWitnessImpliesRelation(
       cmd,
-      preFs,
+      preFs, preStreams,
       preStdin,
       Core.PrefixStdinCore(cmd, preStdin, count),
-      Core.PrefixOutputCore(cmd, preFs, preStdin, count),
-      Core.PrefixErrorOutputCore(cmd, preFs, preStdin, count),
-      Core.PrefixHadErrorCore(cmd, preFs, preStdin, count),
-      CoreResults(cmd, preFs, preStdin, count),
-      CoreOutputFragments(cmd, preFs, preStdin, count),
-      CoreErrorFragments(cmd, preFs, preStdin, count),
-      CoreSuccessful(cmd, preFs, preStdin, count),
-      CoreFailed(cmd, preFs, preStdin, count),
-      CoreOutputCuts(cmd, preFs, preStdin, count),
-      CoreErrorCuts(cmd, preFs, preStdin, count)
+      Core.PrefixOutputCore(cmd, preFs, preStreams, preStdin, count),
+      Core.PrefixErrorOutputCore(cmd, preFs, preStreams, preStdin, count),
+      Core.PrefixHadErrorCore(cmd, preFs, preStreams, preStdin, count),
+      CoreResults(cmd, preFs, preStreams, preStdin, count),
+      CoreOutputFragments(cmd, preFs, preStreams, preStdin, count),
+      CoreErrorFragments(cmd, preFs, preStreams, preStdin, count),
+      CoreSuccessful(cmd, preFs, preStreams, preStdin, count),
+      CoreFailed(cmd, preFs, preStreams, preStdin, count),
+      CoreOutputCuts(cmd, preFs, preStreams, preStdin, count),
+      CoreErrorCuts(cmd, preFs, preStreams, preStdin, count)
     );
   }
 
@@ -941,7 +941,7 @@ module HeadProof {
     CommandEq(raw);
     var cmd := Core.Command(raw);
     if cmd.mode == Schema.ModeRun {
-      InputTraceRelation(cmd, old(io.fs()), old(io.stdin()));
+      InputTraceRelation(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
     }
   }
 }

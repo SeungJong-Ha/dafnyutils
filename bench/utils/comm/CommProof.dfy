@@ -846,8 +846,8 @@ module CommProof {
     InputFromOperandEq(Core.SecondOperand(raw.operands));
   }
 
-  lemma InputResultEq(preFs: BW.FileSystem, preStdin: BW.Bytes, input: Schema.CommInput)
-    ensures Core.InputResult(preFs, preStdin, input) == Spec.InputResult(preFs, preStdin, input)
+  lemma InputResultEq(preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult, preStdin: BW.Bytes, input: Schema.CommInput)
+    ensures Core.InputResult(preFs, preStreams, preStdin, input) == Spec.InputResult(preFs, preStreams, preStdin, input)
   {
   }
 
@@ -856,10 +856,10 @@ module CommProof {
   {
   }
 
-  lemma ReadFirstResultEq(cmd: Schema.CommCmd, preFs: BW.FileSystem, preStdin: BW.Bytes)
-    ensures Core.ReadFirstResult(cmd, preFs, preStdin) == Spec.ReadFirstResult(cmd, preFs, preStdin)
+  lemma ReadFirstResultEq(cmd: Schema.CommCmd, preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult, preStdin: BW.Bytes)
+    ensures Core.ReadFirstResult(cmd, preFs, preStreams, preStdin) == Spec.ReadFirstResult(cmd, preFs, preStreams, preStdin)
   {
-    InputResultEq(preFs, preStdin, cmd.input1);
+    InputResultEq(preFs, preStreams, preStdin, cmd.input1);
   }
 
   lemma AfterFirstReadEq(cmd: Schema.CommCmd, preStdin: BW.Bytes)
@@ -868,11 +868,11 @@ module CommProof {
     AfterInputReadEq(preStdin, cmd.input1);
   }
 
-  lemma ReadSecondResultEq(cmd: Schema.CommCmd, preFs: BW.FileSystem, preStdin: BW.Bytes)
-    ensures Core.ReadSecondResult(cmd, preFs, preStdin) == Spec.ReadSecondResult(cmd, preFs, preStdin)
+  lemma ReadSecondResultEq(cmd: Schema.CommCmd, preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult, preStdin: BW.Bytes)
+    ensures Core.ReadSecondResult(cmd, preFs, preStreams, preStdin) == Spec.ReadSecondResult(cmd, preFs, preStreams, preStdin)
   {
     AfterFirstReadEq(cmd, preStdin);
-    InputResultEq(preFs, Core.AfterFirstRead(cmd, preStdin), cmd.input2);
+    InputResultEq(preFs, preStreams, Core.AfterFirstRead(cmd, preStdin), cmd.input2);
   }
 
   lemma AfterSecondReadEq(cmd: Schema.CommCmd, preStdin: BW.Bytes)
@@ -901,15 +901,15 @@ module CommProof {
     case ModeMultipleOutputDelimiters =>
     case ModeRepeatedStdinOperand =>
     case ModeRun =>
-      ReadFirstResultEq(cmd, old(io.fs()), old(io.stdin()));
+      ReadFirstResultEq(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
       AfterFirstReadEq(cmd, old(io.stdin()));
-      var first := Core.ReadFirstResult(cmd, old(io.fs()), old(io.stdin()));
+      var first := Core.ReadFirstResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
       match first
       case Err(_) =>
       case Ok(leftData) =>
-        ReadSecondResultEq(cmd, old(io.fs()), old(io.stdin()));
+        ReadSecondResultEq(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
         AfterSecondReadEq(cmd, old(io.stdin()));
-        var second := Core.ReadSecondResult(cmd, old(io.fs()), old(io.stdin()));
+        var second := Core.ReadSecondResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
         match second
         case Err(_) =>
         case Ok(rightData) =>

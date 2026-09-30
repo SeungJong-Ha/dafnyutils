@@ -86,7 +86,7 @@ module TacCore {
 
   ghost function ReadResult(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   ): BenchWorld.Result<BenchWorld.Bytes>
@@ -94,7 +94,7 @@ module TacCore {
   {
     match cmd.inputs[i]
     case Stdin => BenchWorld.Ok(PrefixStdin(cmd, preStdin, i))
-    case File(path) => IOContract.ReadFileResultFields(preFs, path)
+    case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   function SearchLimit(pastEnd: nat, sep: BenchWorld.Bytes): nat
@@ -277,7 +277,7 @@ module TacCore {
 
   ghost function PrefixOutput(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   ): BenchWorld.Bytes
@@ -288,13 +288,13 @@ module TacCore {
     if i == 0 then
       []
     else
-      PrefixOutput(cmd, preFs, preStdin, i - 1) +
-      OutputPiece(cmd, ReadResult(cmd, preFs, preStdin, i - 1))
+      PrefixOutput(cmd, preFs, preStreams, preStdin, i - 1) +
+      OutputPiece(cmd, ReadResult(cmd, preFs, preStreams, preStdin, i - 1))
   }
 
   ghost function PrefixErrorOutput(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   ): BenchWorld.Bytes
@@ -304,13 +304,13 @@ module TacCore {
     if i == 0 then
       []
     else
-      PrefixErrorOutput(cmd, preFs, preStdin, i - 1) +
-      Spec.ErrorPiece(cmd.inputs[i - 1], ReadResult(cmd, preFs, preStdin, i - 1))
+      PrefixErrorOutput(cmd, preFs, preStreams, preStdin, i - 1) +
+      Spec.ErrorPiece(cmd.inputs[i - 1], ReadResult(cmd, preFs, preStreams, preStdin, i - 1), preFs, preStreams)
   }
 
   ghost function PrefixHadError(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   ): bool
@@ -320,8 +320,8 @@ module TacCore {
     if i == 0 then
       false
     else
-      PrefixHadError(cmd, preFs, preStdin, i - 1) ||
-      Spec.HadErrorPiece(cmd.inputs[i - 1], ReadResult(cmd, preFs, preStdin, i - 1))
+      PrefixHadError(cmd, preFs, preStreams, preStdin, i - 1) ||
+      Spec.HadErrorPiece(cmd.inputs[i - 1], ReadResult(cmd, preFs, preStreams, preStdin, i - 1))
   }
 
   twostate predicate CoreSummary(raw: TacSchema.TacCmdRaw, io: BenchIO.IO, exit: int)
@@ -340,9 +340,9 @@ module TacCore {
       exit == 0
     else
       io.stdin() == PrefixStdin(cmd, old(io.stdin()), |cmd.inputs|) &&
-      io.stdout() == old(io.stdout()) + PrefixOutput(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|) &&
-      io.stderr() == old(io.stderr()) + PrefixErrorOutput(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|) &&
-      exit == (if PrefixHadError(cmd, old(io.fs()), old(io.stdin()), |cmd.inputs|) then 1 else 0)
+      io.stdout() == old(io.stdout()) + PrefixOutput(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), |cmd.inputs|) &&
+      io.stderr() == old(io.stderr()) + PrefixErrorOutput(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), |cmd.inputs|) &&
+      exit == (if PrefixHadError(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), |cmd.inputs|) then 1 else 0)
   }
 
   lemma PrefixStdinCoreStep(cmd: TacSchema.TacCmd, preStdin: BenchWorld.Bytes, i: nat)
@@ -356,41 +356,41 @@ module TacCore {
 
   lemma PrefixOutputCoreStep(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
     requires |cmd.separator| > 0
-    ensures PrefixOutput(cmd, preFs, preStdin, i + 1) ==
-            PrefixOutput(cmd, preFs, preStdin, i) +
-            OutputPiece(cmd, ReadResult(cmd, preFs, preStdin, i))
+    ensures PrefixOutput(cmd, preFs, preStreams, preStdin, i + 1) ==
+            PrefixOutput(cmd, preFs, preStreams, preStdin, i) +
+            OutputPiece(cmd, ReadResult(cmd, preFs, preStreams, preStdin, i))
   {
   }
 
   lemma PrefixErrorOutputCoreStep(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
-    ensures PrefixErrorOutput(cmd, preFs, preStdin, i + 1) ==
-            PrefixErrorOutput(cmd, preFs, preStdin, i) +
-            Spec.ErrorPiece(cmd.inputs[i], ReadResult(cmd, preFs, preStdin, i))
+    ensures PrefixErrorOutput(cmd, preFs, preStreams, preStdin, i + 1) ==
+            PrefixErrorOutput(cmd, preFs, preStreams, preStdin, i) +
+            Spec.ErrorPiece(cmd.inputs[i], ReadResult(cmd, preFs, preStreams, preStdin, i), preFs, preStreams)
   {
   }
 
   lemma PrefixHadErrorCoreStep(
     cmd: TacSchema.TacCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
   )
     requires i < |cmd.inputs|
-    ensures PrefixHadError(cmd, preFs, preStdin, i + 1) ==
-            (PrefixHadError(cmd, preFs, preStdin, i) ||
-             Spec.HadErrorPiece(cmd.inputs[i], ReadResult(cmd, preFs, preStdin, i)))
+    ensures PrefixHadError(cmd, preFs, preStreams, preStdin, i + 1) ==
+            (PrefixHadError(cmd, preFs, preStreams, preStdin, i) ||
+             Spec.HadErrorPiece(cmd.inputs[i], ReadResult(cmd, preFs, preStreams, preStdin, i)))
   {
   }
 
@@ -418,7 +418,7 @@ module TacCore {
     msg := Spec.ErrorMessageSpec(path, err);
   }
 
-  method RunCore(raw: TacSchema.TacCmdRaw, io: BenchIO.IO) returns (exit: int)
+  method {:isolate_assertions} RunCore(raw: TacSchema.TacCmdRaw, io: BenchIO.IO) returns (exit: int)
     modifies io.stdinRegion, io.stdoutRegion, io.stderrRegion
     ensures CoreSummary(raw, io, exit)
     decreases *
@@ -427,11 +427,12 @@ module TacCore {
     ghost var preStdin := io.stdin();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
+    ghost var preStreams := io.trustedStreams();
     var cmd := Command(raw);
 
     if cmd.mode == TacSchema.ModeHelp {
       var help := GetHelpText();
-      io.AppendStdout(help);
+      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -439,7 +440,7 @@ module TacCore {
 
     if cmd.mode == TacSchema.ModeVersion {
       var version := GetVersionText();
-      io.AppendStdout(version);
+      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -455,9 +456,9 @@ module TacCore {
       invariant io.stdin() == PrefixStdin(cmd, preStdin, i)
       invariant io.stdout() == preStdout
       invariant io.stderr() == preStderr
-      invariant output == PrefixOutput(cmd, preFs, preStdin, i)
-      invariant err == PrefixErrorOutput(cmd, preFs, preStdin, i)
-      invariant hadError == PrefixHadError(cmd, preFs, preStdin, i)
+      invariant output == PrefixOutput(cmd, preFs, preStreams, preStdin, i)
+      invariant err == PrefixErrorOutput(cmd, preFs, preStreams, preStdin, i)
+      invariant hadError == PrefixHadError(cmd, preFs, preStreams, preStdin, i)
       decreases |cmd.inputs| - i
     {
       var input := cmd.inputs[i];
@@ -465,39 +466,57 @@ module TacCore {
       match input {
         case Stdin =>
           ghost var beforeStdin := io.stdin();
-          var data := io.ReadStdinAll();
+          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
           readResult := BenchWorld.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
           assert beforeStdin == PrefixStdin(cmd, preStdin, i);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
-          assert readResult == ReadResult(cmd, preFs, preStdin, i);
+          assert readResult == ReadResult(cmd, preFs, preStreams, preStdin, i);
           var piece := ReverseRecords(data, cmd.separator, cmd.before);
           output := output + piece;
         case File(path) =>
-          readResult := io.ReadFile(path);
-          assert readResult == IOContract.ReadFileResultFields(preFs, path);
-          assert readResult == ReadResult(cmd, preFs, preStdin, i);
+          var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
+          readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+          assert readResult == IOContract.ObservedReadFileResultFields(preFs, preStreams, path);
+          assert readResult == ReadResult(cmd, preFs, preStreams, preStdin, i);
           if readResult.Ok? {
             var piece := ReverseRecords(readResult.v, cmd.separator, cmd.before);
             output := output + piece;
           } else {
             hadError := true;
-            var msg := ErrorMessageMethod(path, readResult.e);
+            var msg: BenchWorld.Bytes;
+            if readResult.e == BenchWorld.IsDirectory {
+              var ignored, dirErr, stage := io.ReadFile(path, BenchWorld.AfterSeekEnd);
+              assert IOContract.TrustedReadFileContractFields(
+                preStreams, preFs, path, BenchWorld.AfterSeekEnd, ignored, dirErr, stage
+              );
+              assert Spec.DirectoryReadOutcome(preStreams, preFs, path) ==
+                BenchWorld.StreamReadFileResult(ignored, dirErr, stage);
+              var dirText := io.GetCLocaleErrnoText(dirErr);
+              msg := if stage == BenchWorld.OpenFailed then
+                Spec.DirectoryOpenErrorMessageSpec(path, dirText)
+                else Spec.DirectoryReadErrorMessageSpec(path, dirText);
+            } else {
+              msg := ErrorMessageMethod(path, readResult.e);
+            }
+            assert msg == Spec.ErrorPiece(input, readResult, preFs, preStreams);
             err := err + msg;
           }
       }
-      PrefixOutputCoreStep(cmd, preFs, preStdin, i);
-      PrefixErrorOutputCoreStep(cmd, preFs, preStdin, i);
-      PrefixHadErrorCoreStep(cmd, preFs, preStdin, i);
+      assert err == PrefixErrorOutput(cmd, preFs, preStreams, preStdin, i) +
+                    Spec.ErrorPiece(input, readResult, preFs, preStreams);
+      PrefixOutputCoreStep(cmd, preFs, preStreams, preStdin, i);
+      PrefixErrorOutputCoreStep(cmd, preFs, preStreams, preStdin, i);
+      PrefixHadErrorCoreStep(cmd, preFs, preStreams, preStdin, i);
       i := i + 1;
     }
 
-    assert output == PrefixOutput(cmd, preFs, preStdin, |cmd.inputs|);
-    assert err == PrefixErrorOutput(cmd, preFs, preStdin, |cmd.inputs|);
-    assert hadError == PrefixHadError(cmd, preFs, preStdin, |cmd.inputs|);
-    io.AppendStdout(output);
+    assert output == PrefixOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|);
+    assert err == PrefixErrorOutput(cmd, preFs, preStreams, preStdin, |cmd.inputs|);
+    assert hadError == PrefixHadError(cmd, preFs, preStreams, preStdin, |cmd.inputs|);
+    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
-    io.AppendStderr(err);
+    var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;
     assert CoreSummary(raw, io, exit);

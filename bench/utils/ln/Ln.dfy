@@ -53,7 +53,7 @@ module Ln {
     }
 
     method RunCore(raw: LnSchema.LnCmdRaw, io: BenchIO.IO) returns (exit: int)
-      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion
+      modifies io.fsRegion, io.stdoutRegion, io.stderrRegion, io.statusObservationsRegion
       ensures LS.Spec(raw, io, exit)
       decreases *
     {

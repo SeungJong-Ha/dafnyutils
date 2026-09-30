@@ -22,31 +22,34 @@ module TeeProof {
     path: BenchWorld.Path,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
   )
-    requires Core.WriteOneSummaryFields(append, path, input, preFs, preNow, fs2, stderr, exit)
-    ensures Spec.WriteOneSpecFields(append, path, input, preFs, preNow, fs2, stderr, exit)
+    requires Core.WriteOneSummaryFields(append, path, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit)
+    ensures Spec.WriteOneSpecFields(append, path, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit)
   {
     reveal Spec.WriteOneSpecFields();
-    match IOContract.ReadFileResultFields(preFs, path)
-    case Ok(_) =>
-    case Err(err) =>
   }
 
   lemma EmptyWriteOutputsSummary(
     append: bool,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
   )
     requires Core.WriteOutputsSummaryFields(
-               append, [], input, preFs, preNow, fs2, stderr, exit
+               append, [], input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit
              )
     ensures fs2 == preFs
     ensures stderr == []
@@ -60,7 +63,10 @@ module TeeProof {
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
@@ -73,14 +79,14 @@ module TeeProof {
     )
     requires 0 < |outputs|
     requires Core.WriteOutputsSummaryFields(
-               append, outputs, input, preFs, preNow, fs2, stderr, exit
+               append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit
              )
     ensures Core.WriteOutputsSummaryFields(
-              append, outputs[..|outputs| - 1], input, preFs, preNow,
+              append, outputs[..|outputs| - 1], input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem,
               prefixFs, prefixErr, prefixExit
             )
     ensures Core.WriteOneSummaryFields(
-              append, outputs[|outputs| - 1], input, prefixFs, preNow,
+              append, outputs[|outputs| - 1], input, prefixFs, preProps, preNow, preCredentials, preTrustedFilesystem,
               fs2, stepErr, stepExit
             )
     ensures stderr == prefixErr + stepErr
@@ -89,11 +95,11 @@ module TeeProof {
     reveal Core.WriteOutputsSummaryFields();
     prefixFs, prefixErr, prefixExit, stepErr, stepExit :|
       Core.WriteOutputsSummaryFields(
-        append, outputs[..|outputs| - 1], input, preFs, preNow,
+        append, outputs[..|outputs| - 1], input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem,
         prefixFs, prefixErr, prefixExit
       ) &&
       Core.WriteOneSummaryFields(
-        append, outputs[|outputs| - 1], input, prefixFs, preNow,
+        append, outputs[|outputs| - 1], input, prefixFs, preProps, preNow, preCredentials, preTrustedFilesystem,
         fs2, stepErr, stepExit
       ) &&
       stderr == prefixErr + stepErr &&
@@ -104,21 +110,24 @@ module TeeProof {
     append: bool,
     path: BenchWorld.Path,
     input: BenchWorld.Bytes,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     before: Spec.WriteState,
     after: Spec.WriteState,
     stepErr: BenchWorld.Bytes,
     stepExit: int
   )
     requires Core.WriteOneSummaryFields(
-               append, path, input, before.fs, preNow, after.fs, stepErr, stepExit
+               append, path, input, before.fs, preProps, preNow, preCredentials, preTrustedFilesystem, after.fs, stepErr, stepExit
              )
     requires after.stderr == before.stderr + stepErr
     requires after.exit == (if before.exit == 0 && stepExit == 0 then 0 else 1)
-    ensures Spec.WriteStepRelation(append, path, input, preNow, before, after)
+    ensures Spec.WriteStepRelation(append, path, input, preProps, preNow, preCredentials, preTrustedFilesystem, before, after)
   {
     WriteOneSummaryFieldsImpliesSpec(
-      append, path, input, before.fs, preNow, after.fs, stepErr, stepExit
+      append, path, input, before.fs, preProps, preNow, preCredentials, preTrustedFilesystem, after.fs, stepErr, stepExit
     );
     reveal Spec.WriteStepRelation();
   }
@@ -128,7 +137,10 @@ module TeeProof {
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int,
@@ -137,10 +149,10 @@ module TeeProof {
     requires |states| == |outputs| + 1
     requires states[0] == Spec.WriteState(preFs, [], 0)
     requires states[|outputs|] == Spec.WriteState(fs2, stderr, exit)
-    requires forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])} ::
+    requires forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])} ::
                0 <= i < |outputs| ==>
-                 Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])
-    ensures Spec.WriteOutputsSpecFields(append, outputs, input, preFs, preNow, fs2, stderr, exit)
+                 Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])
+    ensures Spec.WriteOutputsSpecFields(append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit)
   {
     reveal Spec.WriteOutputsSpecFields();
   }
@@ -149,28 +161,31 @@ module TeeProof {
     append: bool,
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     prefixStates: seq<Spec.WriteState>,
     after: Spec.WriteState
   ) returns (states: seq<Spec.WriteState>)
     requires 0 < |outputs|
     requires |prefixStates| == |outputs|
-    requires forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preNow, prefixStates[i], prefixStates[i + 1])} ::
+    requires forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, prefixStates[i], prefixStates[i + 1])} ::
                0 <= i < |outputs| - 1 ==>
-                 Spec.WriteStepRelation(append, outputs[i], input, preNow, prefixStates[i], prefixStates[i + 1])
+                 Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, prefixStates[i], prefixStates[i + 1])
     requires Spec.WriteStepRelation(
-               append, outputs[|outputs| - 1], input, preNow,
+               append, outputs[|outputs| - 1], input, preProps, preNow, preCredentials, preTrustedFilesystem,
                prefixStates[|outputs| - 1], after
              )
     ensures states == prefixStates + [after]
-    ensures forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])} ::
+    ensures forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])} ::
               0 <= i < |outputs| ==>
-                Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])
+                Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])
   {
     states := prefixStates + [after];
-    forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])} |
+    forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])} |
       0 <= i < |outputs|
-      ensures Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])
+      ensures Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])
     {
       if i == |outputs| - 1 {
         assert states[i] == prefixStates[i];
@@ -187,50 +202,53 @@ module TeeProof {
     outputs: seq<BenchWorld.Path>,
     input: BenchWorld.Bytes,
     preFs: BenchWorld.FileSystem,
+    preProps: map<string, string>,
     preNow: int,
+    preCredentials: BenchWorld.ProcessCredentials,
+    preTrustedFilesystem: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
     fs2: BenchWorld.FileSystem,
     stderr: BenchWorld.Bytes,
     exit: int
   ) returns (states: seq<Spec.WriteState>)
-    requires Core.WriteOutputsSummaryFields(append, outputs, input, preFs, preNow, fs2, stderr, exit)
+    requires Core.WriteOutputsSummaryFields(append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit)
     ensures |states| == |outputs| + 1
     ensures states[0] == Spec.WriteState(preFs, [], 0)
     ensures states[|outputs|] == Spec.WriteState(fs2, stderr, exit)
-    ensures forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])} ::
+    ensures forall i {:trigger Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])} ::
               0 <= i < |outputs| ==>
-                Spec.WriteStepRelation(append, outputs[i], input, preNow, states[i], states[i + 1])
-    ensures Spec.WriteOutputsSpecFields(append, outputs, input, preFs, preNow, fs2, stderr, exit)
+                Spec.WriteStepRelation(append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, states[i], states[i + 1])
+    ensures Spec.WriteOutputsSpecFields(append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit)
     decreases |outputs|
   {
     if |outputs| == 0 {
-      EmptyWriteOutputsSummary(append, input, preFs, preNow, fs2, stderr, exit);
+      EmptyWriteOutputsSummary(append, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit);
       states := [Spec.WriteState(preFs, [], 0)];
-      WriteOutputsWitnessImpliesSpec(append, outputs, input, preFs, preNow, fs2, stderr, exit, states);
+      WriteOutputsWitnessImpliesSpec(append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit, states);
     } else {
       var prefixFs, prefixErr, prefixExit, stepErr, stepExit :=
         SplitWriteOutputsSummary(
-          append, outputs, input, preFs, preNow, fs2, stderr, exit
+          append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit
         );
       var prefixStates := WriteOutputsSummaryFieldsImpliesSpec(
-        append, outputs[..|outputs| - 1], input, preFs, preNow,
+        append, outputs[..|outputs| - 1], input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem,
         prefixFs, prefixErr, prefixExit
       );
       var before := Spec.WriteState(prefixFs, prefixErr, prefixExit);
       var after := Spec.WriteState(fs2, stderr, exit);
       assert prefixStates[|outputs| - 1] == before;
       WriteCoreStepImpliesRelation(
-        append, outputs[|outputs| - 1], input, preNow,
+        append, outputs[|outputs| - 1], input, preProps, preNow, preCredentials, preTrustedFilesystem,
         before, after, stepErr, stepExit
       );
       forall i | 0 <= i < |outputs| - 1
         ensures Spec.WriteStepRelation(
-          append, outputs[i], input, preNow, prefixStates[i], prefixStates[i + 1]
+          append, outputs[i], input, preProps, preNow, preCredentials, preTrustedFilesystem, prefixStates[i], prefixStates[i + 1]
         )
       {
         assert outputs[..|outputs| - 1][i] == outputs[i];
       }
-      states := ExtendWriteStates(append, outputs, input, preNow, prefixStates, after);
-      WriteOutputsWitnessImpliesSpec(append, outputs, input, preFs, preNow, fs2, stderr, exit, states);
+      states := ExtendWriteStates(append, outputs, input, preProps, preNow, preCredentials, preTrustedFilesystem, prefixStates, after);
+      WriteOutputsWitnessImpliesSpec(append, outputs, input, preFs, preProps, preNow, preCredentials, preTrustedFilesystem, fs2, stderr, exit, states);
     }
   }
 
@@ -242,12 +260,12 @@ module TeeProof {
     var cmd := Core.Command(raw);
     if cmd.mode == Schema.ModeRun {
       var errOut: BenchWorld.Bytes, writeExit: int :|
-        Core.WriteOutputsSummaryFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.now()), io.fs(), errOut, writeExit) &&
+        Core.WriteOutputsSummaryFields(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.props()), old(io.now()), old(io.credentials()), old(io.trustedFilesystem()), io.fs(), errOut, writeExit) &&
         io.stdin() == IOContract.AfterReadStdinFields(old(io.stdin())) &&
         io.stdout() == old(io.stdout()) + old(io.stdin()) &&
         io.stderr() == old(io.stderr()) + errOut &&
         exit == writeExit;
-      var states := WriteOutputsSummaryFieldsImpliesSpec(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.now()), io.fs(), errOut, writeExit);
+      var states := WriteOutputsSummaryFieldsImpliesSpec(cmd.append, cmd.outputs, old(io.stdin()), old(io.fs()), old(io.props()), old(io.now()), old(io.credentials()), old(io.trustedFilesystem()), io.fs(), errOut, writeExit);
     }
   }
 }

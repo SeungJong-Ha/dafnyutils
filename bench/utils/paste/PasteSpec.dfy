@@ -2,6 +2,7 @@ include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
 include "PasteSchema.dfy"
+include "../../core/StringEscaping.dfy"
 
 module PasteSpec {
   import BenchIO
@@ -9,6 +10,7 @@ module PasteSpec {
   import BenchWorld
   import IOContract
   import PasteSchema
+  import SE = StringEscaping
 
   datatype Entry = Entry(lines: seq<BenchWorld.Bytes>, readOk: bool)
   datatype DelimPlan = DelimsOk(delims: seq<BenchWorld.Bytes>) | DelimsErr(stderr: BenchWorld.Bytes)
@@ -67,21 +69,24 @@ module PasteSpec {
 
   function NeedsErrorQuoting(path: string): bool
   {
-    // GNU quotef preserves backslashes inside the required outer shell quotes.
-    exists i :: 0 <= i < |path| && path[i] in {' ', '=', ':', '\\'}
+    var bytes := Utf8.Encode(path);
+    |bytes| == 0 || SE.SpecHasShellQuoteTrigger(bytes)
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    var displayPath :=
-      if NeedsErrorQuoting(path) then "'" + path + "'"
-      else path;
-    Utf8.Encode("paste: " + displayPath + ": " + ErrnoText(err) + "\n")
+    "paste: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
+    ": " + Utf8.Encode(ErrnoText(err)) + "\n"
   }
 
   function DelimiterBackslashError(text: BenchWorld.Bytes): BenchWorld.Bytes
   {
-    "paste: delimiter list ends with an unescaped backslash: " + text + "\n"
+    var rendered :=
+      if exists i: nat :: i < |text| &&
+          (text[i] == ':' || text[i] == '"' || !SE.SpecCPrintableByte(text[i]))
+      then SE.SpecDoubleQuote(text)
+      else text;
+    "paste: delimiter list ends with an unescaped backslash: " + rendered + "\n"
   }
 
   function RecordDelimiter(zeroTerminated: bool): BenchWorld.RawByte
@@ -125,7 +130,7 @@ module PasteSpec {
 
   ghost predicate ReadResultRelation(
     cmd: PasteSchema.PasteCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     result: BenchWorld.Result<BenchWorld.Bytes>
@@ -139,7 +144,7 @@ module PasteSpec {
         then []
         else preStdin)
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path)
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
   ghost predicate EntryRelation(
@@ -162,7 +167,7 @@ module PasteSpec {
 
   ghost predicate InputObservationRelation(
     cmd: PasteSchema.PasteCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
     observation: InputObservation
@@ -170,7 +175,7 @@ module PasteSpec {
     requires i < |cmd.inputs|
   {
     ReadResultRelation(
-      cmd, preFs, preStdin, i, observation.result) &&
+      cmd, preFs, preStreams, preStdin, i, observation.result) &&
     EntryRelation(
       observation.result,
       RecordDelimiter(cmd.zeroTerminated),
@@ -341,7 +346,7 @@ module PasteSpec {
 
   ghost predicate InputTraceRelation(
     cmd: PasteSchema.PasteCmd,
-    preFs: BenchWorld.FileSystem,
+    preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     postStdin: BenchWorld.Bytes,
     entries: seq<Entry>,
@@ -354,7 +359,7 @@ module PasteSpec {
       |observations| == |cmd.inputs| &&
       (forall i: nat | i < |observations| ::
          InputObservationRelation(
-           cmd, preFs, preStdin, i, observations[i])) &&
+           cmd, preFs, preStreams, preStdin, i, observations[i])) &&
       EntriesForOutputRelation(
         cmd, preStdin, ObservationEntries(observations), entries) &&
       VisibleErrorRelation(cmd.serial, observations, errorOutput) &&
@@ -630,7 +635,7 @@ module PasteSpec {
   }
 
   twostate predicate SpecCmd(cmd: PasteSchema.PasteCmd, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
+    reads io.fsRegion, io.trustedStreamsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
   {
     if cmd.mode == PasteSchema.ModeHelp then
       io.stdin() == old(io.stdin()) &&
@@ -658,7 +663,7 @@ module PasteSpec {
             hadBlockingError: bool,
             output: BenchWorld.Bytes ::
             InputTraceRelation(
-              cmd, old(io.fs()), old(io.stdin()), io.stdin(), entries,
+              cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), io.stdin(), entries,
               errorOutput, hadError, hadBlockingError) &&
             OutputRelation(
               cmd.serial, delims, RecordDelimiter(cmd.zeroTerminated),
@@ -670,7 +675,7 @@ module PasteSpec {
   }
 
   twostate predicate Spec(raw: PasteSchema.PasteCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
+    reads io.fsRegion, io.trustedStreamsRegion, io.stdinRegion, io.stdoutRegion, io.stderrRegion
   {
     SpecCmd(PasteSchema.Command(raw), io, exit)
   }

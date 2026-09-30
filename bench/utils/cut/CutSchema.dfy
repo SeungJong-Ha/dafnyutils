@@ -1,11 +1,13 @@
 include "../../core/Utf8.dfy"
 include "../../core/World.dfy"
 include "../../core/CliTypes.dfy"
+include "../../core/StringEscaping.dfy"
 
 module CutSchema {
   import Utf8 = Utf8Semantics
   import BenchWorld
   import CliTypes
+  import SE = StringEscaping
 
   datatype CutMode = ModeRun | ModeHelp | ModeVersion
   datatype SelectionKind = SelectBytes | SelectChars
@@ -418,7 +420,8 @@ module CutSchema {
     case InvalidRangeError =>
       "cut: invalid byte or character range\n" + TryHelpText()
     case InvalidPositionError(text) =>
-      "cut: invalid byte/character position '" + text + "'\n" + TryHelpText()
+      "cut: invalid byte/character position " +
+      SE.SpecLocaleQuoteBytes(Utf8.Encode(text)) + "\n" + TryHelpText()
     case NoEndpointError =>
       "cut: invalid range with no endpoint: -\n" + TryHelpText()
     case DecreasingRangeError =>

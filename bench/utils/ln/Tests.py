@@ -101,6 +101,96 @@ def readlink_target(path: Path) -> bytes:
     return completed.stdout.rstrip(b"\n")
 
 
+# A single symbolic-link operand creates its basename in the current directory.
+def test_one_operand_symbolic_link_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "nested").mkdir()
+        args = ["-s", "nested/a.sym"]
+        assert_same_result(run_system_ln(args, ref_cwd), run_bench_ln(args, bench_cwd))
+        assert readlink_target(ref_cwd / "a.sym") == b"nested/a.sym"
+        assert readlink_target(bench_cwd / "a.sym") == b"nested/a.sym"
+
+
+# Empty source and destination operands retain GNU's exact diagnostics and link effects.
+@pytest.mark.parametrize(
+    "args",
+    [
+        pytest.param(["-s", "", "link"], id="symbolic-direct-empty-source"),
+        pytest.param(["-s", ""], id="symbolic-one-empty-source"),
+        pytest.param(["-s", "", ""], id="symbolic-both-empty"),
+        pytest.param(["-s", "target", ""], id="symbolic-empty-destination"),
+        pytest.param(["-s", "", "dest"], id="symbolic-empty-source-directory"),
+        pytest.param(["-s", "", "other", "dest"], id="symbolic-batch-empty-first"),
+        pytest.param(["-s", "other", "", "dest"], id="symbolic-batch-empty-last"),
+        pytest.param(["", "link"], id="hard-link-empty-source"),
+        pytest.param(["", ""], id="hard-link-both-empty"),
+    ],
+)
+def test_empty_argument_matrix_matches_coreutils(args: list[str]) -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "dest").mkdir()
+        assert_same_result(run_system_ln(args, ref_cwd), run_bench_ln(args, bench_cwd))
+        ref_links = sorted(
+            (str(path.relative_to(ref_cwd)), str(path.readlink()))
+            for path in ref_cwd.rglob("*")
+            if path.is_symlink()
+        )
+        bench_links = sorted(
+            (str(path.relative_to(bench_cwd)), str(path.readlink()))
+            for path in bench_cwd.rglob("*")
+            if path.is_symlink()
+        )
+        assert bench_links == ref_links
+
+
+# A missing source reports GNU's access diagnostic for implicit hard links.
+def test_one_operand_missing_hard_link_source_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_same_result(
+            run_system_ln(["nested/missing"], cwd),
+            run_bench_ln(["nested/missing"], cwd),
+        )
+
+
+# A hard link shares its source inode and content after the command succeeds.
+def test_hard_link_identity_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source").write_bytes(b"payload\n")
+        assert_same_result(
+            run_system_ln(["source", "linked"], ref_cwd),
+            run_bench_ln(["source", "linked"], bench_cwd),
+        )
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "linked").read_bytes() == b"payload\n"
+            assert (cwd / "source").stat().st_ino == (cwd / "linked").stat().st_ino
+
+
+# A directory destination resolves the final link name from the source basename.
+def test_hard_link_into_directory_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "source").write_bytes(b"source contents")
+            (cwd / "destination").mkdir()
+        assert_same_result(
+            run_system_ln(["source", "destination"], ref_cwd),
+            run_bench_ln(["source", "destination"], bench_cwd),
+        )
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "source").stat().st_ino == (cwd / "destination/source").stat().st_ino
+
+
 def test_creates_symbolic_link_to_existing_source_matches_coreutils() -> None:
     # upstream: coreutils/tests/ln/misc.sh
     with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
@@ -149,6 +239,16 @@ def test_existing_destination_diagnostic_matches_coreutils() -> None:
         assert (bench_cwd / "link.txt").read_bytes() == b"existing\n"
 
 
+# A failed symbolic link reports the destination using GNU's shell quoting.
+@pytest.mark.parametrize("name", ["semi;colon", "apost'rophe", "tab\tname", "é"])
+def test_symbolic_link_error_shell_quoting_matches_coreutils(name: str) -> None:
+    # upstream: coreutils/tests/ln/misc.sh
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        args = ["-s", "target", f"missing/{name}"]
+        assert_same_result(run_system_ln(args, cwd), run_bench_ln(args, cwd))
+
+
 @pytest.mark.parametrize("args", [[], ["-s"]])
 def test_missing_operand_matches_coreutils(args: list[str]) -> None:
     # upstream: coreutils/tests/ln/misc.sh
@@ -179,67 +279,52 @@ def test_parse_errors_match_coreutils(args: list[str]) -> None:
         assert_same_result(ref, bench)
 
 
-def test_symbolic_one_operand_reports_benchmark_diagnostic() -> None:
-    # upstream: none - Documents this benchmark slice rejecting GNU one-target implicit link-name
-    # upstream-reason: mode.
+# Multiple symbolic sources create links through a symlink to a destination directory.
+def test_symbolic_multi_source_symlink_directory_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "dest").mkdir()
+            (cwd / "dest-alias").symlink_to("dest", target_is_directory=True)
+        args = ["-s", "a", "b", "dest-alias"]
+        assert_same_result(run_system_ln(args, ref_cwd), run_bench_ln(args, bench_cwd))
+        for cwd in (ref_cwd, bench_cwd):
+            assert readlink_target(cwd / "dest" / "a") == b"a"
+            assert readlink_target(cwd / "dest" / "b") == b"b"
+
+
+# A failed hard-link source does not prevent later sources from being linked.
+def test_hard_link_multi_source_continues_after_failure_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "present").write_bytes(b"contents")
+            (cwd / "dest").mkdir()
+        args = ["missing", "present", "dest"]
+        assert_same_result(run_system_ln(args, ref_cwd), run_bench_ln(args, bench_cwd))
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "present").stat().st_ino == (cwd / "dest/present").stat().st_ino
+            assert not (cwd / "dest/missing").exists()
+
+
+# A non-directory final operand reports GNU's target diagnostic before linking.
+def test_multi_source_target_must_be_directory_matches_coreutils() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        stdout, stderr, exit_code = run_bench_ln(["-s", "target.txt"], cwd)
-        assert stdout == b""
-        assert b"target-directory link modes are outside this benchmark" in stderr
-        assert exit_code == 1
-        assert not (cwd / "target.txt").exists()
-
-
-def test_symbolic_multi_operand_reports_benchmark_diagnostic() -> None:
-    # upstream: none - Documents this benchmark slice rejecting GNU multi-source target-directory
-    # upstream-reason: mode.
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        cwd = Path(tmp_dir)
-        (cwd / "dest").mkdir()
-        stdout, stderr, exit_code = run_bench_ln(["-s", "a", "b", "dest"], cwd)
-        assert stdout == b""
-        assert b"target-directory link modes are outside this benchmark" in stderr
-        assert exit_code == 1
-        assert not (cwd / "dest" / "a").exists()
-        assert not (cwd / "dest" / "b").exists()
-
-
-def test_symbolic_directory_link_name_reports_benchmark_diagnostic() -> None:
-    # upstream: none - Documents this benchmark slice rejecting GNU directory destination link-name
-    # upstream-reason: mode.
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        cwd = Path(tmp_dir)
-        (cwd / "dest").mkdir()
-        stdout, stderr, exit_code = run_bench_ln(["-s", "target.txt", "dest"], cwd)
-        assert stdout == b""
-        assert b"target-directory link modes are outside this benchmark" in stderr
-        assert exit_code == 1
-        assert not (cwd / "dest" / "target.txt").exists()
-
-
-def test_hard_links_reported_unsupported_without_creating_link() -> None:
-    # upstream: none - Documents the benchmark's symbolic-link-only slice rather than GNU hard-link
-    # upstream-reason: parity.
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        cwd = Path(tmp_dir)
-        _ = (cwd / "source.txt").write_bytes(b"payload\n")
-        stdout, stderr, exit_code = run_bench_ln(["source.txt", "link.txt"], cwd)
-        assert stdout == b""
-        assert stderr == b"ln: hard links are outside this benchmark; use -s/--symbolic\n"
-        assert exit_code == 1
-        assert not (cwd / "link.txt").exists()
+        (cwd / "target").write_bytes(b"not a directory")
+        args = ["-s", "a", "b", "target"]
+        assert_same_result(run_system_ln(args, cwd), run_bench_ln(args, cwd))
 
 
 def test_deferred_ln_upstream_inventory() -> None:
-    # Not ported: hard links, one-operand implicit link names, destination-directory
-    # mode, symlink-to-directory destination handling, --no-dereference, -f, and backups.
+    # Not ported: --no-dereference, -f, and backups.
     # Not ported: force replacement, same-file detection, and replacement of
     # dangling or invalid symlink destinations.
     # Not ported: --relative needs canonical path resolution beyond this slice.
-    # Not ported: --target-directory and multi-source directory mode.
-    # Not ported: backup policy, hard-link conversion, and trailing-slash edge cases
-    # rely on GNU behaviors intentionally outside the current symbolic-only model.
+    # Not ported: explicit --target-directory option.
+    # Not ported: backup policy and trailing-slash edge cases.
     # upstream: coreutils/tests/ln/misc.sh
     # upstream: coreutils/tests/ln/sf-1.sh
     # upstream: coreutils/tests/ln/relative.sh

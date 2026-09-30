@@ -22,6 +22,7 @@ module UniqSchema {
     seenRepeated: bool,
     seenUnique: bool,
     seenIgnoreCase: bool,
+    skipFields: nat,
     seenHelp: bool,
     seenVersion: bool,
     helpTokenIndex: int,
@@ -35,6 +36,7 @@ module UniqSchema {
     outputUnique: bool,
     outputRepeated: bool,
     ignoreCase: bool,
+    skipFields: nat,
     input: Input
   )
 
@@ -46,6 +48,7 @@ module UniqSchema {
         CliTypes.OptionDecl("uniq.repeated", ['d'], ["repeated"], CliTypes.NoArg),
         CliTypes.OptionDecl("uniq.ignore_case", ['i'], ["ignore-case"], CliTypes.NoArg),
         CliTypes.OptionDecl("uniq.unique", ['u'], ["unique"], CliTypes.NoArg),
+        CliTypes.OptionDecl("uniq.legacy_skip_fields", ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'], [], CliTypes.NoArg),
         CliTypes.OptionDecl("uniq.help", [], ["help"], CliTypes.NoArg),
         CliTypes.OptionDecl("uniq.version", [], ["version"], CliTypes.NoArg)
       ],
@@ -89,6 +92,7 @@ module UniqSchema {
     var seenRepeated := false;
     var seenUnique := false;
     var seenIgnoreCase := false;
+    var skipFields: nat := 0;
     var seenHelp := false;
     var seenVersion := false;
     var helpTokenIndex := -1;
@@ -111,6 +115,14 @@ module UniqSchema {
       if occ.key == "uniq.ignore_case" {
         seenIgnoreCase := true;
       }
+      if occ.key == "uniq.legacy_skip_fields" {
+        match occ.src
+        case Short(ch) =>
+          if '0' <= ch <= '9' {
+            skipFields := skipFields * 10 + ((ch as int) - ('0' as int)) as nat;
+          }
+        case Long(_) =>
+      }
       if occ.key == "uniq.help" {
         seenHelp := true;
         if helpTokenIndex == -1 || occ.tokenIndex < helpTokenIndex {
@@ -131,6 +143,7 @@ module UniqSchema {
       seenRepeated,
       seenUnique,
       seenIgnoreCase,
+      skipFields,
       seenHelp,
       seenVersion,
       helpTokenIndex,

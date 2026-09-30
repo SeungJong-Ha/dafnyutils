@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "ExpandSchema.dfy"
 
 module ExpandSpec {
@@ -8,6 +9,8 @@ module ExpandSpec {
   import BenchWorld
   import IOContract
   import Schema = ExpandSchema
+  import Utf8 = Utf8Semantics
+  import SE = StringEscaping
 
   function HelpText(): BenchWorld.Bytes
   {
@@ -57,20 +60,9 @@ module ExpandSpec {
     case Other(msg) => msg
   }
 
-  function NeedsQuoting(path: BenchWorld.Path): bool
-    decreases |path|
-  {
-    |path| > 0 && (path[0] == ' ' || path[0] == ':' || path[0] == '=' || NeedsQuoting(path[1..]))
-  }
-
-  function DisplayPath(path: BenchWorld.Path): string
-  {
-    if NeedsQuoting(path) then "'" + path + "'" else path
-  }
-
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    "expand: " + DisplayPath(path) + ": " + ErrnoText(err) + "\n"
+    "expand: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n"
   }
 
   function IsDigit(ch: char): bool
@@ -128,49 +120,22 @@ module ExpandSpec {
      OctalDigit((value / 8) % 8), OctalDigit(value % 8)]
   }
 
-  function QuoteChar(ch: char): string
-  {
-    if ch == 7 as char then "\\a"
-    else if ch == 8 as char then "\\b"
-    else if ch == 12 as char then "\\f"
-    else if ch == '\n' then "\\n"
-    else if ch == '\r' then "\\r"
-    else if ch == '\t' then "\\t"
-    else if ch == 11 as char then "\\v"
-    else if ch == '\\' then "\\\\"
-    else if ch == '\'' then "\\'"
-    else if 32 <= ch as int < 127 then [ch]
-    else OctalEscape(ch)
-  }
-
-  function QuoteBody(value: string): string
-    decreases |value|
-  {
-    if |value| == 0 then ""
-    else QuoteChar(value[0]) + QuoteBody(value[1..])
-  }
-
-  function Quote(value: string): string
-  {
-    "'" + QuoteBody(value) + "'"
-  }
-
   function InvalidCharacterMessage(suffix: string): string
   {
-    "tab size contains invalid character(s): " + Quote(suffix)
+    "tab size contains invalid character(s): " + SE.SpecLocaleQuoteBytes(Utf8.Encode(suffix))
   }
 
   function MarkerNotAtStartMessage(
     marker: Schema.MarkerKind, suffix: string
   ): string
   {
-    Quote(MarkerText(marker)) +
-    " specifier not at start of number: " + Quote(suffix)
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(MarkerText(marker))) +
+    " specifier not at start of number: " + SE.SpecLocaleQuoteBytes(Utf8.Encode(suffix))
   }
 
   function TooLargeMessage(digits: string): string
   {
-    "tab stop is too large " + Quote(digits)
+    "tab stop is too large " + SE.SpecLocaleQuoteBytes(Utf8.Encode(digits))
   }
 
   function CombineDiagnostics(first: string, rest: string): string
@@ -232,7 +197,7 @@ module ExpandSpec {
 
   function RepeatOnlyLastMessage(marker: Schema.MarkerKind): string
   {
-    Quote(MarkerText(marker)) +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(MarkerText(marker))) +
     " specifier only allowed with the last value"
   }
 
@@ -768,14 +733,15 @@ module ExpandSpec {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.Result<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     match input
     case Stdin =>
       result == BenchWorld.Ok(stdinBefore) && stdinAfter == []
     case File(path) =>
-      result == IOContract.ReadFileResultFields(preFs, path) &&
+      result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path) &&
       stdinAfter == stdinBefore
   }
 
@@ -830,7 +796,8 @@ module ExpandSpec {
     errorFlags: seq<bool>,
     columns: seq<nat>,
     leadings: seq<bool>,
-    stdinStates: seq<BenchWorld.Bytes>
+    stdinStates: seq<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     count <= |cmd.inputs| &&
@@ -848,7 +815,8 @@ module ExpandSpec {
     (forall i: nat :: i < count ==>
                         ReadStepRelation(
                           cmd.inputs[i], preFs, stdinStates[i], stdinStates[i + 1],
-                          results[i]
+                          results[i],
+                          preStreams
                         ) &&
                         InputPieceRelation(
                           cmd, results[i], columns[i], leadings[i],
@@ -876,13 +844,15 @@ module ExpandSpec {
     errorFlags: seq<bool>,
     columns: seq<nat>,
     leadings: seq<bool>,
-    stdinStates: seq<BenchWorld.Bytes>
+    stdinStates: seq<BenchWorld.Bytes>,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     InputTracePrefixWitnessRelation(
       cmd, preFs, preStdin, |cmd.inputs|, postStdin,
       output, errorOutput, hadError, results, outputPieces,
-      errorPieces, errorFlags, columns, leadings, stdinStates
+      errorPieces, errorFlags, columns, leadings, stdinStates,
+      preStreams
     )
   }
 
@@ -893,7 +863,8 @@ module ExpandSpec {
     postStdin: BenchWorld.Bytes,
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
-    hadError: bool
+    hadError: bool,
+    preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     exists
@@ -907,7 +878,8 @@ module ExpandSpec {
       InputTraceWitnessRelation(
         cmd, preFs, preStdin, postStdin, output, errorOutput, hadError,
         results, outputPieces, errorPieces, errorFlags,
-        columns, leadings, stdinStates
+        columns, leadings, stdinStates,
+        preStreams
       )
   }
 
@@ -937,7 +909,8 @@ module ExpandSpec {
           errorOutput: BenchWorld.Bytes, hadError: bool ::
           InputTraceRelation(
             cmd, old(io.fs()), old(io.stdin()), io.stdin(),
-            output, errorOutput, hadError
+            output, errorOutput, hadError,
+            old(io.trustedStreams())
           ) &&
           io.stdout() == old(io.stdout()) + output &&
           io.stderr() == old(io.stderr()) + errorOutput &&

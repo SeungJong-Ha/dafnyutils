@@ -1,6 +1,7 @@
 """Check tac record-reversal parity against GNU coreutils and verify proof surface."""
 
 import fcntl
+import os
 import tempfile
 from pathlib import Path
 
@@ -262,3 +263,54 @@ def test_deferred_tac_regressions_inventory() -> None:
 def test_tac_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Failed opens use GNU's always-quoted shell path rendering.
+@pytest.mark.parametrize("path", ["a'b", "a\tb", "é", "a\\b"])
+def test_open_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_tac([path], cwd)
+        bench = run_bench_tac([path], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Directory reads use GNU's conditionally quoted filename rendering.
+def test_directory_read_diagnostic_escaping_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "a;b").mkdir()
+        ref = run_system_tac(["a;b"], cwd)
+        bench = run_bench_tac(["a;b"], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Directory reads on tmpfs preserve its native errno.
+def test_tmpfs_directory_read_errno_matches_coreutils() -> None:
+    tmpfs = Path("/dev/shm")
+    if not tmpfs.is_dir():
+        pytest.skip("tmpfs mount is unavailable")
+    with tempfile.TemporaryDirectory(dir=tmpfs) as tmp_dir:
+        cwd = Path(tmp_dir)
+        (cwd / "a;b").mkdir()
+        ref = run_system_tac(["a;b"], cwd)
+        bench = run_bench_tac(["a;b"], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# An inaccessible directory fails at open and uses GNU's open diagnostic.
+def test_inaccessible_directory_open_diagnostic_matches_coreutils() -> None:
+    if os.geteuid() == 0:
+        pytest.skip("root can bypass directory read permissions")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        directory = cwd / "a;b"
+        directory.mkdir()
+        directory.chmod(0)
+        try:
+            ref = run_system_tac(["a;b"], cwd)
+            bench = run_bench_tac(["a;b"], cwd)
+            assert b"failed to open" in ref[1]
+            assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+        finally:
+            directory.chmod(0o700)

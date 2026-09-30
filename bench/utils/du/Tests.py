@@ -199,3 +199,19 @@ def test_deferred_du_regressions_inventory() -> None:
 def test_du_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Access errors use GNU's always-quoted shell rendering.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        assert_du_parity(["-b", path], Path(tmp_dir))
+
+
+# A successful file name is printed as UTF-8 bytes.
+def test_escape_audit_success_unicode() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        name = "p2rhé3s1o5k-535"
+        (cwd / name).write_bytes(b"content\n")
+        assert_du_parity(["-b", name], cwd)

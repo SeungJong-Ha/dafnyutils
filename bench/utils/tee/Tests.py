@@ -1,6 +1,7 @@
 """Check tee stdin fan-out parity against GNU coreutils and verify proof surface."""
 
 import fcntl
+import os
 import tempfile
 from pathlib import Path
 
@@ -114,6 +115,51 @@ def test_append_option_preserves_existing_prefix_matches_coreutils() -> None:
         assert (bench_cwd / "out").read_bytes() == b"line 1\nline 2\n"
 
 
+# Empty append must leave a setuid file untouched, including its mode.
+def test_empty_append_preserves_setuid_mode_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd, bench_cwd = Path(ref_tmp), Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "out").write_bytes(b"original")
+            os.chmod(cwd / "out", 0o4755)
+
+        assert_tee_parity(["-a", "out"], ref_cwd, bench_cwd, input_data=b"")
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "out").read_bytes() == b"original"
+            assert (cwd / "out").stat().st_mode & 0o7777 == 0o4755
+
+
+# Appending through a symbolic link changes its referent and keeps the link.
+def test_append_through_symlink_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd, bench_cwd = Path(ref_tmp), Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "target").write_bytes(b"prefix")
+            (cwd / "alias").symlink_to("target")
+
+        assert_tee_parity(["alias", "--append"], ref_cwd, bench_cwd, input_data=b"-tail")
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "alias").is_symlink()
+            assert (cwd / "target").read_bytes() == b"prefix-tail"
+
+
+# Append opens a write-only file without requiring read permission.
+def test_append_write_only_file_matches_coreutils() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd, bench_cwd = Path(ref_tmp), Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "out").write_bytes(b"prefix")
+            os.chmod(cwd / "out", 0o200)
+
+        try:
+            assert_tee_parity(["-a", "out"], ref_cwd, bench_cwd, input_data=b"-tail")
+        finally:
+            for cwd in (ref_cwd, bench_cwd):
+                os.chmod(cwd / "out", 0o600)
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "out").read_bytes() == b"prefix-tail"
+
+
 # Multiple output operands each receive the same stdin bytes.
 def test_multiple_outputs_receive_same_data_matches_coreutils() -> None:
     # upstream: coreutils/tests/tee/tee.sh
@@ -152,9 +198,28 @@ def test_version_exit_successfully_matches_coreutils() -> None:
         )
 
 
+# A version request exits before a later invalid option is inspected.
+def test_version_precedes_later_invalid_option() -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_requested_message_behavior(
+            run_system_tee(["--version", "-7022"], cwd, input_data=b"ignored"),
+            run_bench_tee(["--version", "-7022"], cwd, input_data=b"ignored"),
+        )
+
+
 # Dafny modules for tee verify independently.
 @pytest.mark.dafny_verify
 def test_tee_verified_surface_targets() -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     for target in TEE_VERIFY_TARGETS:
         run_dafny_verify(target)
+
+
+# Failed output opens quote shell-sensitive names in GNU's conditional style.
+@pytest.mark.parametrize("path", ["missing/a'b", "missing/a\tb", "missing/é", "missing/a\\b"])
+def test_output_path_diagnostic_escaping_matches_coreutils(path: str) -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref = run_system_tee([path], Path(ref_tmp), input_data=b"")
+        bench = run_bench_tee([path], Path(bench_tmp), input_data=b"")
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

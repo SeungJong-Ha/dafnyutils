@@ -350,3 +350,33 @@ def test_deferred_base64_regressions_inventory() -> None:
 def test_base64_verified_surface_targets(target: Path) -> None:
     # upstream: none - Verifies the Dafny proof surface rather than an upstream runtime script.
     run_dafny_verify(target)
+
+
+# Invalid wrap operands use GNU's C-locale byte quoting.
+@pytest.mark.parametrize("value", ["x'y", "x\ty", "é"])
+def test_escape_audit_invalid_wrap(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_base64(["--wrap", value], cwd)
+        bench = run_bench_base64(["--wrap", value], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# Extra operands use GNU's C-locale byte quoting.
+@pytest.mark.parametrize("value", ["x'y", "é"])
+def test_escape_audit_extra_operand(value: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_base64(["a", value], cwd)
+        bench = run_bench_base64(["a", value], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
+
+
+# File errors use GNU's shell quoting with colon forcing.
+@pytest.mark.parametrize("path", ["x'y", "x;y", "é"])
+def test_escape_audit_missing_file(path: str) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        ref = run_system_base64([path], cwd)
+        bench = run_bench_base64([path], cwd)
+        assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)

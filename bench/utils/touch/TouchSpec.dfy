@@ -2,6 +2,7 @@ include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
 include "../../core/Utf8.dfy"
+include "../../core/StringEscaping.dfy"
 include "TouchSchema.dfy"
 
 module TouchSpec {
@@ -11,6 +12,7 @@ module TouchSpec {
   import IOContract
   import BenchWorld
   import Schema = TouchSchema
+  import SE = StringEscaping
 
   const EBADF: int := 9
   const ENOENT: int := 2
@@ -106,9 +108,10 @@ module TouchSpec {
       + Utf8.Encode(": " + ErrnoTextSpec(err) + "\n")
   }
 
-  ghost function StdoutErrorMessageSpec(err: int): BenchWorld.Bytes
+  opaque ghost function StdoutErrorMessageSpec(err: int): BenchWorld.Bytes
   {
-    Utf8.Encode("touch: setting times of standard output: " + ErrnoTextSpec(err) + "\n")
+    Utf8.Encode("touch: setting times of ") + QuotedPathSpec("-")
+      + Utf8.Encode(": " + ErrnoTextSpec(err) + "\n")
   }
 
   ghost function CloseErrorMessageSpec(path: BenchWorld.Path, err: int): BenchWorld.Bytes
@@ -154,7 +157,8 @@ module TouchSpec {
 
   function InvalidTimeMessageSpec(value: string): BenchWorld.Bytes
   {
-    Utf8.Encode("touch: invalid argument '" + value + "' for '--time'\n" +
+    "touch: invalid argument " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+    Utf8.Encode(" for '--time'\n" +
     "Valid arguments are:\n" +
     "  - 'atime', 'access', 'use'\n" +
     "  - 'mtime', 'modify'\n" +
@@ -163,7 +167,8 @@ module TouchSpec {
 
   function AmbiguousTimeMessageSpec(value: string): BenchWorld.Bytes
   {
-    Utf8.Encode("touch: ambiguous argument '" + value + "' for '--time'\n" +
+    "touch: ambiguous argument " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) +
+    Utf8.Encode(" for '--time'\n" +
     "Valid arguments are:\n" +
     "  - 'atime', 'access', 'use'\n" +
     "  - 'mtime', 'modify'\n" +
@@ -172,7 +177,7 @@ module TouchSpec {
 
   function InvalidDateMessageSpec(value: string): BenchWorld.Bytes
   {
-    Utf8.Encode("touch: invalid date format '" + value + "'\n")
+    "touch: invalid date format " + SE.SpecLocaleQuoteBytes(Utf8.Encode(value)) + "\n"
   }
 
   ghost predicate SetPathTimesSpecFields(

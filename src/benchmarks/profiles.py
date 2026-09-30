@@ -22,6 +22,7 @@ COREUTILS_IMPLEMENTATION_SUPPORT_FILES = (
     "bench/core/WorldRenameProof.dfy",
     "bench/core/WorldFileSystemProof.dfy",
     "bench/core/Utf8.dfy",
+    "bench/core/StringEscaping.dfy",
     "bench/core/IO.dfy",
     "bench/core/IOContract.dfy",
     "bench/core/SecurityModel.dfy",

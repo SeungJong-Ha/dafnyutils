@@ -1,6 +1,7 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
+include "../../core/StringEscaping.dfy"
 include "StatSchema.dfy"
 
 module StatSpec {
@@ -9,6 +10,18 @@ module StatSpec {
   import Utf8 = Utf8Semantics
   import IOContract
   import Schema = StatSchema
+  import SE = StringEscaping
+
+  datatype CapturedStatus = CapturedStatusOk(
+                              path: BenchWorld.Path,
+                              followSymlink: bool,
+                              status: BenchWorld.FileStatus
+                            )
+                          | CapturedStatusErr(
+                              path: BenchWorld.Path,
+                              followSymlink: bool,
+                              errno: int
+                            )
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
@@ -55,7 +68,8 @@ module StatSpec {
 
   function ErrorMessageSpec(path: BenchWorld.Path, errno: int): BenchWorld.Bytes
   {
-    "stat: cannot statx '" + path + "': " + ErrnoTextSpec(errno) + "\n"
+    "stat: cannot statx " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) +
+      ": " + ErrnoTextSpec(errno) + "\n"
   }
 
   function DigitForBaseSpec(digit: nat): char
@@ -244,6 +258,18 @@ module StatSpec {
       output[cuts[i]..cuts[i + 1]] == fragments[i]
   }
 
+  ghost function StatusResultSpec(
+    cmd: Schema.StatCmd, fs: BenchWorld.FileSystem, index: nat,
+    path: BenchWorld.Path
+  ): BenchWorld.Result<BenchWorld.FileStatus>
+  {
+    match cmd.statusContext
+    case UnboundStatusObservations => IOContract.GetFileStatusResultFields(fs, path, cmd.followSymlink)
+    case BoundStatusObservations(observations, firstStatus) =>
+      IOContract.ObservedFileStatusResultFields(observations, firstStatus + index,
+                                                fs, path, cmd.followSymlink)
+  }
+
   ghost predicate RunFilesRelation(
     cmd: Schema.StatCmd,
     files: seq<BenchWorld.Path>,
@@ -261,37 +287,166 @@ module StatSpec {
          FileFragmentRelation(
            cmd.format,
            files[i],
-           IOContract.GetFileStatusResultFields(fs, files[i], cmd.followSymlink),
+           StatusResultSpec(cmd, fs, i, files[i]),
            stdoutFragments[i],
            stderrFragments[i]
          )) &&
       hadError == (exists i: nat ::
                      i < |files| &&
-                     IOContract.GetFileStatusResultFields(fs, files[i], cmd.followSymlink).Err?) &&
+                     StatusResultSpec(cmd, fs, i, files[i]).Err?) &&
       out == ConcatPiecesSpec(stdoutFragments) &&
       errOut == ConcatPiecesSpec(stderrFragments)
   }
 
-  twostate predicate Spec(raw: Schema.StatCmdRaw, io: BenchIO.IO, exit: int)
-    reads io.fsRegion, io.stdoutRegion, io.stderrRegion
+  ghost predicate CapturedStatusesStructureRelation(
+    cmd: Schema.StatCmd,
+    fs: BenchWorld.FileSystem,
+    captured: seq<CapturedStatus>
+  )
+  {
+    CapturedRequestsSpec(cmd, captured) &&
+    forall i: nat | i < |captured| ::
+      match captured[i]
+      case CapturedStatusOk(path, followSymlink, status) =>
+        path == cmd.files[i] && followSymlink == cmd.followSymlink &&
+        IOContract.FileStatusStructureContractFields(
+          fs, path, followSymlink, true, status, 0)
+      case CapturedStatusErr(path, followSymlink, errno) =>
+        path == cmd.files[i] && followSymlink == cmd.followSymlink &&
+        IOContract.FileStatusStructureContractFields(
+          fs, path, followSymlink, false,
+          BenchWorld.DEFAULT_FILE_STATUS, errno)
+  }
+
+  ghost predicate CapturedRequestsSpec(
+    cmd: Schema.StatCmd,
+    captured: seq<CapturedStatus>
+  )
+  {
+    |captured| == (if cmd.mode == Schema.ModeRun then |cmd.files| else 0) &&
+    forall i: nat | i < |captured| ::
+      captured[i].path == cmd.files[i] &&
+      captured[i].followSymlink == cmd.followSymlink
+  }
+
+  ghost predicate RunCapturedFilesRelation(
+    cmd: Schema.StatCmd,
+    captured: seq<CapturedStatus>,
+    hadError: bool,
+    out: BenchWorld.Bytes,
+    errOut: BenchWorld.Bytes
+  )
+  {
+    |captured| <= |cmd.files| &&
+    exists stdoutFragments: seq<BenchWorld.Bytes>,
+      stderrFragments: seq<BenchWorld.Bytes> ::
+      |stdoutFragments| == |captured| &&
+      |stderrFragments| == |captured| &&
+      (forall i: nat | i < |captured| ::
+         match captured[i]
+         case CapturedStatusOk(_, _, status) =>
+           exists rendered: BenchWorld.Bytes ::
+             FormatRenderingRelation(cmd.format, status, rendered) &&
+             stdoutFragments[i] == rendered + "\n" && stderrFragments[i] == ""
+         case CapturedStatusErr(_, _, errno) =>
+           stdoutFragments[i] == "" &&
+           stderrFragments[i] == ErrorMessageSpec(cmd.files[i], errno)) &&
+      hadError == (exists i: nat :: i < |captured| && captured[i].CapturedStatusErr?) &&
+      out == ConcatPiecesSpec(stdoutFragments) &&
+      errOut == ConcatPiecesSpec(stderrFragments)
+  }
+
+  ghost predicate CapturedOutputSpec(
+    raw: Schema.StatCmdRaw,
+    captured: seq<CapturedStatus>,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int
+  )
   {
     var cmd := Schema.Command(raw);
+    |captured| == (if cmd.mode == Schema.ModeRun then |cmd.files| else 0) &&
     if cmd.mode == Schema.ModeHelp then
-      io.stdout() == old(io.stdout()) + HelpTextSpec() && io.stderr() == old(io.stderr()) && exit == 0
+      afterStdout == beforeStdout + HelpTextSpec() && afterStderr == beforeStderr && exit == 0
     else if cmd.mode == Schema.ModeVersion then
-      io.stdout() == old(io.stdout()) + VersionTextSpec() && io.stderr() == old(io.stderr()) && exit == 0
+      afterStdout == beforeStdout + VersionTextSpec() && afterStderr == beforeStderr && exit == 0
     else if cmd.mode == Schema.ModeMissingFormat then
-      io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + MissingFormatMessageSpec() && exit == 1
+      afterStdout == beforeStdout &&
+      afterStderr == beforeStderr + MissingFormatMessageSpec() && exit == 1
     else if cmd.mode == Schema.ModeMissingOperand then
-      io.stdout() == old(io.stdout()) &&
-      io.stderr() == old(io.stderr()) + MissingOperandMessageSpec() && exit == 1
+      afterStdout == beforeStdout &&
+      afterStderr == beforeStderr + MissingOperandMessageSpec() && exit == 1
     else
       FormatValidSpec(cmd.format) &&
       exists hadError: bool, out: BenchWorld.Bytes, errOut: BenchWorld.Bytes ::
-        RunFilesRelation(cmd, cmd.files, old(io.fs()), hadError, out, errOut) &&
-        io.stdout() == old(io.stdout()) + out &&
-        io.stderr() == old(io.stderr()) + errOut &&
+        RunCapturedFilesRelation(cmd, captured, hadError, out, errOut) &&
+        afterStdout == beforeStdout + out &&
+        afterStderr == beforeStderr + errOut &&
         exit == (if hadError then 1 else 0)
+  }
+
+  // Executable evaluator checkers establish the finite output relation while
+  // the exact trace projection establishes its structural request relation.
+  // The proof module then constructs the ordered observation provider and
+  // connects both parts back to ObservedSpec.
+  ghost predicate ObservedResultsSpec(
+    raw: Schema.StatCmdRaw,
+    fs: BenchWorld.FileSystem,
+    captured: seq<CapturedStatus>,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int
+  )
+  {
+    CapturedStatusesStructureRelation(Schema.Command(raw), fs, captured) &&
+    CapturedOutputSpec(
+      raw, captured, beforeStdout, afterStdout,
+      beforeStderr, afterStderr, exit)
+  }
+
+  // The same observable relation is available to exact execution classifiers.
+  ghost predicate ObservedSpec(
+    raw: Schema.StatCmdRaw,
+    fs: BenchWorld.FileSystem,
+    observations: BenchWorld.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    beforeStdout: BenchWorld.Bytes,
+    afterStdout: BenchWorld.Bytes,
+    beforeStderr: BenchWorld.Bytes,
+    afterStderr: BenchWorld.Bytes,
+    exit: int
+  )
+  {
+    var cmd := Schema.WithStatusObservations(Schema.Command(raw), observations, firstStatus);
+    afterStatus == firstStatus + (if cmd.mode == Schema.ModeRun then |cmd.files| else 0) &&
+    if cmd.mode == Schema.ModeHelp then
+      afterStdout == beforeStdout + HelpTextSpec() && afterStderr == beforeStderr && exit == 0
+    else if cmd.mode == Schema.ModeVersion then
+      afterStdout == beforeStdout + VersionTextSpec() && afterStderr == beforeStderr && exit == 0
+    else if cmd.mode == Schema.ModeMissingFormat then
+      afterStdout == beforeStdout &&
+      afterStderr == beforeStderr + MissingFormatMessageSpec() && exit == 1
+    else if cmd.mode == Schema.ModeMissingOperand then
+      afterStdout == beforeStdout &&
+      afterStderr == beforeStderr + MissingOperandMessageSpec() && exit == 1
+    else
+      FormatValidSpec(cmd.format) &&
+      exists hadError: bool, out: BenchWorld.Bytes, errOut: BenchWorld.Bytes ::
+        RunFilesRelation(cmd, cmd.files, fs, hadError, out, errOut) &&
+        afterStdout == beforeStdout + out &&
+        afterStderr == beforeStderr + errOut &&
+        exit == (if hadError then 1 else 0)
+  }
+
+  twostate predicate Spec(raw: Schema.StatCmdRaw, io: BenchIO.IO, exit: int)
+    reads io.fsRegion, io.statusObservationsRegion, io.stdoutRegion, io.stderrRegion
+  {
+    ObservedSpec(raw, old(io.fs()), io.statusObservations(), old(io.statusCursor()), io.statusCursor(),
+                 old(io.stdout()), io.stdout(), old(io.stderr()), io.stderr(), exit)
   }
 }
