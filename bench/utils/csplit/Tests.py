@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.bench.bench_test_support import (
+from tools.bench_test_support import (
     assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,

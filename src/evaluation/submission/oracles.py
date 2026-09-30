@@ -14,7 +14,6 @@ from benchmarks.checks import (
 )
 from benchmarks.profiles import (
     ResolvedBenchmark,
-    _algorithm_id,
     is_algorithm_utility,
     required_checks_for_task,
     utility_paths,
@@ -146,7 +145,7 @@ def derived_oracle_commands(
     utility_name = utility_cfg.name
     paths = utility_paths(utility_cfg, utility_name)
     if is_algorithm_utility(utility_name):
-        return _algorithm_oracle_commands(utility_name, paths)
+        return _algorithm_oracle_commands(paths)
     return _coreutils_oracle_commands(
         utility_name,
         paths,
@@ -181,10 +180,8 @@ def _coreutils_oracle_commands(
 
 
 def _algorithm_oracle_commands(
-    utility_name: str,
     paths: dict[str, str],
 ) -> dict[str, str]:
-    algorithm_id = _algorithm_id(utility_name)
     return {
         "spec_shape": (
             f'{_oracle_dafny_env()} "${{DAFNY_BENCHMARK:-dafny-benchmark}}" verify '
@@ -197,12 +194,6 @@ def _algorithm_oracle_commands(
             f"{DAFNY_STANDARD_LIBRARY_OPTION}"
         ),
         "impl_layout": "./eval_support/build.sh",
-        "implementation_tests": (
-            f"{EVAL_BENCH_BUILD_SCRIPT_ENV}=eval_support/build.sh "
-            f"{EVAL_BENCH_DLL_ENV}=_build/bench/{utility_name}_bench.dll "
-            f"ALGORITHM_BENCH_ID={algorithm_id} pytest -q -n0 "
-            '"${EVAL_REPO_ROOT:-.}/tools/bench/test_bench_algorithm.py"'
-        ),
         "proof_layout": "./eval_support/check_proof_layout.sh",
         "dafny_verify": "./eval_support/verify.sh",
     }

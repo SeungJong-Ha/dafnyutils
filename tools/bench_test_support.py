@@ -13,7 +13,6 @@ from evaluation.environment import (
     EVAL_BENCH_BUILD_SCRIPT_ENV,
     EVAL_BENCH_DLL_ENV,
     EVAL_COREUTILS_BIN_ENV,
-    EVAL_REPO_ROOT_ENV,
     EVAL_TARGET_ROOT_ENV,
 )
 from evaluation.submission.candidate_execution import run_candidate
@@ -76,11 +75,6 @@ def _resolve_repo_path(root: Path, raw_path: str) -> Path:
     return root / candidate
 
 
-def repo_root(default_root: Path) -> Path:
-    override = os.environ.get(EVAL_REPO_ROOT_ENV)
-    return _resolve_repo_path(default_root, override).resolve() if override else default_root
-
-
 def evaluation_target_root(default_root: Path) -> Path:
     override = os.environ.get(EVAL_TARGET_ROOT_ENV)
     return _resolve_repo_path(default_root, override).resolve() if override else default_root
@@ -119,15 +113,6 @@ def run_checked_subprocess(
     if completed.returncode != 0:
         raise AssertionError(_subprocess_failure_message(completed, cwd=cwd, label=label))
     return completed
-
-
-def gnulib_digest_large_payload() -> bytes:
-    payload = bytearray()
-    for i in range(0x400000):
-        value = i * (i - 1) * (i - 5)
-        payload.append((value >> 6) & 0xFF)
-        payload.append(((i % 499) + (i % 101)) & 0xFF)
-    return bytes(payload)
 
 
 def _subprocess_failure_message(

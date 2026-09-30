@@ -88,21 +88,6 @@ def check_commands(root: Path, definition: BenchmarkDefinition) -> tuple[CheckCo
                 ),
             ),
         )
-    else:
-        steps["implementation_tests"] = (
-            CheckCommand(
-                "implementation-tests",
-                (
-                    "make",
-                    "test",
-                    f"TASK={definition.task_id}",
-                    f"PYTEST_ARGS=--junitxml={root / pytest_report}",
-                ),
-                test_env,
-                pytest_report,
-            ),
-        )
-
     required = required_checks_for_kind(definition.kind)
     missing = sorted(set(required) - steps.keys())
     if missing:

@@ -508,7 +508,7 @@ For example, a one-case differential run should identify its case ID and complet
 
 See [validation commands](#validate-and-submit) and [Collect PR evidence](docs/fuzzing.md#collect-pr-evidence). Paste the output directly into the PR; no file attachments are needed. Never include credentials or restricted evaluator payloads.
 
-Algorithm tasks do not require the coreutils fuzzer; report their case tests instead and explain `not applicable` in the fuzzing section. For documentation-only changes, record link/content checks and explain why runtime verification and fuzzing were not run.
+Algorithm tasks require the build/layout and Dafny verification checks. Testcase and fuzzing evaluations are `not_applicable`; retained `cases.json` files are versioned task data, not an active evaluator. Use `make check TASK=algorithm-<number>` for the contributor gate. `make test TASK=algorithm-<number>` is unsupported. For documentation-only changes, record link/content checks and explain why runtime verification and fuzzing were not run.
 
 ## Open the pull request
 

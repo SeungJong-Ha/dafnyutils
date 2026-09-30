@@ -177,7 +177,7 @@ Keep success and failure scenarios in separate tests. Use parameterization only 
 
 ## Record the upstream source and supported behavior
 
-Place a one-line intention comment above the test. Put the exact `# upstream: coreutils/tests/misc/comm.pl` marker **inside** its body, and put the case name on a separate comment line. The [marker reader](../tools/bench/upstream_markers.py) requires that location and accepts a path, not a path plus a free-text case label.
+Place a one-line intention comment above the test. Put an exact `# upstream: coreutils/tests/misc/comm.pl` marker **inside** its body, and put the case name on a separate comment line so the source path and scenario remain clear. For repository-only cases, use `# upstream: none - <specific repository-only reason>`, continuing a long reason with `# upstream-reason: <text>`. These comments document provenance for review; they are not checked automatically by `make test`.
 
 Record the pinned GNU revision and case name in the PR. Preserve copyright and license notices if copying upstream source; adapting a scenario is not a reason to remove attribution. The example's source revision is `2cf491412c199e2211880ec3f4ba387026638a33`.
 

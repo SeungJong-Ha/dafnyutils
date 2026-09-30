@@ -71,7 +71,12 @@ def build_scores_model(
     )
     verification = evaluations.verification.status is CheckStatus.PASSED
     return ScoresModel(
-        overall_passed=layout and testcase and fuzzing is not False and verification,
+        overall_passed=(
+            layout
+            and (testcase or not evaluations.testcase.applicable)
+            and fuzzing is not False
+            and verification
+        ),
         layout_passed=layout,
         testcase_passed=testcase,
         fuzzing_passed=fuzzing,

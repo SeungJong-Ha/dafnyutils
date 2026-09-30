@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from evaluation.submission.candidate_execution import run_candidate
-from tools.bench.bench_test_support import (
+from tools.bench_test_support import (
     BENCH_COMMAND_TIMEOUT_SEC,
     GNULIB_DIRNAME_CLI_PATHS,
     assert_requested_message_behavior,

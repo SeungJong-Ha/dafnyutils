@@ -94,8 +94,9 @@ def _declared_paths(definition: BenchmarkDefinition) -> tuple[tuple[str, str], .
     paths = [
         ("description", definition.description_path),
         ("project config", definition.project_config_path),
-        ("evaluation test", definition.evaluation.test_path),
     ]
+    if definition.evaluation.test_path is not None:
+        paths.append(("evaluation test", definition.evaluation.test_path))
     if definition.evaluation.cases_path is not None:
         paths.append(("evaluation cases", definition.evaluation.cases_path))
     return tuple(paths)

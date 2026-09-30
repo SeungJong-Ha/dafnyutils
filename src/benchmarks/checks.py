@@ -30,7 +30,9 @@ class MandatoryCheck:
 
 MANDATORY_CHECKS = (
     MandatoryCheck("impl_layout", EvaluationName.LAYOUT),
-    MandatoryCheck("implementation_tests", EvaluationName.TESTCASE),
+    MandatoryCheck(
+        "implementation_tests", EvaluationName.TESTCASE, frozenset({BenchmarkKind.COREUTILS})
+    ),
     MandatoryCheck(
         "fuzzer",
         EvaluationName.FUZZING,

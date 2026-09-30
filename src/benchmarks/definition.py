@@ -152,7 +152,7 @@ class BenchmarkSource(_DefinitionModel):
 
 @dataclass(frozen=True)
 class BenchmarkEvaluation:
-    test_path: str
+    test_path: str | None
     cases_path: str | None
     fuzzer_target: str | None
 
@@ -198,9 +198,7 @@ class BenchmarkDefinition(_DefinitionModel):
     def evaluation(self) -> BenchmarkEvaluation:
         if self.kind is BenchmarkKind.COREUTILS:
             return BenchmarkEvaluation(f"{self.item_directory}/Tests.py", None, self.task_id)
-        return BenchmarkEvaluation(
-            "tools/bench/test_bench_algorithm.py", f"{self.item_directory}/cases.json", None
-        )
+        return BenchmarkEvaluation(None, None, None)
 
     @classmethod
     def from_yaml_file(cls, path: Path) -> BenchmarkDefinition:

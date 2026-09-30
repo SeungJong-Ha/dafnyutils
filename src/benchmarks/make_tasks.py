@@ -89,22 +89,14 @@ def _test(root: Path, definition: BenchmarkDefinition | None) -> int:
         )
 
     if definition.kind is BenchmarkKind.ALGORITHM:
-        env = dict(os.environ)
-        env["ALGORITHM_BENCH_ID"] = definition.task_id.removeprefix("algorithm-")
-        return _run(
-            [
-                _python(),
-                "-m",
-                "pytest",
-                "-q",
-                "-n0",
-                "tools/bench/test_bench_algorithm.py",
-                *_pytest_args(),
-            ],
-            cwd=root,
-            env=env,
+        print(
+            f"{definition.task_id}: runtime testcase evaluation is not applicable", file=sys.stderr
         )
+        return 2
 
+    test_path = definition.evaluation.test_path
+    if test_path is None:
+        raise ValueError(f"{definition.task_id} has no implementation test module")
     return _run(
         [
             _python(),
@@ -115,7 +107,7 @@ def _test(root: Path, definition: BenchmarkDefinition | None) -> int:
             "--import-mode=importlib",
             "-m",
             "not dafny_verify",
-            f"{definition.item_directory}/Tests.py",
+            test_path,
             *_pytest_args(),
         ],
         cwd=root,

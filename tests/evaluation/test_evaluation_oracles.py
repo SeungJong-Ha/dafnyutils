@@ -163,7 +163,7 @@ def test_coreutils_fuzzer_stays_on_host_when_evaluator_checks_are_wrapped() -> N
     assert mapped_fuzzing.commands[0].cwd == fuzzing.commands[0].cwd
 
 
-# Algorithm evaluations use the same generated scripts and skip only fuzzing.
+# Algorithm evaluations schedule build and proof checks.
 def test_algorithm_oracles_use_container_visible_repo_and_workspace_paths() -> None:
     utility_cfg = _utility_cfg("algorithm-63")
     commands = derived_oracle_commands(utility_cfg)
@@ -175,16 +175,12 @@ def test_algorithm_oracles_use_container_visible_repo_and_workspace_paths() -> N
     assert commands["impl_layout"] == "./eval_support/build.sh"
     assert commands["proof_layout"] == "./eval_support/check_proof_layout.sh"
     assert commands["dafny_verify"] == "./eval_support/verify.sh"
-    assert testcase.commands[0].command == commands["implementation_tests"]
-    assert "ALGORITHM_BENCH_ID=63" in testcase.commands[0].command
+    assert testcase.required_checks == ()
+    assert testcase.commands == ()
     assert [command.name for command in layout.commands] == ["impl_layout", "proof_layout"]
     assert verification.commands[0].name == "dafny_verify"
     assert fuzzing.required_checks == ()
     assert fuzzing.commands == ()
-    assert (
-        '"${EVAL_REPO_ROOT:-.}/tools/bench/test_bench_algorithm.py"'
-        in commands["implementation_tests"]
-    )
     for command_name in ("spec_shape", "spec_consistency"):
         assert "--allow-axioms" not in commands[command_name]
         assert "--allow-warnings" not in commands[command_name]

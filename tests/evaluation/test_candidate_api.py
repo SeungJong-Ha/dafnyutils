@@ -107,7 +107,7 @@ def test_submission_requires_verifier_evidence(
     ).tasks["algorithm-1"]
 
     assert result.evaluations.layout.status is CheckStatus.PASSED
-    assert result.evaluations.testcase.status is CheckStatus.PASSED
+    assert result.evaluations.testcase.status is CheckStatus.NOT_APPLICABLE
     assert result.evaluations.fuzzing.status is CheckStatus.NOT_APPLICABLE
     assert result.evaluations.verification.status is CheckStatus.FAILED
     assert result.evaluations.verification.failed_checks == ["dafny_verify"]
@@ -129,7 +129,6 @@ def test_submission_requires_verifier_evidence(
     assert [event["evaluation"] for event in starts] == [
         "layout",
         "layout",
-        "testcase",
         "verification",
     ]
 
@@ -165,14 +164,14 @@ def test_submission_persists_four_evaluation_results(
     assert result.schema_version is CandidateEvaluationSchemaVersion.V2
     assert result.scores.overall_passed
     assert result.scores.layout_passed
-    assert result.scores.testcase_passed
+    assert not result.scores.testcase_passed
+    assert result.evaluations.testcase.status is CheckStatus.NOT_APPLICABLE
     assert result.scores.fuzzing_passed is None
     assert result.scores.verification_passed
     assert result.evaluations.fuzzing.status is CheckStatus.NOT_APPLICABLE
     assert [check.evaluation for check in result.planned_checks] == [
         EvaluationName.LAYOUT,
         EvaluationName.LAYOUT,
-        EvaluationName.TESTCASE,
         EvaluationName.VERIFICATION,
     ]
     saved = CandidateEvaluationResult.model_validate_json(
@@ -209,7 +208,7 @@ def test_submission_fail_fast_blocks_remaining_evaluations(
     assert len(invoked) == 1
     assert [command.name for command in result.executions] == ["impl_layout"]
     assert result.evaluations.layout.status is CheckStatus.FAILED
-    assert result.evaluations.testcase.status is CheckStatus.BLOCKED
+    assert result.evaluations.testcase.status is CheckStatus.NOT_APPLICABLE
     assert result.evaluations.verification.status is CheckStatus.BLOCKED
     assert not result.scores.overall_passed
 

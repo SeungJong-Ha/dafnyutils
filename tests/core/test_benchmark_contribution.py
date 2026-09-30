@@ -223,31 +223,11 @@ def test_affected_task_selection_uses_manifest_families() -> None:
     )
 
 
-# Editing either algorithm execution component must select every algorithm for checking.
-@pytest.mark.parametrize(
-    "path",
-    ("tools/bench/test_bench_algorithm.py", "tools/fixtures/algorithm/OutputCapture.cs"),
-)
-def test_affected_selection_tracks_algorithm_execution_components(path: str) -> None:
+# Shared benchmark helpers affect every item rather than naming a nonexistent task.
+def test_affected_selection_includes_all_tasks_for_shared_benchmark_helpers() -> None:
     repository = BenchmarkRepository.open(ROOT)
 
-    assert affected_task_ids(repository, (path,)) == repository.task_ids(BenchmarkKind.ALGORITHM)
-
-
-# Shared benchmark tests affect every item rather than naming a nonexistent task.
-@pytest.mark.parametrize(
-    "path",
-    (
-        "tools/bench/test_bench_functional.py",
-        "tools/bench/test_bench_stream_filesystem_models.py",
-        "tools/bench/bench_test_support.py",
-        "tools/audit/test_coreutils_entry_contract.py",
-    ),
-)
-def test_affected_selection_includes_all_tasks_for_shared_benchmark_tests(path: str) -> None:
-    repository = BenchmarkRepository.open(ROOT)
-
-    assert affected_task_ids(repository, (path,)) == repository.task_ids()
+    assert affected_task_ids(repository, ("tools/bench_test_support.py",)) == repository.task_ids()
 
 
 # Changes to shared analysis, verifier, and candidate execution select every item.
@@ -296,7 +276,7 @@ def test_check_plan_keeps_required_family_checks(task_id: str) -> None:
             "utility-proof-tests",
         )
         if task_id == "cat"
-        else ("build", "implementation-tests", "dafny-verify")
+        else ("build", "dafny-verify")
     )
     assert tuple(command.name for command in commands) == expected
     proof = next(command for command in commands if command.name == "dafny-verify")
@@ -398,8 +378,6 @@ def test_check_fails_on_first_failed_mandatory_command(monkeypatch: pytest.Monke
 def test_validation_rejects_principal_spec_moved_out_of_postcondition(tmp_path: Path) -> None:
     shutil.copytree(ROOT / "bench/algorithm/1", tmp_path / "bench/algorithm/1")
     shutil.copytree(ROOT / "bench/core", tmp_path / "bench/core")
-    evaluation_test = tmp_path / "tools/bench/test_bench_algorithm.py"
-    _write(evaluation_test, "# trusted evaluator placeholder for structural validation\n")
     entry = tmp_path / "bench/algorithm/1/Algorithm1.dfy"
     entry.write_text(
         entry.read_text(encoding="utf-8").replace(

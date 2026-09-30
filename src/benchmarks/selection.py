@@ -12,7 +12,6 @@ def affected_task_ids(
 ) -> tuple[str, ...]:
     all_ids = set(repository.task_ids())
     coreutils_ids = set(repository.task_ids(BenchmarkKind.COREUTILS))
-    algorithm_ids = set(repository.task_ids(BenchmarkKind.ALGORITHM))
     affected: set[str] = set()
     for raw_path in changed_paths:
         path = Path(raw_path)
@@ -23,11 +22,7 @@ def affected_task_ids(
             affected.add(f"algorithm-{parts[2]}")
         elif raw_path.startswith("tools/coreutils_fuzzer/"):
             affected.update(coreutils_ids)
-        elif raw_path == "tools/bench/test_bench_algorithm.py":
-            affected.update(algorithm_ids)
-        elif raw_path == "tools/fixtures/algorithm/OutputCapture.cs":
-            affected.update(algorithm_ids)
-        elif raw_path.startswith(("tools/bench/", "tools/audit/")):
+        elif raw_path == "tools/bench_test_support.py":
             affected.update(all_ids)
         elif (
             raw_path.startswith("bench/core/")
