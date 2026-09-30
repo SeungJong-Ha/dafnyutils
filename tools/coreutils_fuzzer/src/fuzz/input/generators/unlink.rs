@@ -1,6 +1,6 @@
 use super::super::pattern::{Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice};
 use super::super::PatternInputGenerator;
-use super::super::{fixtures, support};
+use super::super::{support, system_state};
 use crate::fuzz::{DirSpec, FileSpec, GeneratedCase, HardlinkSpec, SymlinkSpec};
 use std::path::PathBuf;
 
@@ -25,7 +25,7 @@ pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case);
 
 pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
-    let mut fixture = fixtures::basic_fixture();
+    let mut fixture = system_state::basic_fixture();
     let args = match iteration {
         0 => vec!["a.txt"],
         1 => vec!["a-link"],

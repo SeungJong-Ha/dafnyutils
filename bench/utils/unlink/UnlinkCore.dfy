@@ -4,6 +4,7 @@ include "UnlinkSpec.dfy"
 
 module UnlinkCore {
   import BenchIO
+  import BenchWorld
   import Schema = UnlinkSchema
   import Spec = UnlinkSpec
   import C = IOContract
@@ -53,17 +54,17 @@ module UnlinkCore {
     ensures CoreSummary(raw, io, exit)
   {
     if raw.mode == Schema.ModeHelp {
-      io.AppendStdout(Spec.HelpTextSpec());
+      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode == Schema.ModeVersion {
-      io.AppendStdout(Spec.VersionTextSpec());
+      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode.ModeExtraOperand? {
       var quotedOperand := io.QuoteArgument(Utf8.Encode(raw.mode.operand));
-      io.AppendStderr(Spec.ExtraOperandText(quotedOperand));
+      var _, _ := io.WriteStderr(Spec.ExtraOperandText(quotedOperand), BenchWorld.ThrowOnError);
       exit := 1;
     } else if |raw.operands| == 0 {
-      io.AppendStderr(Spec.MissingOperandText());
+      var _, _ := io.WriteStderr(Spec.MissingOperandText(), BenchWorld.ThrowOnError);
       exit := 1;
     } else {
       var ok, err := io.UnlinkPath(raw.operands[0]);
@@ -74,7 +75,7 @@ module UnlinkCore {
       } else {
         var reason := io.GetCLocaleErrnoText(err);
         var quotedPath := io.QuoteafPath(raw.operands[0]);
-        io.AppendStderr(Spec.CannotUnlinkText(quotedPath, reason));
+        var _, _ := io.WriteStderr(Spec.CannotUnlinkText(quotedPath, reason), BenchWorld.ThrowOnError);
         exit := 1;
 
         assert C.GetCLocaleErrnoTextSpec(err, reason);
