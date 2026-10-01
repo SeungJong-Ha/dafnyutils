@@ -22,7 +22,7 @@ use std::path::Path;
 use std::time::Instant;
 
 pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
-    require_fuzz_capability(&args.common.util)?;
+    let capability = require_fuzz_capability(&args.common.util)?;
     args.process_umask = None;
     let seed = args.common.seed.unwrap_or_else(rand::random);
     let mut rng = StdRng::seed_from_u64(seed);
@@ -31,12 +31,22 @@ pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
     args.compose_provenance = Some(Box::new(super::container::compose_provenance()?));
     let mut executor = CommandCaseExecutor::create(&args, &paths)?;
     args.container_image_id = Some(executor.image_id().unwrap_or("local-test").to_string());
-    let option_pool = match args.common.opts.as_deref() {
+    let mut option_pool = match args.common.opts.as_deref() {
         Some(options) => parse_option_pool(Some(options)),
         None => executor.discover_common_options(std::time::Duration::from_secs(
             args.process_timeout_seconds,
         ))?,
     };
+    let mut excluded_options = Vec::new();
+    if let Some(supported) = capability.generated_options {
+        option_pool.retain(|option| {
+            let included = supported.contains(&option.as_str());
+            if !included {
+                excluded_options.push(option.clone());
+            }
+            included
+        });
+    }
     println!(
         "  Image ID   : {}",
         executor.image_id().unwrap_or("local-test")
@@ -50,6 +60,9 @@ pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
             "discovered"
         }
     );
+    if !excluded_options.is_empty() {
+        println!("  Outside scope: {}", excluded_options.join(", "));
+    }
     let mut option_coverage = OptionCoverage::new(&option_pool);
     let mut semantic_coverage = SemanticCoverage::default();
     let mut corpus = InterestingCorpus::default();
@@ -70,6 +83,16 @@ pub fn run_fuzzer(mut args: FuzzArgs) -> Result<(), String> {
     metrics.set_configuration("case_set", args.common.case_set.is_some());
     metrics.set_configuration("max_args", args.common.max_args);
     metrics.set_configuration("max_fs_entries", args.common.max_fs_entries);
+    if let Some(supported) = capability.generated_options {
+        metrics.set_configuration(
+            "generated_option_scope",
+            serde_json::to_string(supported).expect("static option scope is serializable"),
+        );
+        metrics.set_configuration(
+            "excluded_options",
+            serde_json::to_string(&excluded_options).expect("option list is serializable"),
+        );
+    }
     if let Err(error) = configure_metrics(&mut metrics, &args, &paths, &option_pool, seed) {
         return Err(metrics.finish_preserving_error(error));
     }

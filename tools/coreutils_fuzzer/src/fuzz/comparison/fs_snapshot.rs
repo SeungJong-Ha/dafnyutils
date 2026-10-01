@@ -33,6 +33,21 @@ pub(crate) fn restore_path_times(
 
     const AT_FDCWD: i32 = -100;
     const AT_SYMLINK_NOFOLLOW: i32 = 0x100;
+    let metadata = if is_symlink {
+        fs::symlink_metadata(path)
+    } else {
+        fs::metadata(path)
+    }
+    .map_err(|error| format_path_error("read timestamp restoration metadata", path, error))?;
+    let current = times_from_metadata(&metadata);
+    if current.atime_sec == times.atime_sec
+        && current.atime_nsec == times.atime_nsec
+        && current.mtime_sec == times.mtime_sec
+        && current.mtime_nsec == times.mtime_nsec
+    {
+        // Even an otherwise redundant utimensat changes ctime.
+        return Ok(());
+    }
     let display = path.display().to_string();
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         format!("filesystem snapshot path contains an unsupported NUL byte: `{display}`")
@@ -808,6 +823,72 @@ fn mode_octal_string_from_metadata(metadata: &fs::Metadata) -> String {
 mod raw_stat_tests {
     use super::raw_stat_metadata_from_metadata;
     use crate::utils::world_json::RawStatMetadataJson;
+
+    // Observing an unchanged file must not advance its ctime through redundant restoration.
+    #[test]
+    fn unchanged_timestamp_restoration_preserves_file_change_time() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("data");
+        std::fs::write(&path, b"payload").unwrap();
+        let before = super::times_from_metadata(&std::fs::metadata(&path).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        super::restore_path_times(&path, before, false).unwrap();
+        assert_eq!(
+            super::times_from_metadata(&std::fs::metadata(&path).unwrap()),
+            before
+        );
+    }
+
+    // No-op restoration of a link must inspect the link itself rather than its target.
+    #[test]
+    fn unchanged_timestamp_restoration_preserves_symlink_change_time() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("data");
+        let link = root.path().join("link");
+        std::fs::write(&target, b"payload").unwrap();
+        std::os::unix::fs::symlink("data", &link).unwrap();
+        super::restore_path_times(
+            &link,
+            crate::fuzz::FsTimes {
+                atime_sec: 1,
+                mtime_sec: 2,
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap();
+        let before = super::times_from_metadata(&std::fs::symlink_metadata(&link).unwrap());
+        let target_before = super::times_from_metadata(&std::fs::metadata(&target).unwrap());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        super::restore_path_times(&link, before, true).unwrap();
+        assert_eq!(
+            super::times_from_metadata(&std::fs::symlink_metadata(&link).unwrap()),
+            before
+        );
+        assert_eq!(
+            super::times_from_metadata(&std::fs::metadata(&target).unwrap()),
+            target_before
+        );
+    }
+
+    // A requested timestamp change still reaches the filesystem.
+    #[test]
+    fn changed_timestamps_are_restored() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("data");
+        std::fs::write(&path, b"payload").unwrap();
+        let requested = crate::fuzz::FsTimes {
+            atime_sec: 1,
+            atime_nsec: 123,
+            mtime_sec: 2,
+            mtime_nsec: 456,
+            ..Default::default()
+        };
+        super::restore_path_times(&path, requested, false).unwrap();
+        let actual = super::times_from_metadata(&std::fs::metadata(&path).unwrap());
+        assert_eq!((actual.atime_sec, actual.atime_nsec), (1, 123));
+        assert_eq!((actual.mtime_sec, actual.mtime_nsec), (2, 456));
+    }
 
     // Terminal observation leaves both ordinary file and symlink raw state unchanged.
     #[test]

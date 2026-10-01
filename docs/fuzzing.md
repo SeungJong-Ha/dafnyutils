@@ -470,7 +470,9 @@ fallback to running targets on the host, and no public `--work-root` option.
   the only boundary; there is no extra per-target filesystem or oracle
   isolation.
 - No Docker socket, no external network, read-only root, writable tmpfs mounts
-  for staging and fixtures.
+  for staging and fixtures. The `/fuzz` fixture mount uses `noatime`, so reading
+  a file or directory does not update its access timestamp. Explicit timestamp
+  changes, such as those made by `touch`, still take effect.
 - Default Docker seccomp/AppArmor and `no-new-privileges` stay on. Trusted setup
   uses limited ownership/identity capabilities; targets run as the runner's
   non-root user.
@@ -485,8 +487,12 @@ the fixture, and invalid links are rejected.
 ### What is compared
 
 Process outcomes, raw stdout/stderr, and filesystem contents, metadata and
-identity transitions, each in an independent fixture tree. Absolute host inode
-numbers are not compared across fixtures.
+identity transitions are compared. Both targets run sequentially at the same
+absolute fixture path. The DUT reuses the reference's original objects only
+when the raw pre/post states are exactly equal and observation and target
+preparation leave metadata unchanged. Otherwise it receives a fresh copy of
+the original fixture. Absolute host inode numbers are not compared across
+independent copies.
 
 <a id="what-the-fuzzer-does-not-check"></a>
 
@@ -508,6 +514,37 @@ In practice:
   investigation.
 - There is no time tolerance, timestamp stripping or utility-specific time
   oracle.
+
+Time-dependent inputs remain reachable. Read-only `ls -t -c` and
+`ls -t --time=ctime` can reuse unchanged original objects on the `noatime`
+fixture mount, so both targets see the same change timestamps. Timestamp
+restoration avoids redundant writes: even setting atime/mtime to their existing
+values with `utimensat` would advance ctime and invalidate exact reuse. The
+saved ctime-order cases are checked by
+`tools/fixtures/coreutils_fuzzer/v1/regressions/ls.json`.
+
+This does not make clocks deterministic or allow ctime to be restored. If a
+reference changes its fixture and requires an independent copy, time-dependent
+stdout differences remain inconclusive under this policy. Excluding timestamps
+from filesystem comparison does not exclude their effects on output bytes.
+
+Generated option pools are restricted to the current benchmark scope, even
+when informational output matches GNU's complete help text. The declared
+scopes for `fold`, `seq`, `ls`, `stat`, `tee`, `tr` and `wc` apply to both
+discovered options and an explicit `--opts` list. For example, character mode
+(`fold -c`, `--characters`), custom numeric formats (`seq -f`, `--format`),
+pipe/output-error policies (`tee -p`, `--output-error`), complement/truncation
+(`tr -c`, `-C`, `-t`, `--complement`, `--truncate-set1`) and file-list input
+(`wc --files0-from`) are outside these scopes. Supported options and malformed
+uses of them remain eligible. Metrics record `generated_option_scope`,
+`excluded_options` and the effective option pool; excluded options also appear
+in the campaign log.
+
+`stat` run cases retain an explicit `-c`/`--format` option during generation,
+corpus mutation and shrinking. Help/version requests and missing format-value
+errors remain eligible; default output without a format is not modeled. A
+fixed case set is evaluated as supplied, so explicit diagnostic and historical
+regression inputs are never silently removed.
 
 Dafny specification and proof verification are separate checks.
 

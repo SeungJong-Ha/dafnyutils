@@ -73,6 +73,7 @@ pub(crate) struct DockerCaseExecutor {
     container_id: String,
     image_id: String,
     target_identity: String,
+    help_exit_code: i32,
     reference: ContainerTarget,
     dut: ContainerTarget,
 }
@@ -230,6 +231,8 @@ impl DockerCaseExecutor {
             container_id,
             image_id: String::new(),
             target_identity: format!("{}:{}", args.common.target_uid, args.common.target_gid),
+            help_exit_code: crate::utils::capabilities::require_fuzz_capability(&args.common.util)?
+                .help_exit_code,
             reference: ContainerTarget {
                 kind: paths.reference.kind,
                 path: PathBuf::new(),
@@ -289,16 +292,7 @@ impl DockerCaseExecutor {
         command.arg("--help");
         let output = run_command_with_timeout_and_input(&mut command, &[], timeout)
             .map_err(|error| format!("failed to collect container target help: {error:?}"))?;
-        if !output.status.success() {
-            return Err(container_child_failure(
-                &output,
-                "container target --help",
-                false,
-            ));
-        }
-        let mut bytes = output.stdout;
-        bytes.extend(output.stderr);
-        Ok(bytes)
+        collect_target_help(output, self.help_exit_code)
     }
 
     fn stage_runner(&self) -> Result<(), String> {
@@ -678,6 +672,22 @@ fn docker_output(command: &mut Command, operation: &str) -> Result<String, Strin
         .map_err(|error| format!("docker output for {operation} is not UTF-8: {error}"))
 }
 
+fn collect_target_help(
+    output: crate::utils::process::ProcessOutput,
+    expected_exit_code: i32,
+) -> Result<Vec<u8>, String> {
+    if output.status.code() != Some(expected_exit_code) {
+        return Err(container_child_failure(
+            &output,
+            "container target --help",
+            false,
+        ));
+    }
+    let mut bytes = output.stdout;
+    bytes.extend(output.stderr);
+    Ok(bytes)
+}
+
 fn collect_options(help: &[u8]) -> std::collections::BTreeSet<String> {
     let cleaned: String = String::from_utf8_lossy(help)
         .chars()
@@ -776,6 +786,7 @@ mod tests {
             container_id: "controlled-child".to_string(),
             image_id: "fixed-test-image".to_string(),
             target_identity: "1000:1000".to_string(),
+            help_exit_code: 0,
             reference: ContainerTarget {
                 kind: ExecKind::Native,
                 path: PathBuf::from("/ref"),
@@ -869,6 +880,62 @@ mod tests {
             "",
             &marker,
         );
+    }
+
+    // False's normal help exit still exposes its informational options.
+    #[test]
+    #[cfg(unix)]
+    fn false_help_exit_one_collects_options() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = crate::utils::process::ProcessOutput {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: b"Usage: false [ignored command line arguments]\n  --help\n  --version\n"
+                .to_vec(),
+            stderr: Vec::new(),
+        };
+        let expected = crate::utils::capabilities::capability_for("false")
+            .unwrap()
+            .help_exit_code;
+        let help = super::collect_target_help(output, expected).unwrap();
+        assert_eq!(
+            collect_options(&help).into_iter().collect::<Vec<_>>(),
+            vec!["--help".to_string(), "--version".to_string()]
+        );
+    }
+
+    // A false target that exits successfully violates its declared help status.
+    #[test]
+    #[cfg(unix)]
+    fn false_help_wrong_exit_is_rejected() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = crate::utils::process::ProcessOutput {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"--help --version\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let expected = crate::utils::capabilities::capability_for("false")
+            .unwrap()
+            .help_exit_code;
+        let error = super::collect_target_help(output, expected).unwrap_err();
+        assert!(error.contains("FUZZER_OUTCOME=fuzzer_target_spawn_failure"));
+    }
+
+    // A cat target's failed help remains a setup error despite nonempty output.
+    #[test]
+    #[cfg(unix)]
+    fn failing_cat_help_is_rejected() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = crate::utils::process::ProcessOutput {
+            status: std::process::ExitStatus::from_raw(1 << 8),
+            stdout: b"--help --version\n".to_vec(),
+            stderr: b"failed to load target\n".to_vec(),
+        };
+        let expected = crate::utils::capabilities::capability_for("cat")
+            .unwrap()
+            .help_exit_code;
+        let error = super::collect_target_help(output, expected).unwrap_err();
+        assert!(error.contains("FUZZER_OUTCOME=fuzzer_target_spawn_failure"));
+        assert!(error.contains("failed to load target"));
     }
 
     // Help parsing keeps only syntactically complete short and long option tokens.

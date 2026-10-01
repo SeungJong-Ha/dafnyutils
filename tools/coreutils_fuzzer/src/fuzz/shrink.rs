@@ -634,6 +634,44 @@ mod tests {
         );
     }
 
+    // Shrinking a formatted stat command must not switch to unsupported default output.
+    #[test]
+    fn stat_shrinking_preserves_required_format() {
+        let case = GeneratedCase {
+            argv: vec!["-c".into(), "%s".into(), "regular".into()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: ".".into(),
+        };
+        let candidates = super::reduce_argv("stat", &case);
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|candidate| candidate.argv[0] == "-c"));
+    }
+
+    // The same scope boundary still permits the real missing-format-value error case.
+    #[test]
+    fn stat_shrinking_keeps_missing_format_value_errors() {
+        let case = GeneratedCase {
+            argv: vec!["--format".into(), "%s".into()],
+            fixture: FixtureBlueprint {
+                directories: Vec::new(),
+                files: Vec::new(),
+                symlinks: Vec::new(),
+                hardlinks: Vec::new(),
+            },
+            stdin: Vec::new(),
+            cwd: ".".into(),
+        };
+        let candidates = super::reduce_argv("stat", &case);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].argv, ["--format"]);
+    }
+
     // A mutating reference leaves preserved evidence while DUT receives original contents at the same path.
     #[cfg(unix)]
     #[test]

@@ -24,6 +24,6 @@ services:
       - SETUID
     tmpfs:
       - /opt/coreutils-fuzzer-staging:rw,exec,nosuid,nodev,mode=0755
-      - /fuzz:rw,nosuid,nodev,mode=0755
+      - /fuzz:rw,nosuid,nodev,noatime,mode=0755
       - /tmp:rw,nosuid,nodev,mode=1777
     command: ["sleep", "infinity"]

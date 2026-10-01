@@ -14,11 +14,41 @@ use std::path::PathBuf;
 pub(crate) static GENERATOR: PatternInputGenerator =
     PatternInputGenerator::patterned(&ARGV_PATTERN, scenario_case)
         .with_mutator(mutations::regenerate_argv)
+        .with_mutation_guard(stat_argv_is_supported)
+        .with_candidate_guard(stat_argv_is_supported)
         .with_cwd_policy(CwdPolicy::Root)
         .with_profile(UtilityProfile {
             requires_path_operand: true,
             prefers_existing_paths: true,
         });
+
+fn stat_argv_is_supported(argv: &[String]) -> bool {
+    if crate::utils::arg_semantics::requests_help_or_version("stat", argv) {
+        return true;
+    }
+    for arg in argv {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--format" || arg.starts_with("--format=") {
+            return true;
+        }
+        if let Some(short) = arg
+            .strip_prefix('-')
+            .filter(|short| !short.starts_with('-'))
+        {
+            for flag in short.chars() {
+                if flag == 'c' {
+                    return true;
+                }
+                if flag != 'L' {
+                    break;
+                }
+            }
+        }
+    }
+    false
+}
 
 const STAT_DIRECTIVES: &[char] = &[
     'a', 'b', 'B', 'd', 'D', 'f', 'g', 'h', 'i', 'o', 's', 'u', 'X', 'Y', 'Z', 'Q', '%',

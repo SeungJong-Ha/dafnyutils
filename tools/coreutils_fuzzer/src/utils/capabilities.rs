@@ -35,6 +35,8 @@ pub(crate) enum StdinPolicy {
 pub(crate) struct UtilityCapability {
     pub(crate) utility: &'static str,
     pub(crate) input_generator: &'static dyn InputGenerator,
+    pub(crate) help_exit_code: i32,
+    pub(crate) generated_options: Option<&'static [&'static str]>,
 
     pub(crate) requires_root_cwd: bool,
     pub(crate) extra_runtime_files: &'static [&'static str],
@@ -51,6 +53,8 @@ macro_rules! capability {
         UtilityCapability {
             utility: $utility,
             input_generator: &input::generators::$generator::GENERATOR,
+            help_exit_code: 0,
+            generated_options: None,
             requires_root_cwd: false,
             extra_runtime_files: &[],
             coverage_time_buckets: false,
@@ -107,8 +111,23 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
     },
     capability!("expr", expr),
     capability!("factor", factor),
-    capability!("false", r#false),
-    capability!("fold", fold),
+    UtilityCapability {
+        help_exit_code: 1,
+        ..capability!("false", r#false)
+    },
+    UtilityCapability {
+        generated_options: Some(&[
+            "-b",
+            "--bytes",
+            "-s",
+            "--spaces",
+            "-w",
+            "--width",
+            "--help",
+            "--version",
+        ]),
+        ..capability!("fold", fold)
+    },
     UtilityCapability {
         stdin_policy: StdinPolicy::Stream,
         option_value_flags: &["-c", "--bytes", "-n", "--lines"],
@@ -118,6 +137,35 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
     capability!("logname", logname),
     UtilityCapability {
         option_value_flags: &["--block-size", "--time", "--time-style"],
+        generated_options: Some(&[
+            "-a",
+            "--all",
+            "-A",
+            "--almost-all",
+            "-d",
+            "--directory",
+            "-n",
+            "--numeric-uid-gid",
+            "-s",
+            "--size",
+            "--block-size",
+            "--time-style",
+            "-S",
+            "-t",
+            "-r",
+            "--reverse",
+            "-u",
+            "-c",
+            "--time",
+            "-H",
+            "--dereference-command-line",
+            "-L",
+            "--dereference",
+            "-R",
+            "--recursive",
+            "--help",
+            "--version",
+        ]),
         requires_root_cwd: true,
         ..capability!("ls", ls)
     },
@@ -146,9 +194,27 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
     capability!("printf", printf),
     capability!("pwd", pwd),
     capability!("readlink", readlink),
-    capability!("seq", seq),
+    UtilityCapability {
+        generated_options: Some(&[
+            "-s",
+            "--separator",
+            "-w",
+            "--equal-width",
+            "--help",
+            "--version",
+        ]),
+        ..capability!("seq", seq)
+    },
     UtilityCapability {
         option_value_flags: &["-c", "--format"],
+        generated_options: Some(&[
+            "-L",
+            "--dereference",
+            "-c",
+            "--format",
+            "--help",
+            "--version",
+        ]),
         requires_root_cwd: true,
         ..capability!("stat", stat)
     },
@@ -162,14 +228,34 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
         option_value_flags: &["-c", "--bytes", "-n", "--lines"],
         ..capability!("tail", tail)
     },
-    capability!("tee", tee),
+    UtilityCapability {
+        generated_options: Some(&[
+            "-a",
+            "--append",
+            "-i",
+            "--ignore-interrupts",
+            "--help",
+            "--version",
+        ]),
+        ..capability!("tee", tee)
+    },
     UtilityCapability {
         option_value_flags: &["-d", "--date", "-r", "--reference", "-t", "--time"],
         extra_runtime_files: &["touch_time_parser"],
         coverage_time_buckets: true,
         ..capability!("touch", touch)
     },
-    capability!("tr", tr),
+    UtilityCapability {
+        generated_options: Some(&[
+            "-d",
+            "--delete",
+            "-s",
+            "--squeeze-repeats",
+            "--help",
+            "--version",
+        ]),
+        ..capability!("tr", tr)
+    },
     capability!("true", r#true),
     capability!("unlink", unlink),
     UtilityCapability {
@@ -179,6 +265,20 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
     },
     UtilityCapability {
         stdin_policy: StdinPolicy::Stream,
+        generated_options: Some(&[
+            "-l",
+            "--lines",
+            "-w",
+            "--words",
+            "-m",
+            "--chars",
+            "-c",
+            "--bytes",
+            "-L",
+            "--max-line-length",
+            "--help",
+            "--version",
+        ]),
         ..capability!("wc", wc)
     },
 ];

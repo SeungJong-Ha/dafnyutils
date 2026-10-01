@@ -1,0 +1,19 @@
+{
+  "schema_version": "coreutils-fuzzer.regression-suite.v1",
+  "util": "ls",
+  "case_set": "../cases/ls.json",
+  "expectations": [
+    {
+      "case_id": "ctime-order-seed1",
+      "expect": "match"
+    },
+    {
+      "case_id": "ctime-order-seed7",
+      "expect": "match"
+    },
+    {
+      "case_id": "ctime-order-seed19",
+      "expect": "match"
+    }
+  ]
+}
