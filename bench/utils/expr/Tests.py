@@ -10,7 +10,6 @@ import pytest
 
 from tools.bench_test_support import (
     BENCH_COMMAND_TIMEOUT_SEC,
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -209,14 +208,48 @@ def test_error_status_and_stdout_match_coreutils(args: list[str], reference_expr
     assert_expr_parity(args, reference_expr)
 
 
-def test_help_and_version_exit_successfully(reference_expr: Path) -> None:
+# Syntax errors identify missing or unexpected tokens using GNU's C-locale quoting.
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--version", "--help"],
+        ["--help", "--help"],
+        ["1", "+", "2", "3"],
+        ["a", "b'c"],
+        ["a", "b\nc"],
+        ["a", "é"],
+        [")"],
+        ["5", ">"],
+        ["1", "|"],
+        ["length"],
+        ["substr", "é"],
+        ["(", "1", "+"],
+        ["("],
+        ["(", "1"],
+        ["(", "1", "2"],
+    ],
+)
+def test_syntax_diagnostic_matches_coreutils(
+    args: list[str], reference_expr: Path
+) -> None:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        cwd = Path(tmp_dir)
+        assert_result_matches_reference(
+            run_system_expr(reference_expr, args, cwd),
+            run_bench_expr(args, cwd),
+            ignore_stderr_when_exit_nonzero=False,
+        )
+
+
+# Informational modes match GNU output byte for byte.
+@pytest.mark.parametrize("args", (["--help"], ["--version"]))
+def test_help_and_version_exit_successfully(args: list[str], reference_expr: Path) -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        for args in (["--help"], ["--version"]):
-            ref = run_system_expr(reference_expr, args, cwd)
-            bench = run_bench_expr(args, cwd)
-            assert_requested_message_behavior(ref, bench)
+        ref = run_system_expr(reference_expr, args, cwd)
+        bench = run_bench_expr(args, cwd)
+        assert_result_matches_reference(ref, bench)
 
 
 def test_deferred_expr_multibyte_placeholder() -> None:

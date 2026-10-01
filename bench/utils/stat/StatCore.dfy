@@ -361,6 +361,12 @@ module StatCore {
       assert RunFilesSummaryFields(
           summaryCmd, nextFiles, preFs, hadError, output, errors
         ) by {
+        assert RunFilesSummaryFields(
+          summaryCmd, prefixFiles, preFs, prefixError, prefixOut, prefixErrOut
+        );
+        assert FileStepSummaryFields(
+          summaryCmd, statusIndex, path, preFs, stepError, stepOut, stepErrOut
+        );
         assert exists priorError: bool,
             priorOut: BenchWorld.Bytes,
             priorErrOut: BenchWorld.Bytes,

@@ -110,6 +110,20 @@ module PrintfSchema {
     );
   }
 
+  method FromArgv(argv: seq<string>) returns (raw: PrintfCmdRaw)
+  {
+    var args := if |argv| > 0 then argv[1..] else [];
+    var seenHelp := args == ["--help"];
+    var seenVersion := args == ["--version"];
+    var operands := if |args| > 0 && args[0] == "--" then args[1..] else args;
+    raw := PrintfCmdRaw(
+      seenHelp, seenVersion,
+      if seenHelp then 1 else -1,
+      if seenVersion then 1 else -1,
+      CliTypes.None, operands
+    );
+  }
+
   function ParseErrorText(e: CliTypes.ParseError): string
   {
     if e.kind == CliTypes.UnknownOption ||

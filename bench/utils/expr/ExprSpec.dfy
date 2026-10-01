@@ -1,5 +1,6 @@
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
+include "../../core/StringEscaping.dfy"
 include "ExprSchema.dfy"
 
 module ExprSpec {
@@ -7,6 +8,7 @@ module ExprSpec {
   import BenchWorld
   import Utf8 = Utf8Semantics
   import Schema = ExprSchema
+  import SE = StringEscaping
 
 
 
@@ -15,37 +17,67 @@ module ExprSpec {
     "Usage: expr EXPRESSION\n"
     + "  or:  expr OPTION\n"
     + "\n"
-    + "Print the value of EXPRESSION to standard output.\n"
+    + "      --help\n"
+    + "         display this help and exit\n"
+    + "      --version\n"
+    + "         output version information and exit\n"
     + "\n"
-    + "Supported benchmark operators, in increasing precedence groups:\n"
+    + "Print the value of EXPRESSION to standard output.  A blank line below\n"
+    + "separates increasing precedence groups.  EXPRESSION may be:\n"
+    + "\n"
     + "  ARG1 | ARG2       ARG1 if it is neither null nor 0, otherwise ARG2\n"
+    + "\n"
     + "  ARG1 & ARG2       ARG1 if neither argument is null or 0, otherwise 0\n"
+    + "\n"
     + "  ARG1 < ARG2       ARG1 is less than ARG2\n"
     + "  ARG1 <= ARG2      ARG1 is less than or equal to ARG2\n"
     + "  ARG1 = ARG2       ARG1 is equal to ARG2\n"
-    + "  ARG1 == ARG2      ARG1 is equal to ARG2\n"
     + "  ARG1 != ARG2      ARG1 is unequal to ARG2\n"
     + "  ARG1 >= ARG2      ARG1 is greater than or equal to ARG2\n"
     + "  ARG1 > ARG2       ARG1 is greater than ARG2\n"
+    + "\n"
     + "  ARG1 + ARG2       arithmetic sum of ARG1 and ARG2\n"
     + "  ARG1 - ARG2       arithmetic difference of ARG1 and ARG2\n"
+    + "\n"
     + "  ARG1 * ARG2       arithmetic product of ARG1 and ARG2\n"
     + "  ARG1 / ARG2       arithmetic quotient of ARG1 divided by ARG2\n"
     + "  ARG1 % ARG2       arithmetic remainder of ARG1 divided by ARG2\n"
-    + "  substr STRING POS LENGTH\n"
-    + "  index STRING CHARS\n"
-    + "  length STRING\n"
-    + "  + TOKEN            interpret TOKEN as a string\n"
-    + "  ( EXPRESSION )\n"
     + "\n"
-    + "Regular expression matching is outside this benchmark subset.\n"
-    + "      --help        display this help and exit\n"
-    + "      --version     output version information and exit\n"
+    + "  STRING : REGEXP   anchored pattern match of REGEXP in STRING\n"
+    + "\n"
+    + "  match STRING REGEXP        same as STRING : REGEXP\n"
+    + "  substr STRING POS LENGTH   substring of STRING, POS counted from 1\n"
+    + "  index STRING CHARS         index in STRING where any CHARS is found, or 0\n"
+    + "  length STRING              length of STRING\n"
+    + "  + TOKEN                    interpret TOKEN as a string, even if it is a\n"
+    + "                               keyword like 'match' or an operator like '/'\n"
+    + "\n"
+    + "  ( EXPRESSION )             value of EXPRESSION\n"
+    + "\n"
+    + "Beware that many operators need to be escaped or quoted for shells.\n"
+    + "Comparisons are arithmetic if both ARGs are numbers, else lexicographical.\n"
+    + "Pattern matches return the string matched between \\( and \\) or null; if\n"
+    + "\\( and \\) are not used, they return the number of characters matched or 0.\n"
+    + "\n"
+    + "Exit status is 0 if EXPRESSION is neither null nor 0, 1 if EXPRESSION is null\n"
+    + "or 0, 2 if EXPRESSION is syntactically invalid, and 3 if an error occurred.\n"
+    + "\n"
+    + "Report bugs to: bug-coreutils@gnu.org\n"
+    + "GNU coreutils home page: <https://www.gnu.org/software/coreutils/>\n"
+    + "General help using GNU software: <https://www.gnu.org/gethelp/>\n"
+    + "Report any translation bugs to <https://translationproject.org/team/>\n"
+    + "Full documentation <https://www.gnu.org/software/coreutils/expr>\n"
+    + "or available locally via: info '(coreutils) expr invocation'\n"
   }
 
   function VersionText(): BenchWorld.Bytes
   {
     "expr (GNU coreutils) 9.10.13-2cf49\n"
+    + "Copyright (C) 2026 Free Software Foundation, Inc.\n"
+    + "License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.\n"
+    + "This is free software: you are free to change and redistribute it.\n"
+    + "There is NO WARRANTY, to the extent permitted by law.\n"
+    + "\n"
     + "Written by Mike Parker, James Youngman, and Paul Eggert.\n"
   }
 
@@ -59,19 +91,33 @@ module ExprSpec {
     "expr: missing operand\n" + TryHelp()
   }
 
-  function SyntaxErrorMessage(): BenchWorld.Bytes
+  function UnexpectedCloseMessage(): BenchWorld.Bytes
   {
-    "expr: syntax error\n" + TryHelp()
+    "expr: syntax error: unexpected ')'\n"
+  }
+
+  function UnexpectedArgumentMessage(token: string): BenchWorld.Bytes
+  {
+    "expr: syntax error: unexpected argument " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n"
   }
 
   function MissingAfterMessage(op: string): BenchWorld.Bytes
   {
-    "expr: syntax error: missing argument after '" + op + "'\n"
+    "expr: syntax error: missing argument after " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(op)) + "\n"
   }
 
-  function MissingCloseMessage(): BenchWorld.Bytes
+  function MissingCloseAfterMessage(token: string): BenchWorld.Bytes
   {
-    "expr: syntax error: expecting ')' after expression\n"
+    "expr: syntax error: expecting ')' after " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n"
+  }
+
+  function MissingCloseInsteadMessage(token: string): BenchWorld.Bytes
+  {
+    "expr: syntax error: expecting ')' instead of " +
+    SE.SpecLocaleQuoteBytes(Utf8.Encode(token)) + "\n"
   }
 
   function NonIntegerMessage(): BenchWorld.Bytes
@@ -464,7 +510,9 @@ module ExprSpec {
     decreases |tokens| - i, 0
   {
     if i >= |tokens| then
-      result == EvalFailure(MissingOperandMessage())
+      result == EvalFailure(
+        if i == 0 then MissingOperandMessage() else MissingAfterMessage(tokens[i - 1])
+      )
     else if tokens[i] == "(" then
       exists inner: EvalResult {:trigger OrJudgment(tokens, i + 1, inner)} ::
         OrJudgment(tokens, i + 1, inner) &&
@@ -473,10 +521,12 @@ module ExprSpec {
         case EvalSuccess(value, next) =>
           if next < |tokens| && tokens[next] == ")" then
             result == EvalSuccess(value, next + 1)
+          else if next < |tokens| then
+            result == EvalFailure(MissingCloseInsteadMessage(tokens[next]))
           else
-            result == EvalFailure(MissingCloseMessage())
+            result == EvalFailure(MissingCloseAfterMessage(tokens[|tokens| - 1]))
     else if tokens[i] == ")" then
-      result == EvalFailure(SyntaxErrorMessage())
+      result == EvalFailure(UnexpectedCloseMessage())
     else if tokens[i] == "+" then
       if i + 1 < |tokens| then
         result == EvalSuccess(tokens[i + 1], i + 2)
@@ -553,7 +603,7 @@ module ExprSpec {
             stdout == [] && stderr == message && exit == 2
           case EvalSuccess(value, next) =>
             if next != |exprArgs| then
-              stdout == [] && stderr == SyntaxErrorMessage() && exit == 2
+              stdout == [] && stderr == UnexpectedArgumentMessage(exprArgs[next]) && exit == 2
             else
               exists truth: bool ::
                 ValueTruth(value, truth) &&

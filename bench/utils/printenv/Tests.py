@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -184,14 +183,15 @@ def test_unicode_environment_listing_matches_coreutils() -> None:
         assert_result_matches_reference(ref, bench, stdout_normalizer=normalize_records(b"\n"))
 
 
-def test_help_and_version_exit_successfully() -> None:
+# Informational modes match GNU output byte for byte.
+@pytest.mark.parametrize("args", (["--help"], ["--version"], ["--help", "ALPHA"]))
+def test_help_and_version_exit_successfully(args: list[str]) -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        for args in (["--help"], ["--version"], ["--help", "ALPHA"]):
-            ref = run_system_printenv(args, cwd)
-            bench = run_bench_printenv(args, cwd)
-            assert_requested_message_behavior(ref, bench)
+        ref = run_system_printenv(args, cwd)
+        bench = run_bench_printenv(args, cwd)
+        assert_result_matches_reference(ref, bench)
 
 
 @pytest.mark.parametrize("args", [["--bogus"], ["-/"], ["-x"]])

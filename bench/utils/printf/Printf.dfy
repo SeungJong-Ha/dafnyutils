@@ -52,6 +52,13 @@ module Printf {
       plan := PrintfSchema.PlanParseFailure(err, argv);
     }
 
+    method PlanArgv(argv: seq<string>) returns (plan: CliTypes.CliPlan<PrintfSchema.PrintfCmdRaw>)
+      decreases *
+    {
+      var raw := PrintfSchema.FromArgv(argv);
+      plan := CliTypes.CliRun(raw);
+    }
+
     method RunCore(raw: PrintfSchema.PrintfCmdRaw, io: BenchIO.IO) returns (exit: int)
       modifies io.stdoutRegion, io.stderrRegion
       ensures PS.Spec(raw, io, exit)

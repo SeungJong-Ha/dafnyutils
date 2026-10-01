@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -160,7 +159,7 @@ def test_help_and_version_exit_successfully(args: list[str]) -> None:
         cwd = Path(tmp_dir)
         reference = run_coreutils_utility(COREUTILS_STAT, "stat", args, cwd)
         bench = run_bench_utility(BENCH_STAT_DLL, args, cwd)
-        assert_requested_message_behavior(reference, bench)
+        assert_result_matches_reference(reference, bench)
 
 
 # Proof regression: schema, implementation, specification, proof, and entry point must all verify.

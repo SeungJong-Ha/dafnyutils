@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -176,23 +175,23 @@ def test_multiple_outputs_receive_same_data_matches_coreutils() -> None:
             assert (bench_cwd / name).read_bytes() == input_data
 
 
-# Help exits successfully with the shared requested-message contract.
+# Help output matches GNU byte for byte.
 def test_help_exit_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_tee(["--help"], cwd, input_data=b"ignored"),
             run_bench_tee(["--help"], cwd, input_data=b"ignored"),
         )
 
 
-# Version exits successfully with the shared requested-message contract.
+# Version output matches GNU byte for byte.
 def test_version_exit_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_tee(["--version"], cwd, input_data=b"ignored"),
             run_bench_tee(["--version"], cwd, input_data=b"ignored"),
         )
@@ -202,7 +201,7 @@ def test_version_exit_successfully_matches_coreutils() -> None:
 def test_version_precedes_later_invalid_option() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_tee(["--version", "-7022"], cwd, input_data=b"ignored"),
             run_bench_tee(["--version", "-7022"], cwd, input_data=b"ignored"),
         )

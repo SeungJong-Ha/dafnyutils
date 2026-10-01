@@ -17,21 +17,34 @@ module FactorSpec {
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
-    "Usage: factor [OPTION]... [NUMBER]...\n"
-    + "Print prime factors for each NUMBER, or read numbers from standard input.\n"
+    "Usage: factor [OPTION] [NUMBER]...\n"
+    + "Print the prime factors of each specified integer NUMBER.  If none\n"
+    + "are specified on the command line, read them from standard input.\n"
     + "\n"
     + "  -h, --exponents\n"
-    + "         print factors as p^e instead of repeating p\n"
+    + "         print repeated factors in form p^e unless e is 1\n"
     + "      --help\n"
     + "         display this help and exit\n"
     + "      --version\n"
     + "         output version information and exit\n"
+    + "\n"
+    + "Report bugs to: bug-coreutils@gnu.org\n"
+    + "GNU coreutils home page: <https://www.gnu.org/software/coreutils/>\n"
+    + "General help using GNU software: <https://www.gnu.org/gethelp/>\n"
+    + "Report any translation bugs to <https://translationproject.org/team/>\n"
+    + "Full documentation <https://www.gnu.org/software/coreutils/factor>\n"
+    + "or available locally via: info '(coreutils) factor invocation'\n"
   }
 
   function VersionTextSpec(): BenchWorld.Bytes
   {
     "factor (GNU coreutils) 9.10.13-2cf49\n"
-    + "Written by Jim Meyering and the GNU coreutils team.\n"
+    + "Copyright (C) 2026 Free Software Foundation, Inc.\n"
+    + "License GPLv3+: GNU GPL version 3 or later <https://gnu.org/licenses/gpl.html>.\n"
+    + "This is free software: you are free to change and redistribute it.\n"
+    + "There is NO WARRANTY, to the extent permitted by law.\n"
+    + "\n"
+    + "Written by Paul Rubin, Torbjorn Granlund, and Niels Moller.\n"
   }
 
   function HelpSelected(raw: Schema.FactorCmdRaw): bool

@@ -55,13 +55,13 @@ module PwdSchema {
       var occ := p.options[i];
       if occ.key == "pwd.help" {
         seenHelp := true;
-        if helpOccurrenceIndex == -1 || i > helpOccurrenceIndex {
+        if helpOccurrenceIndex == -1 {
           helpOccurrenceIndex := i;
         }
       }
       if occ.key == "pwd.version" {
         seenVersion := true;
-        if versionOccurrenceIndex == -1 || i > versionOccurrenceIndex {
+        if versionOccurrenceIndex == -1 {
           versionOccurrenceIndex := i;
         }
       }

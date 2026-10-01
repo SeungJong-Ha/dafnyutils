@@ -138,8 +138,8 @@ module BasenameSpec {
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
-    "Usage: _build/coreutils/src/basename NAME [SUFFIX]\n"
-    + "  or:  _build/coreutils/src/basename OPTION... NAME...\n"
+    "Usage: basename NAME [SUFFIX]\n"
+    + "  or:  basename OPTION... NAME...\n"
     + "Print NAME with any leading directory components removed.\n"
     + "If specified, also remove a trailing SUFFIX.\n"
     + "\n"
@@ -156,10 +156,10 @@ module BasenameSpec {
     + "         output version information and exit\n"
     + "\n"
     + "Examples:\n"
-    + "  _build/coreutils/src/basename /usr/bin/sort          -> \"sort\"\n"
-    + "  _build/coreutils/src/basename include/stdio.h .h     -> \"stdio\"\n"
-    + "  _build/coreutils/src/basename -s .h include/stdio.h  -> \"stdio\"\n"
-    + "  _build/coreutils/src/basename -a any/str1 any/str2   -> \"str1\" followed by \"str2\"\n"
+    + "  basename /usr/bin/sort          -> \"sort\"\n"
+    + "  basename include/stdio.h .h     -> \"stdio\"\n"
+    + "  basename -s .h include/stdio.h  -> \"stdio\"\n"
+    + "  basename -a any/str1 any/str2   -> \"str1\" followed by \"str2\"\n"
     + "\n"
     + "Report bugs to: bug-coreutils@gnu.org\n"
     + "GNU coreutils home page: <https://www.gnu.org/software/coreutils/>\n"

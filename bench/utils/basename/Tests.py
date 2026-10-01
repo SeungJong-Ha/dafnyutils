@@ -13,7 +13,6 @@ from evaluation.submission.candidate_execution import run_candidate
 from tools.bench_test_support import (
     BENCH_COMMAND_TIMEOUT_SEC,
     GNULIB_DIRNAME_CLI_PATHS,
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -176,19 +175,15 @@ def test_missing_operand_matches_coreutils() -> None:
         assert_same_result(ref, bench)
 
 
-def test_help_and_version_exit_successfully() -> None:
+# Informational modes use the utility name and match GNU output byte for byte.
+@pytest.mark.parametrize("args", [["--help"], ["--version"]])
+def test_help_and_version_exit_successfully(args: list[str]) -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        # Exact help/version text is unnecessary here.
-        # We only care that both commands surface the requested output behavior.
-        help_ref = run_system_basename(["--help"], cwd)
-        help_bench = run_bench_basename(["--help"], cwd)
-        assert_requested_message_behavior(help_ref, help_bench)
-
-        version_ref = run_system_basename(["--version"], cwd)
-        version_bench = run_bench_basename(["--version"], cwd)
-        assert_requested_message_behavior(version_ref, version_bench)
+        ref = run_system_basename(args, cwd)
+        bench = run_bench_basename(args, cwd)
+        assert_result_matches_reference(ref, bench)
 
 
 def test_single_operand_matches_coreutils() -> None:

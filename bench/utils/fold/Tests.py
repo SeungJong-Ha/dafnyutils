@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -227,25 +226,25 @@ def test_file_operand_boundary_resets_wrap_column_matches_coreutils() -> None:
         assert_fold_parity(["-w", "4", "file1", "file2"], cwd)
 
 
-# Help exits successfully with the shared requested-message contract.
+# Help output matches GNU byte for byte.
 def test_help_exit_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
         build_fold_once_if_needed()
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_fold(["--help"], cwd),
             run_bench_fold(["--help"], cwd),
         )
 
 
-# Version exits successfully with the shared requested-message contract.
+# Version output matches GNU byte for byte.
 def test_version_exit_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
         build_fold_once_if_needed()
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_fold(["--version"], cwd),
             run_bench_fold(["--version"], cwd),
         )

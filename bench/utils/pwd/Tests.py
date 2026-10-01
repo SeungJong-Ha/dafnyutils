@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -27,6 +26,7 @@ ROOT = evaluation_target_root(Path(__file__).resolve().parents[3])
 BENCH_PWD_DLL = bench_dll_path(ROOT, ROOT / "_build" / "bench" / "pwd_bench.dll")
 COREUTILS_PWD = coreutils_binary_path(ROOT, ROOT / "_build" / "coreutils" / "src" / "pwd")
 PWD_VERIFY_TARGETS = [
+    ROOT / "bench" / "utils" / "pwd" / "PwdSchema.dfy",
     ROOT / "bench" / "utils" / "pwd" / "PwdCore.dfy",
     ROOT / "bench" / "utils" / "pwd" / "PwdProof.dfy",
     ROOT / "bench" / "utils" / "pwd" / "Pwd.dfy",
@@ -178,20 +178,27 @@ def test_ignored_operands_match_coreutils() -> None:
         assert_same_result(ref, bench)
 
 
-def test_help_and_version_exit_successfully() -> None:
+# Informational modes match GNU output byte for byte.
+@pytest.mark.parametrize("args", (["--help"], ["--version"]))
+def test_help_and_version_exit_successfully(args: list[str]) -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
         env = base_env(cwd)
-        for args in (["--help"], ["--version"]):
-            ref = run_system_pwd(args, cwd, env=env)
-            bench = run_bench_pwd(args, cwd, env=env)
-            assert_requested_message_behavior(ref, bench)
+        ref = run_system_pwd(args, cwd, env=env)
+        bench = run_bench_pwd(args, cwd, env=env)
+        assert_result_matches_reference(ref, bench)
 
 
+# The first informational request determines output even when later requests repeat it.
 @pytest.mark.parametrize(
     "args",
-    [["--help", "--version"], ["--version", "--help"]],
+    [
+        ["--help", "--version"],
+        ["--version", "--help"],
+        ["--help", "--version", "--help"],
+        ["--version", "--help", "--version"],
+    ],
 )
 def test_help_version_precedence_matches_coreutils(args: list[str]) -> None:
     # upstream: coreutils/tests/help/help-version.sh
@@ -200,7 +207,7 @@ def test_help_version_precedence_matches_coreutils(args: list[str]) -> None:
         env = base_env(cwd)
         ref = run_system_pwd(args, cwd, env=env)
         bench = run_bench_pwd(args, cwd, env=env)
-        assert_requested_message_behavior(ref, bench)
+        assert_result_matches_reference(ref, bench)
 
 
 @pytest.mark.parametrize("args", [["--bogus"], ["-/"]], ids=["unknown-long", "unknown-short"])
@@ -222,6 +229,7 @@ def test_deferred_pwd_long_path_placeholder() -> None:
     pytest.skip("requires a stepwise deep-directory cwd helper")
 
 
+# Verify the argument schema and the implementation's proof obligations.
 @pytest.mark.dafny_verify
 @pytest.mark.parametrize("target", PWD_VERIFY_TARGETS, ids=lambda path: path.name)
 def test_pwd_verified_surface_targets(target: Path) -> None:

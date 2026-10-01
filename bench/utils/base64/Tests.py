@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -196,7 +195,7 @@ def test_help_before_missing_wrap_value_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_base64(["--help", "operand", "--wrap"], cwd),
             run_bench_base64(["--help", "operand", "--wrap"], cwd),
         )
@@ -313,23 +312,23 @@ def test_extra_operand_matches_coreutils() -> None:
         assert_base64_parity(["one", "two"], cwd)
 
 
-# Help exits successfully with the shared requested-message contract.
+# Help output matches GNU byte for byte.
 def test_help_exits_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_base64(["--help"], cwd),
             run_bench_base64(["--help"], cwd),
         )
 
 
-# Version exits successfully with the shared requested-message contract.
+# Version output matches GNU byte for byte.
 def test_version_exits_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_base64(["--version"], cwd),
             run_bench_base64(["--version"], cwd),
         )

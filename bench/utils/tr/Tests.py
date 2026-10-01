@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from tools.bench_test_support import (
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -278,23 +277,23 @@ def test_escaped_reverse_range_diagnostic_matches_coreutils(operand: str) -> Non
         assert_result_matches_reference(ref, bench, ignore_stderr_when_exit_nonzero=False)
 
 
-# Help exits successfully with the shared requested-message contract.
+# Help output matches GNU byte for byte.
 def test_help_exits_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_tr(["--help"], cwd, input_data=b"ignored"),
             run_bench_tr(["--help"], cwd, input_data=b"ignored"),
         )
 
 
-# Version exits successfully with the shared requested-message contract.
+# Version output matches GNU byte for byte.
 def test_version_exits_successfully_matches_coreutils() -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        assert_requested_message_behavior(
+        assert_result_matches_reference(
             run_system_tr(["--version"], cwd, input_data=b"ignored"),
             run_bench_tr(["--version"], cwd, input_data=b"ignored"),
         )

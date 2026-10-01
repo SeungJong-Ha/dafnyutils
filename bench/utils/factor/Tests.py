@@ -11,7 +11,6 @@ import pytest
 from evaluation.submission.candidate_execution import run_candidate
 from tools.bench_test_support import (
     BENCH_COMMAND_TIMEOUT_SEC,
-    assert_requested_message_behavior,
     assert_result_matches_reference,
     bench_dll_path,
     build_bench_utility,
@@ -209,14 +208,15 @@ def test_exponent_format_matches_coreutils() -> None:
         assert_same_result(ref, bench)
 
 
-def test_help_and_version_exit_successfully() -> None:
+# Informational modes match GNU output byte for byte.
+@pytest.mark.parametrize("args", (["--help"], ["--version"]))
+def test_help_and_version_exit_successfully(args: list[str]) -> None:
     # upstream: coreutils/tests/help/help-version.sh
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
-        for args in (["--help"], ["--version"]):
-            ref = run_system_factor(args, cwd)
-            bench = run_bench_factor(args, cwd)
-            assert_requested_message_behavior(ref, bench)
+        ref = run_system_factor(args, cwd)
+        bench = run_bench_factor(args, cwd)
+        assert_result_matches_reference(ref, bench)
 
 
 @pytest.mark.parametrize("args", [["--bogus"], ["-x"]], ids=["unknown-long", "unknown-short"])

@@ -429,17 +429,20 @@ module ExprCore {
     decreases |tokens| - i, 0
   {
     if i >= |tokens| then
-      EvalErr(Spec.MissingOperandMessage())
+      EvalErr(if i == 0 then Spec.MissingOperandMessage()
+              else Spec.MissingAfterMessage(tokens[i - 1]))
     else if tokens[i] == "(" then
       var inner := ParseOr(tokens, i + 1);
       if !inner.0 then
         inner
       else if inner.2 < |tokens| && tokens[inner.2] == ")" then
         EvalOk(inner.1, inner.2 + 1)
+      else if inner.2 < |tokens| then
+        EvalErr(Spec.MissingCloseInsteadMessage(tokens[inner.2]))
       else
-        EvalErr(Spec.MissingCloseMessage())
+        EvalErr(Spec.MissingCloseAfterMessage(tokens[|tokens| - 1]))
     else if tokens[i] == ")" then
-      EvalErr(Spec.SyntaxErrorMessage())
+      EvalErr(Spec.UnexpectedCloseMessage())
     else if tokens[i] == "+" then
       if i + 1 < |tokens| then
         EvalOk(tokens[i + 1], i + 2)
@@ -498,7 +501,7 @@ module ExprCore {
         if !parsed.0 then
           ([], parsed.3, 2)
         else if parsed.2 != |exprArgs| then
-          ([], Spec.SyntaxErrorMessage(), 2)
+          ([], Spec.UnexpectedArgumentMessage(exprArgs[parsed.2]), 2)
         else
           (Utf8.Encode(parsed.1) + ['\n'], [], if ValueIsTrue(parsed.1) then 0 else 1)
   }

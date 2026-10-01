@@ -80,13 +80,13 @@ module PwdCore {
   function HelpSelected(raw: Schema.PwdCmdRaw): bool
   {
     raw.seenHelp &&
-    (!raw.seenVersion || raw.helpOccurrenceIndex > raw.versionOccurrenceIndex)
+    (!raw.seenVersion || raw.helpOccurrenceIndex < raw.versionOccurrenceIndex)
   }
 
   function VersionSelected(raw: Schema.PwdCmdRaw): bool
   {
     raw.seenVersion &&
-    (!raw.seenHelp || raw.versionOccurrenceIndex > raw.helpOccurrenceIndex)
+    (!raw.seenHelp || raw.versionOccurrenceIndex < raw.helpOccurrenceIndex)
   }
 
   ghost function UseLogicalFields(raw: Schema.PwdCmdRaw, env: map<string, string>): bool
