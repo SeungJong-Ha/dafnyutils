@@ -229,9 +229,7 @@ def test_error_status_and_stdout_match_coreutils(args: list[str], reference_expr
         ["(", "1", "2"],
     ],
 )
-def test_syntax_diagnostic_matches_coreutils(
-    args: list[str], reference_expr: Path
-) -> None:
+def test_syntax_diagnostic_matches_coreutils(args: list[str], reference_expr: Path) -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         cwd = Path(tmp_dir)
         assert_result_matches_reference(
