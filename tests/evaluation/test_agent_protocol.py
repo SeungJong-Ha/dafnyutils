@@ -42,7 +42,7 @@ def public_release(tmp_path_factory: pytest.TempPathFactory):
 
 def _report(task: AgentTaskPayload, resource_ids: tuple[str, ...]) -> AgentReport:
     return AgentReport(
-        schema_version=AgentResultSchemaVersion.V6,
+        schema_version=AgentResultSchemaVersion.V7,
         run_id="run-1",
         comparison_id="direct",
         task_id=task.task_id,
@@ -58,7 +58,7 @@ def _report(task: AgentTaskPayload, resource_ids: tuple[str, ...]) -> AgentRepor
             public_check_ids=tuple(check.check_id for check in task.public_checks),
         ),
         token_usage=None,
-        turn_usage=TurnUsage(used_turns=1, max_turns=4),
+        turn_usage=TurnUsage(used_turns=1),
         artifacts=(),
     )
 
@@ -379,3 +379,13 @@ def test_normal_termination_detail() -> None:
         )
         == "agent command was not run"
     )
+
+
+# Negative turn accounting cannot enter a current candidate result.
+def test_report_rejects_negative_turn_accounting(public_release, tmp_path: Path) -> None:
+    manifest, prepared = public_release
+    task = write_agent_task(prepared, manifest, tmp_path / "agent-task")
+    raw = _report(task, ()).model_dump(mode="json")
+    raw["turn_usage"] = {"used_turns": -1}
+    with pytest.raises(ValidationError, match="used_turns must be nonnegative"):
+        AgentReport.model_validate(raw)

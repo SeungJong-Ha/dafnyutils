@@ -31,14 +31,13 @@ class AgentTaskSchemaVersion(StrEnum):
 
 
 class AgentResultSchemaVersion(StrEnum):
-    V6 = "benchmark.agent-result.v6"
+    V7 = "benchmark.agent-result.v7"
 
 
 class AgentRunStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     TIMED_OUT = "timed-out"
-    TURN_BUDGET_EXHAUSTED = "turn-budget-exhausted"
     INVALID_TASK = "invalid-task"
 
 
@@ -163,6 +162,7 @@ class AgentTaskPayload(_TaskDefinition):
 
     @classmethod
     def from_json_file(cls, path: Path) -> Self:
+        """Read and validate a benchmark-owned protocol file."""
         return _read_protocol_file(cls, path)
 
     @model_validator(mode="after")
@@ -209,16 +209,16 @@ class TokenUsage(TaskModel):
 
 
 class TurnUsage(TaskModel):
-    used_turns: StrictInt
-    max_turns: StrictInt
+    """Record the number of provider turns that actually started."""
 
-    @model_validator(mode="after")
-    def _usage(self) -> Self:
-        if self.max_turns <= 0:
-            raise ValueError("max_turns must be positive")
-        if self.used_turns < 0 or self.used_turns > self.max_turns:
-            raise ValueError("used_turns must be between zero and max_turns")
-        return self
+    used_turns: StrictInt
+
+    @field_validator("used_turns")
+    @classmethod
+    def _usage(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("used_turns must be nonnegative")
+        return value
 
 
 class AgentArtifact(TaskModel):
@@ -246,6 +246,8 @@ class AgentArtifact(TaskModel):
 
 
 class AgentReport(TaskModel):
+    """Validate current candidate status, identity, observed usage and artifacts."""
+
     schema_version: AgentResultSchemaVersion
     run_id: StrictStr
     comparison_id: StrictStr
@@ -263,6 +265,7 @@ class AgentReport(TaskModel):
 
     @classmethod
     def from_json_file(cls, path: Path) -> Self:
+        """Read and validate a benchmark-owned protocol file."""
         return _read_protocol_file(cls, path)
 
     @field_validator("run_id", "comparison_id", "task_id", "agent_id", "backend_id")
@@ -287,10 +290,5 @@ class AgentReport(TaskModel):
             self.message is None or not self.message.strip()
         ):
             raise ValueError("non-completed results must explain the failure")
-        if (
-            self.status is AgentRunStatus.TURN_BUDGET_EXHAUSTED
-            and self.turn_usage.used_turns != self.turn_usage.max_turns
-        ):
-            raise ValueError("turn-budget-exhausted results must use the full turn budget")
         require_unique(tuple(item.artifact_id for item in self.artifacts), label="artifact_ids")
         return self

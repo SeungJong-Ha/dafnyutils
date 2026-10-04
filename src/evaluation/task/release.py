@@ -153,7 +153,8 @@ def publish_release(task_ids: tuple[str, ...], directory: Path) -> TaskReleaseMa
         public = staged / "workspace"
         public.mkdir(parents=True)
         metadata: dict[str, ReleasedTask] = {}
-        mutable: set[str] = set()
+        protected: set[Path] = set()
+        required_outputs: set[Path] = set()
         evaluator_only: set[str] = set()
         published_files: dict[Path, _PublicFile] = {}
         repository = BenchmarkRepository.open(REPO_ROOT)
@@ -183,7 +184,10 @@ def publish_release(task_ids: tuple[str, ...], directory: Path) -> TaskReleaseMa
                 required_outputs=tuple(str(p) for p in spec.required_output_paths),
                 placeholder_paths=tuple(str(p) for p in spec.placeholder_paths),
             )
-            mutable.update(str(p) for p in spec.required_output_paths)
+            required_outputs.update(spec.required_output_paths)
+            protected.update(spec.read_only_paths)
+            protected.update(Path(resource.path) for resource in profile.resources)
+            protected.add(Path("tasks") / task_id / "task.json")
             evaluator_only.update(str(p) for p in spec.hidden_paths)
         files = {
             p.relative_to(public).as_posix(): _hash(p)
@@ -193,7 +197,8 @@ def publish_release(task_ids: tuple[str, ...], directory: Path) -> TaskReleaseMa
         fixed = {
             p: h
             for p, h in files.items()
-            if not any(Path(p).is_relative_to(Path(m)) for m in mutable)
+            if any(Path(p).is_relative_to(path) for path in protected)
+            and not any(Path(p).is_relative_to(path) for path in required_outputs)
         }
         provisional = TaskReleaseManifest.model_construct(
             schema_version=ReleaseSchemaVersion.V1,

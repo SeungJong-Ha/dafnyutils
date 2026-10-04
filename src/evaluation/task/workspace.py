@@ -51,6 +51,8 @@ def _run_core_scaffold(source: Path, info: DefinitionInfo) -> str:
 
 @dataclass(frozen=True)
 class TaskWorkspaceSpec:
+    """Describe public workspace seeds, editable outputs and protected inputs."""
+
     utility: str
     utility_dir: Path
     copied_paths: tuple[Path, ...]
@@ -64,6 +66,13 @@ class TaskWorkspaceSpec:
     read_only_paths: tuple[Path, ...] = ()
 
 
+_SUPPORT_SCRIPT_NAMES = ("build.sh", "check_proof_layout.sh", "verify.sh")
+
+
+def _support_directory(public_task_id: str | None) -> Path:
+    return Path("eval_support") / public_task_id if public_task_id else Path("eval_support")
+
+
 def _generated_files(
     utility_cfg: ResolvedBenchmark,
     utility_name: str,
@@ -75,7 +84,7 @@ def _generated_files(
     project_config = Path(paths["project_config"])
     manifest = contract_analysis.manifest
     execution_path = Path(manifest.execution_entry.source_path)
-    support_dir = Path("eval_support") / public_task_id if public_task_id else Path("eval_support")
+    support_dir = _support_directory(public_task_id)
     build_args = [
         "build",
         "--output",
@@ -134,7 +143,7 @@ def _generated_files(
         ),
         *(
             (support_dir / name, _shell_template(name, script_values))
-            for name in ("build.sh", "check_proof_layout.sh", "verify.sh")
+            for name in _SUPPORT_SCRIPT_NAMES
         ),
     )
 
@@ -180,8 +189,13 @@ def task_workspace_spec(
         read_only_sources.update(
             Path(resource.path)
             for resource in task.resources
-            if resource.kind is TaskResourceKind.FORMAL_SPECIFICATION
+            if resource.kind in (TaskResourceKind.FORMAL_SPECIFICATION, TaskResourceKind.SUPPORT)
         )
+    read_only_sources.update(Path(path) for path in analysis.manifest.support_source_sha256)
+    read_only_sources.add(Path(utility_paths(utility_cfg, utility_name)["project_config"]))
+    support_dir = _support_directory(public_task_id)
+    read_only_sources.add(support_dir / "entry_contract.json")
+    read_only_sources.update(support_dir / name for name in _SUPPORT_SCRIPT_NAMES)
     hidden_files = (
         ("Makefile",) if is_algorithm_utility(utility_name) else EVALUATOR_ONLY_UTILITY_FILENAMES
     )

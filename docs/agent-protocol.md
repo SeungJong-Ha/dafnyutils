@@ -4,7 +4,7 @@ Dafnyutils defines the task delivered to an agent, the report received from it,
 candidate filesystem layout, container lifecycle, host-side workspace collection,
 and acceptance rules.
 `AgentProtocolVersion.V1` identifies this contract. The JSON payload versions are
-`benchmark.agent-task.v2` and `benchmark.agent-result.v6`. Any incompatible wire
+`benchmark.agent-task.v2` and `benchmark.agent-result.v7`. Any incompatible wire
 change must bump the corresponding version and update conformance tests in the
 integration repository and Cosyn.
 
@@ -17,12 +17,12 @@ Each copy is read without following links and checked against the manifest hash.
 Delivery never rewrites the release. The `submission` field tells the receiver
 which workspace roots to collect. Agents do not package an archive.
 
-`evaluation.agent.protocol.AgentReport` is the `benchmark.agent-result.v6` JSON
+`evaluation.agent.protocol.AgentReport` is the `benchmark.agent-result.v7` JSON
 contract. It records run, comparison, task, agent and backend identity labels;
-status, exit code, timing and turn/token usage; public resource/rule/check
+status, exit code, timing and observed turn/token usage; public resource/rule/check
 consumption; and optional artifacts. Identity labels are opaque strings to the
 benchmark. The `submission` artifact kind remains readable for historical
-reports, but new agents do not emit it. Cosyn defines the separate invocation
+reports, but new agents do not emit it. Turn usage records only `used_turns`, without a turn allowance. Cosyn defines the separate invocation
 wire and validates invocation-specific consistency.
 
 The default `CandidateLayout` mounts a public workspace at `/workspace`, the
@@ -56,7 +56,7 @@ said `completed`.
 The integration consumes the lifecycle result to report failures and pass the
 archive to `evaluate_submission`; it does not implement a separate termination or
 collection gate. Batch cancellation can call the same label-scoped cleanup helper.
-This ownership change preserves protocol v1, task v2, report v6 and archive policy.
+This ownership change preserves protocol v1, task v2, report v7 and archive policy.
 
 The Python entry point is `evaluation.agent.runtime.run_candidate_lifecycle`.
 Its `prepare` callback returns an `AgentSandboxContext`; integrations use

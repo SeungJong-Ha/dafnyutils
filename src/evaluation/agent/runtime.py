@@ -77,6 +77,8 @@ class SandboxProfile(StrEnum):
 
 @dataclass(frozen=True)
 class AgentPreparationContext:
+    """Host staging locations and protected model inputs for a harness."""
+
     run_id: str
     task_path: Path
     layout: CandidateLayout
@@ -84,7 +86,8 @@ class AgentPreparationContext:
     staging_directory: Path
     agent_home_directory: Path
     model_workspace_directory: Path
-    writable_workspace_paths: tuple[Path, ...]
+    read_only_workspace_paths: tuple[Path, ...]
+    readable_tool_paths: tuple[Path, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -351,7 +354,16 @@ def _prepare_agent_sandbox_context(
             staging_directory=launcher_root,
             agent_home_directory=agent_home,
             model_workspace_directory=control_dir / "model_workspace",
-            writable_workspace_paths=task_spec.editable_paths,
+            # The benchmark owns both task inputs and public runtime metadata.
+            read_only_workspace_paths=(
+                *task_spec.read_only_paths,
+                Path(_LAYOUT.task_directory).relative_to(_LAYOUT.workspace_directory),
+                Path(_LAYOUT.launcher_filename),
+                Path(".git"),
+                Path(".agents"),
+                Path(".codex"),
+            ),
+            readable_tool_paths=(Path("/opt/dafnyutils-dafny"),),
         )
     )
     launcher = launcher_root / _LAYOUT.launcher_filename

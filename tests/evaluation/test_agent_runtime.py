@@ -13,15 +13,19 @@ import yaml
 from evaluation.agent import runtime
 from evaluation.agent.runtime import (
     AgentLaunchSpec,
+    AgentPreparationContext,
     AgentSandboxContext,
     CandidateExecution,
+    CandidateRunContext,
     CandidateTerminationError,
     SandboxProfile,
     build_docker_compose_agent_command,
+    prepare_agent_sandbox_context,
     run_candidate_lifecycle,
     write_compose_override,
 )
 from evaluation.submission.container_mounts import ContainerWorkspacePlan
+from evaluation.task.release import prepare_release, publish_release
 
 
 def _context(tmp_path: Path) -> AgentSandboxContext:
@@ -42,6 +46,68 @@ def _context(tmp_path: Path) -> AgentSandboxContext:
         env={},
         notes=(),
     )
+
+
+# Preparation forwards declared protected inputs without changing candidate mount modes.
+def test_preparation_declares_protected_runtime_capabilities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release_directory = tmp_path / "release"
+    publish_release(("true",), release_directory)
+    release = prepare_release(release_directory, tmp_path / "workspace")
+    run_directory = tmp_path / "case"
+    run_directory.mkdir()
+    preparations: list[AgentPreparationContext] = []
+
+    def prepare_agent(context: AgentPreparationContext) -> AgentLaunchSpec:
+        preparations.append(context)
+        launcher = context.staging_directory / "agent"
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        return AgentLaunchSpec(image="agent:test")
+
+    monkeypatch.setattr(runtime, "docker_runtime_available", lambda: True)
+    context = prepare_agent_sandbox_context(
+        prepare_agent=prepare_agent,
+        record_launch=lambda command, prompt: None,
+        compose_file=tmp_path / "base-compose.yml",
+        env={"PATH": os.environ["PATH"]},
+        run_context=CandidateRunContext(
+            run_directory, "true", "direct", run_directory / "artifacts"
+        ),
+        prepared_candidate=release.tasks["true"],
+        release=release,
+    )
+    (preparation,) = preparations
+    compose = yaml.safe_load(context.compose_files[1].read_text(encoding="utf-8"))
+    agent = compose["services"]["agent-workflow"]
+    task_spec = release.tasks["true"].workspace_spec
+    assert preparation.read_only_workspace_paths == (
+        *task_spec.read_only_paths,
+        Path("task"),
+        Path("agent"),
+        Path(".git"),
+        Path(".agents"),
+        Path(".codex"),
+    )
+    assert not set(task_spec.editable_paths).intersection(preparation.read_only_workspace_paths)
+    volumes = {mount["target"]: mount for mount in agent["volumes"]}
+    for relative in task_spec.read_only_paths:
+        assert volumes[f"/workspace/{relative}"]["read_only"]
+    for relative in task_spec.editable_paths:
+        assert not volumes[f"/workspace/{relative}"]["read_only"]
+    for target in ("/workspace", "/workspace/task", "/workspace/agent", "/run/repo_agent"):
+        assert volumes[target]["read_only"]
+    for target in (
+        "/workspace/.agent",
+        "/workspace/_build",
+        "/run",
+        "/run/agent_artifacts",
+        "/run/agent_home",
+        "/tmp",
+    ):
+        assert not volumes[target]["read_only"]
+    assert preparation.readable_tool_paths == (Path("/opt/dafnyutils-dafny"),)
 
 
 def _execution(

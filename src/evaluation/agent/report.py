@@ -48,7 +48,6 @@ def validate_agent_report(
     if report.status in {
         AgentRunStatus.FAILED,
         AgentRunStatus.TIMED_OUT,
-        AgentRunStatus.TURN_BUDGET_EXHAUSTED,
     } and actual not in {empty, expected}:
         return "agent result records partial public task consumption"
     if report.status is AgentRunStatus.INVALID_TASK and actual != empty:
