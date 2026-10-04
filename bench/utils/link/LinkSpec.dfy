@@ -54,31 +54,45 @@ module LinkSpec {
     else name
   }
 
+  function UnknownShortTemplate(): BenchWorld.Bytes
+  {
+    ['l', 'i', 'n', 'k', ':', ' ', 'i', 'n', 'v', 'a', 'l', 'i', 'd',
+     ' ', 'o', 'p', 't', 'i', 'o', 'n', ' ', '-', '-', ' ', '\'', '\0',
+     '\'', '\n', 'T', 'r', 'y', ' ', '\'', 'l', 'i', 'n', 'k', ' ', '-',
+     '-', 'h', 'e', 'l', 'p', '\'', ' ', 'f', 'o', 'r', ' ', 'm', 'o', 'r',
+     'e', ' ', 'i', 'n', 'f', 'o', 'r', 'm', 'a', 't', 'i', 'o', 'n', '.',
+     '\n']
+  }
+
+  function UnknownShortText(byte: BenchWorld.RawByte): BenchWorld.Bytes
+  {
+    UnknownShortTemplate()[25 := byte]
+  }
+
   function ParseErrorText(err: CliTypes.ParseError): BenchWorld.Bytes
   {
-    var text := if err.kind == CliTypes.UnknownOption then
+    if err.kind == CliTypes.UnknownOption then
         if |err.rawToken| > 2 && err.rawToken[0] == '-' && err.rawToken[1] == '-' then
-          "link: unrecognized option '" + err.rawToken + "'\n" +
+          "link: unrecognized option '" + Utf8.Encode(err.rawToken) + "'\n" +
           "Try 'link --help' for more information.\n"
         else if |err.rawToken| > 1 && err.rawToken[0] == '-' then
-          "link: invalid option -- '" + [err.rawToken[1]] + "'\n" +
-          "Try 'link --help' for more information.\n"
+          UnknownShortText(Utf8.EncodeChar(err.rawToken[1])[0])
         else
           "link: invalid option\nTry 'link --help' for more information.\n"
       else if err.kind == CliTypes.UnexpectedValue then
-        "link: option '" + LongOptionName(err.rawToken) +
+        "link: option '" + Utf8.Encode(LongOptionName(err.rawToken)) +
         "' doesn't allow an argument\n" +
         "Try 'link --help' for more information.\n"
       else if err.kind == CliTypes.Ambiguous then
-        "link: option '" + err.rawToken + "' is ambiguous\n" +
+        "link: option '" + Utf8.Encode(err.rawToken) +
+        "' is ambiguous; possibilities: '--help' '--version'\n" +
         "Try 'link --help' for more information.\n"
       else
-        "link: " +
+        "link: " + Utf8.Encode(
         (if err.kind == CliTypes.MissingValue
         then "missing option value"
-        else "parse error") +
-        " at token '" + err.rawToken + "'\n";
-    Utf8.Encode(text)
+        else "parse error")) +
+        " at token '" + Utf8.Encode(err.rawToken) + "'\n"
   }
 
   twostate predicate LinkResult(

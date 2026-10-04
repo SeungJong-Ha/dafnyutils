@@ -1,5 +1,5 @@
 use super::super::pattern::{
-    Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, ValueContext,
+    Alternative, ArgvPattern, Atom, Element, OperandSource, OptionChoice, ValueContext, ValueSource,
 };
 use super::super::PatternInputGenerator;
 use super::super::{support, system_state};
@@ -14,8 +14,10 @@ const TARGET: Atom = Atom::Operand(OperandSource::Generated(link_target));
 const EXTRA: Atom = Atom::Operand(OperandSource::Target {
     existing_percent: 50,
 });
+const MALFORMED_OPTION: Atom = Atom::Value(ValueSource::Generated(malformed_option));
 
 static ARGV_PATTERN: ArgvPattern = ArgvPattern::new(&[
+    Alternative::weighted(2, &[Element::once(MALFORMED_OPTION)]),
     Alternative::weighted(
         6,
         &[
@@ -65,6 +67,38 @@ fn link_target(context: &ValueContext<'_>, rng: &mut StdRng) -> String {
         format!("missing-parent/{name}")
     } else {
         name
+    }
+}
+
+fn random_non_ascii_scalar(rng: &mut StdRng) -> char {
+    let codepoint = match rng.random_range(0..3) {
+        0 => rng.random_range(0x80..=0x7ff),
+        1 if rng.random_bool(0.5) => rng.random_range(0x800..=0xd7ff),
+        1 => rng.random_range(0xe000..=0xffff),
+        _ => rng.random_range(0x10000..=0x10ffff),
+    };
+    char::from_u32(codepoint).expect("generated Unicode scalar")
+}
+
+fn malformed_option(_context: &ValueContext<'_>, rng: &mut StdRng) -> String {
+    let scalar = random_non_ascii_scalar(rng);
+    match rng.random_range(0..4) {
+        0 => {
+            let suffix_len = rng.random_range(0..=4);
+            let suffix: String = (0..suffix_len)
+                .map(|_| rng.random_range(b'a'..=b'z') as char)
+                .collect();
+            format!("--={suffix}")
+        }
+        1 => format!("--={scalar}"),
+        2 => format!("--{scalar}"),
+        _ => {
+            let suffix_len = rng.random_range(0..=3);
+            let suffix: String = (0..suffix_len)
+                .map(|_| rng.random_range(b'a'..=b'z') as char)
+                .collect();
+            format!("-{scalar}{suffix}")
+        }
     }
 }
 

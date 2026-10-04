@@ -222,6 +222,15 @@ def test_invalid_option_matches_coreutils(executables: tuple[Path, Path], tmp_pa
     assert_parity(executables, ["--thisoptiondoesnotexist"], tmp_path)
 
 
+# A non-ASCII short option preserves GNU getopt's first-byte diagnostic.
+def test_non_ascii_short_option_matches_coreutils(
+    executables: tuple[Path, Path], tmp_path: Path
+) -> None:
+    # upstream: none - Adds byte-exact invalid-option diagnostic parity.
+    # upstream-reason: parity.
+    assert_parity(executables, ["-é"], tmp_path)
+
+
 # Help and version requests take precedence according to their argument order.
 @pytest.mark.parametrize(
     "args",
