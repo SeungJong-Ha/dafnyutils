@@ -30,6 +30,20 @@ owns read-only public mounts, editable task roots and evaluator isolation.
 - Subdirectory instructions may specialize this workflow, but must not silently
   weaken its evidence or benchmark-integrity requirements.
 - Do not modify instructions merely to bypass a restriction on the current task.
+- Reserve every `plan/` and `wiki/` tree, including nested directories and
+  submodules, for Markdown (`.md`) documents only. Do not create or store generated
+  evidence, logs, JSON/JSONL/CSV outputs, images, archives, scripts, source probes,
+  binaries, caches, or artifact symlinks there, even temporarily or when ignored
+  by Git. Renaming an artifact to `.md` does not make it a document.
+- Put non-sensitive maintenance scratch and generated artifacts in
+  `/workspace/tmp/<task-slug>/`, and simple experiment artifacts in
+  `/workspace/tmp/experiment/<run-id>/`. Benchmark and private evidence must use
+  the protocol-authorized location and existing isolation rules. Plan/wiki
+  documents summarize commands and results and reference external artifacts with
+  their availability; they do not serve as artifact storage.
+- Before finishing, inspect `plan/` and `wiki/` recursively for non-Markdown
+  files. Remove violations created by the current task; preserve pre-existing
+  files unless their cleanup is explicitly authorized.
 
 ## Required workflow: inspect -> implement -> verify -> document
 
