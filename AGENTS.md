@@ -189,6 +189,8 @@ we compare its behavior with the original GNU coreutils binaries.
   commands and results, and known limitations or follow-up work.
 - Include an accurate `Co-authored-by: Full Name <email>` trailer for every
   co-author who materially contributed including Codex.
+- Never create merge commits. Integrate branches by rebasing onto the target
+  branch and landing by fast-forward or GitHub's **Rebase and merge**.
 
 ## Explanations
 

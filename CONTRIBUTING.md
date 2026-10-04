@@ -495,6 +495,8 @@ Co-authored-by: Full Name <email>
 
 Replace the template fields with facts. Include an accurate `Co-authored-by: Full Name <email>` trailer for every material co-author, including Codex when it contributed. Use the contributor's actual configured identity; do not invent an email or copy the placeholders. Keep required trailers at the end of the message.
 
+Do not create merge commits. Integrate branches by rebasing onto the target branch (`git pull --rebase`) and land pull requests with GitHub's **Rebase and merge**.
+
 ## Show verification and fuzzing results
 
 Report evidence in **tests → fuzzing → verification** order. Copy and paste actual stdout into the template's fenced `text` blocks, with the exact command and exit code alongside it. Include final summaries and explain failed, skipped, unrun or inapplicable work. A missing tool, timeout or skipped required check is not a pass.
