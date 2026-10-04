@@ -2,25 +2,11 @@
 
 ## Purpose
 
-This repository is a verification-oriented benchmark workspace for evaluating
-coding agents that use Dafny to produce program specifications, implementations,
-and proofs, including tasks involving GNU coreutils.
-
-Preserve the boundaries between specification, implementation, proof, evaluation,
-and benchmark integrity. Passing tests alone is not the objective.
-
-This repository owns the versioned benchmark agent task/result wire, candidate
-layout and isolation contract, report acceptance rules, and host archive
-collection. See `docs/agent-protocol.md`. Cosyn may conform to the wire without
-importing Dafnyutils; the integration repository composes the two packages.
-Change a wire version when changing its incompatible fields or semantics, and
-update the integration conformance tests with the same change.
-
-All model-visible task prompts, public resources, intermediate workspaces and
-final submissions must reside under `/workspace`. Keep private runner settings,
-credentials and logs outside that model file view. Harnesses enforce model file
-access within this boundary while allowing system-tool execution; the benchmark
-owns read-only public mounts, editable task roots and evaluator isolation.
+Dafnyutils is a benchmark repository that tests whether agents can write code and
+proofs from formal specifications of GNU coreutils written in Dafny. It includes
+a model of system state as well as program logic. This model lets us specify and
+verify effects on the system. We check the model through differential testing:
+we compare its behavior with the original GNU coreutils binaries.
 
 ## Instruction scope
 
