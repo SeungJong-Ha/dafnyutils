@@ -831,6 +831,7 @@ fn compare_detects_inode_preferred_io_block_size_difference() {
 #[test]
 fn semantic_coverage_tracks_behavior_buckets() {
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec!["a.txt".to_string(), "missing.txt".to_string()],
         fixture: FixtureBlueprint {
             directories: Vec::new(),
@@ -867,6 +868,7 @@ fn semantic_coverage_tracks_behavior_buckets() {
 #[test]
 fn semantic_operand_classification_skips_mv_suffix_values() {
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec![
             "-b".to_string(),
             "-S".to_string(),
@@ -913,6 +915,7 @@ fn semantic_operand_classification_skips_mv_suffix_values() {
 #[test]
 fn semantic_coverage_reports_new_bucket_discovery() {
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec!["-".to_string()],
         fixture: FixtureBlueprint {
             directories: Vec::new(),
@@ -939,6 +942,7 @@ fn semantic_coverage_reports_new_bucket_discovery() {
 #[test]
 fn interesting_corpus_keeps_only_interesting_cases_and_caps_size() {
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec!["a.txt".to_string()],
         fixture: FixtureBlueprint {
             directories: Vec::new(),
@@ -1166,6 +1170,7 @@ fn evaluate_case_suppresses_stdin_when_argv_does_not_consume_it() {
         },
     };
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec![
             script.to_str().expect("UTF-8 temp path").to_string(),
             "input.txt".to_string(),
@@ -1784,6 +1789,7 @@ fn snapshot_fs_records_directory_identity() {
 #[test]
 fn fixture_reduction_preserves_hardlink_source() {
     let case = GeneratedCase {
+        file_size_limit: None,
         argv: vec!["cat".to_string()],
         fixture: FixtureBlueprint {
             directories: Vec::new(),

@@ -403,6 +403,7 @@ mod tests {
 
     fn sample_case() -> GeneratedCase {
         GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),

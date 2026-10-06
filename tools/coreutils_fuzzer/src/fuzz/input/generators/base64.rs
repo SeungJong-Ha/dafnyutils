@@ -16,6 +16,36 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         6 => support::case(vec!["--decode"], fixture, b"a"),
         7 => support::case(vec!["--wrap=bad", "--help"], fixture, b""),
         8 => support::case(vec!["one", "two"], fixture, b""),
+        9 => support::case(
+            vec!["a.txt/child"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        10 => support::case(
+            vec!["a-link/"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        11 => support::case(
+            vec!["loop"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        12 => support::case(
+            vec!["dangling"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        13 => support::case(
+            vec![""],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        14 => support::case(
+            vec!["dir"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
         _ => return None,
     })
 }

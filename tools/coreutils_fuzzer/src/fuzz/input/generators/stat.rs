@@ -381,6 +381,7 @@ fn stat_fixture() -> FixtureBlueprint {
 
 fn case(argv: Vec<&str>, fixture: FixtureBlueprint) -> GeneratedCase {
     GeneratedCase {
+        file_size_limit: None,
         argv: argv.into_iter().map(str::to_string).collect(),
         fixture,
         stdin: Vec::new(),

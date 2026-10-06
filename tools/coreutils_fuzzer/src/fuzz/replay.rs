@@ -358,6 +358,7 @@ mod tests {
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let paths = native_paths();
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -434,6 +435,7 @@ mod tests {
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let paths = native_paths();
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -474,6 +476,7 @@ mod tests {
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let paths = native_paths();
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -501,6 +504,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -544,6 +548,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -613,6 +618,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["--version".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -674,6 +680,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -718,6 +725,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -753,6 +761,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -785,6 +794,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -843,6 +853,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -882,6 +893,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -941,6 +953,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-".to_string(), "link".to_string(), "../alias".to_string()],
             fixture: FixtureBlueprint {
                 directories: vec![DirSpec {
@@ -983,6 +996,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let args = mismatch_args(PathBuf::from("/bin/cat"), PathBuf::from("/bin/false"));
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-".into()],
             stdin: vec![0, 128, 255],
             cwd: PathBuf::from("."),

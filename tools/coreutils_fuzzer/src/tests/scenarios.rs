@@ -2,6 +2,131 @@ use crate::fuzz::input::scenario_case;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
+fn check_filesystem_failure_seed(utility: &str, iteration: usize, reason: &str) {
+    use crate::fuzz::execution::prepare_variant_with_limit;
+    use crate::fuzz::system_state_concretizer::{apply_fixture_modes, stage_iteration_dirs};
+    use crate::fuzz::{ResolvedPaths, ResolvedTarget, VariantKind};
+    use crate::utils::cli::ExecKind;
+    use std::time::Duration;
+
+    let case = scenario_case(utility, iteration).unwrap();
+    let root = tempfile::tempdir().unwrap();
+    let (fixture, _) = stage_iteration_dirs(root.path(), None, 0, &case.fixture, false).unwrap();
+    let paths = ResolvedPaths {
+        reference: ResolvedTarget {
+            kind: ExecKind::Native,
+            path: PathBuf::from(format!("/usr/bin/{utility}")),
+            label: "reference",
+        },
+        dut: ResolvedTarget {
+            kind: ExecKind::Native,
+            path: PathBuf::from(format!("/usr/bin/{utility}")),
+            label: "dut",
+        },
+    };
+    let prepared = prepare_variant_with_limit(
+        VariantKind::Ref,
+        &paths,
+        &case.argv,
+        &case.cwd,
+        &fixture,
+        0o022,
+        None,
+        case.file_size_limit,
+    )
+    .unwrap();
+    apply_fixture_modes(&fixture, &case.fixture).unwrap();
+    let result = prepared
+        .go_and_collect(&case.stdin, Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(
+        result.termination.exit_code(),
+        Some(1),
+        "{utility} scenario {iteration}"
+    );
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains(reason),
+        "{utility} scenario {iteration}: {:?}",
+        result.stderr
+    );
+    for file in &case.fixture.files {
+        assert_eq!(
+            std::fs::read(fixture.join(&file.relative_path)).unwrap(),
+            file.bytes
+        );
+    }
+    for link in &case.fixture.symlinks {
+        assert_eq!(
+            std::fs::read_link(fixture.join(&link.relative_path)).unwrap(),
+            link.target
+        );
+    }
+}
+
+// The ln:4 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_ln_source_slash_empty_target() {
+    check_filesystem_failure_seed("ln", 4, "Not a directory");
+}
+
+// The ln:5 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_ln_missing_source() {
+    check_filesystem_failure_seed("ln", 5, "No such file or directory");
+}
+
+// The ln:6 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_ln_directory_source() {
+    check_filesystem_failure_seed("ln", 6, "hard link not allowed for directory");
+}
+
+// The ln:7 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_ln_occupied_destination() {
+    check_filesystem_failure_seed("ln", 7, "File exists");
+}
+
+// The unlink:24 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_unlink_symlink_slash() {
+    check_filesystem_failure_seed("unlink", 24, "Not a directory");
+}
+
+// The unlink:25 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_unlink_directory_symlink_slash() {
+    check_filesystem_failure_seed("unlink", 25, "Not a directory");
+}
+
+// The cat:4 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_cat_file_as_parent() {
+    check_filesystem_failure_seed("cat", 4, "Not a directory");
+}
+
+// The cat:6 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_cat_link_loop() {
+    check_filesystem_failure_seed("cat", 6, "Too many levels of symbolic links");
+}
+
+// The mv:25 scenario triggers its native error and preserves the fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn failure_seed_mv_link_loop_slash() {
+    check_filesystem_failure_seed("mv", 25, "Too many levels of symbolic links");
+}
+
 // The recursive chmod seed carries nested nodes with regular and special permission bits.
 #[test]
 fn chmod_recursive_scenario_covers_nested_special_mode_fixture() {

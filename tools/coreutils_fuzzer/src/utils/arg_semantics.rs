@@ -70,6 +70,7 @@ pub(crate) fn should_consume_stdin_from_argv(util: &str, argv: &[String]) -> boo
         .map(|capability| capability.stdin_policy)
         .unwrap_or(StdinPolicy::Never)
     {
+        StdinPolicy::Always => true,
         StdinPolicy::Stream => positionals.is_empty() || positionals.contains(&"-"),
         StdinPolicy::Comm => positionals.iter().filter(|arg| **arg == "-").count() == 1,
         StdinPolicy::Csplit => positionals.first().is_some_and(|arg| *arg == "-"),

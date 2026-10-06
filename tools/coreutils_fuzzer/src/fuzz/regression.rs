@@ -339,6 +339,7 @@ mod tests {
             cases: vec![ExplicitCaseV1 {
                 id: "stdin".to_string(),
                 case: GeneratedCase {
+                    file_size_limit: None,
                     argv: vec!["-".to_string()],
                     fixture: FixtureBlueprint {
                         directories: Vec::new(),

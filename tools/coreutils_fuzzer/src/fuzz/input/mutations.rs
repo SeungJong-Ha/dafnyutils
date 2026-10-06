@@ -32,6 +32,7 @@ pub(crate) fn generate_case(
     };
     let cwd = generate_cwd(util, rng, &fixture, false);
     let mut case = GeneratedCase {
+        file_size_limit: None,
         argv,
         fixture,
         stdin,
@@ -339,6 +340,7 @@ mod tests {
     #[test]
     fn uniq_corpus_mutation_stays_within_supported_operands() {
         let base = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["input".to_string()],
             fixture: generate_system_state("uniq", &mut StdRng::seed_from_u64(0), 4),
             stdin: Vec::new(),
@@ -354,6 +356,7 @@ mod tests {
     #[test]
     fn uniq_traditional_skip_corpus_mutation_stays_supported() {
         let base = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["+2000".to_string()],
             fixture: generate_system_state("uniq", &mut StdRng::seed_from_u64(0), 4),
             stdin: Vec::new(),

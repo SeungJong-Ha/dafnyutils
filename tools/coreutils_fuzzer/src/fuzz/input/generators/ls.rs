@@ -1063,6 +1063,7 @@ fn ls_fixture() -> FixtureBlueprint {
 
 fn case(argv: &[&str], fixture: FixtureBlueprint) -> GeneratedCase {
     GeneratedCase {
+        file_size_limit: None,
         argv: argv.iter().map(|arg| (*arg).to_string()).collect(),
         fixture,
         stdin: Vec::new(),

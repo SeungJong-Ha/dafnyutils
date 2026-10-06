@@ -46,6 +46,7 @@ pub(super) fn pick_file_or_missing(files: &[String], rng: &mut StdRng) -> String
 
 pub(super) fn case(argv: Vec<&str>, fixture: FixtureBlueprint, stdin: &[u8]) -> GeneratedCase {
     GeneratedCase {
+        file_size_limit: None,
         argv: argv.into_iter().map(str::to_string).collect(),
         fixture,
         stdin: stdin.to_vec(),

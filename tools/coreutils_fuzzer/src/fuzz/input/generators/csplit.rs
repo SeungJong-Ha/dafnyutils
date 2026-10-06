@@ -35,6 +35,11 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         1 => support::case(vec!["-", "3"], fixture, b"red\nblue\ngreen\n"),
         2 => support::case(vec!["split.txt", "2", "4"], fixture, b""),
         3 => support::case(vec!["split.txt", "0"], fixture, b""),
+        4 => {
+            let mut case = support::case(vec!["split.txt", "2"], fixture, b"");
+            case.file_size_limit = Some(2);
+            case
+        }
         _ => return None,
     })
 }

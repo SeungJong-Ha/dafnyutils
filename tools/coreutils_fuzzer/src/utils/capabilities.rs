@@ -24,6 +24,7 @@ pub(crate) enum StdinDeliveryPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StdinPolicy {
     Never,
+    Always,
     Stream,
     Comm,
     Csplit,
@@ -234,6 +235,7 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
             "--help",
             "--version",
         ]),
+        stdin_policy: StdinPolicy::Always,
         ..capability!("tee", tee)
     },
     UtilityCapability {

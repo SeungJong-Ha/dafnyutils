@@ -36,6 +36,34 @@ pub(super) fn basic_fixture() -> FixtureBlueprint {
     }
 }
 
+pub(super) fn failure_fixture() -> FixtureBlueprint {
+    let mut fixture = basic_fixture();
+    fixture.symlinks.extend([
+        SymlinkSpec {
+            relative_path: PathBuf::from("dir-link"),
+            target: PathBuf::from("dir"),
+        },
+        SymlinkSpec {
+            relative_path: PathBuf::from("loop"),
+            target: PathBuf::from("loop"),
+        },
+        SymlinkSpec {
+            relative_path: PathBuf::from("dangling"),
+            target: PathBuf::from("missing"),
+        },
+    ]);
+    fixture.directories.push(DirSpec {
+        relative_path: PathBuf::from("occupied"),
+        mode: 0o755,
+    });
+    fixture.files.push(FileSpec {
+        relative_path: PathBuf::from("occupied/child"),
+        bytes: b"keep".to_vec(),
+        mode: 0o644,
+    });
+    fixture
+}
+
 pub(super) fn line_fixture() -> FixtureBlueprint {
     FixtureBlueprint {
         directories: vec![DirSpec {

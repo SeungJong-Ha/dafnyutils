@@ -180,6 +180,9 @@ pub struct ExecHelperArgs {
     #[arg(long, requires = "target_uid")]
     pub(crate) target_gid: Option<u32>,
 
+    #[arg(long)]
+    pub(crate) file_size_limit: Option<u64>,
+
     #[arg(last = true, allow_hyphen_values = true)]
     pub(crate) argv: Vec<String>,
 }

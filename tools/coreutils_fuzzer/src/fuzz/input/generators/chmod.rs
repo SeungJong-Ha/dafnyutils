@@ -146,18 +146,21 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
     };
     Some(match iteration {
         0 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["0644".to_string(), "a.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         1 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["u+x".to_string(), "a.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         2 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["invalid-mode".to_string(), "a.txt".to_string()],
             fixture,
             stdin: Vec::new(),
@@ -170,6 +173,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         7 => support::case(vec!["-R", "0755", "dir"], fixture, b""),
         8 => support::case(vec!["-R", "-L", "u=rwX,g+s,o-t", "."], fixture, b""),
         9 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["u+x".to_string(), "../root-file".to_string()],
             fixture,
             stdin: Vec::new(),

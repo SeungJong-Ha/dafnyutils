@@ -40,18 +40,21 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
     let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a-link".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         1 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-v".to_string(), "a.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         2 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-n".to_string(),
                 "a-link".to_string(),
@@ -62,6 +65,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         3 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-z".to_string(), "a-link".to_string()],
             fixture,
             stdin: Vec::new(),

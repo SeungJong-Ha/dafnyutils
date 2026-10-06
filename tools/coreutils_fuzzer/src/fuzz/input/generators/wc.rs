@@ -33,24 +33,28 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
     let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture,
             stdin: b"stdin words\n".to_vec(),
             cwd: PathBuf::from("."),
         },
         1 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a.txt".to_string(), "b.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         2 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-lwm".to_string(), "-".to_string(), "a.txt".to_string()],
             fixture,
             stdin: b"prefix\nline\n".to_vec(),
             cwd: PathBuf::from("."),
         },
         3 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-L".to_string(),
                 "a.txt".to_string(),

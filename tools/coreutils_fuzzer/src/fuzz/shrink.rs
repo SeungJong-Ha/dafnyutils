@@ -7,7 +7,7 @@ use super::comparison::fs_snapshot::{
     snapshot_fs_post, snapshot_fs_pre_with_restore, snapshot_metadata_unchanged,
     IdentityTransitionEvidence,
 };
-use super::execution::{prepare_variant, ExecutionEvidence};
+use super::execution::{prepare_variant_with_limit, ExecutionEvidence};
 use super::system_state_concretizer::{
     apply_fixture_modes, clone_fixture_tree, set_fixture_owner, stage_iteration_dirs,
 };
@@ -181,7 +181,7 @@ pub(crate) fn execute_case_in_work_dir(
             "saved process umask differs from schedule: expected {umask:04o}"
         ));
     }
-    let reference = prepare_variant(
+    let reference = prepare_variant_with_limit(
         VariantKind::Ref,
         paths,
         &case.argv,
@@ -189,6 +189,7 @@ pub(crate) fn execute_case_in_work_dir(
         &ref_dir,
         umask,
         target_identity,
+        case.file_size_limit,
     )?;
     if let Some(saved) = &args.replay_fixture_times {
         super::system_state_concretizer::restore_fixture_time_inputs(&ref_dir, saved)?;
@@ -209,7 +210,7 @@ pub(crate) fn execute_case_in_work_dir(
     let mut fixture_sharing = pre_fs == ref_fs && snapshot_metadata_unchanged(&ref_dir, &ref_fs)?;
     let mut prepared_dut = None;
     if fixture_sharing {
-        prepared_dut = Some(prepare_variant(
+        prepared_dut = Some(prepare_variant_with_limit(
             VariantKind::Dut,
             paths,
             &case.argv,
@@ -217,6 +218,7 @@ pub(crate) fn execute_case_in_work_dir(
             &ref_dir,
             umask,
             target_identity,
+            case.file_size_limit,
         )?);
         fixture_sharing = snapshot_metadata_unchanged(&ref_dir, &ref_fs)?;
     }
@@ -230,7 +232,7 @@ pub(crate) fn execute_case_in_work_dir(
         // Drop the waiting helper before replacing its cwd tree.
         drop(prepared_dut);
         clone_fixture_tree(&dut_dir, &ref_dir)?;
-        let dut = prepare_variant(
+        let dut = prepare_variant_with_limit(
             VariantKind::Dut,
             paths,
             &case.argv,
@@ -238,6 +240,7 @@ pub(crate) fn execute_case_in_work_dir(
             &ref_dir,
             umask,
             target_identity,
+            case.file_size_limit,
         )?;
         super::system_state_concretizer::restore_observed_fixture_times(&ref_dir, &pre_fs)?;
         apply_fixture_modes(&ref_dir, &case.fixture)?;
@@ -557,6 +560,73 @@ mod tests {
     use clap::Parser;
     use std::path::PathBuf;
 
+    // Both target executions receive the saved byte limit and retain the same failed-write prefix.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn file_size_limit_is_shared_by_both_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let CliCommand::Fuzz(args) = Cli::try_parse_from([
+            "fuzzer",
+            "fuzz",
+            "--util",
+            "tee",
+            "--ref-kind",
+            "native",
+            "--dut-kind",
+            "native",
+        ])
+        .unwrap()
+        .command
+        else {
+            unreachable!()
+        };
+        let paths = ResolvedPaths {
+            reference: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/usr/bin/tee".into(),
+                label: "reference",
+            },
+            dut: ResolvedTarget {
+                kind: ExecKind::Native,
+                path: "/usr/bin/tee".into(),
+                label: "dut",
+            },
+        };
+        let case = scenario_case("tee", 11).unwrap();
+        let observed = super::execute_case_in_work_dir(
+            &args,
+            &paths,
+            root.path(),
+            None,
+            1,
+            11,
+            11,
+            &case,
+            None,
+        )
+        .unwrap();
+        assert_eq!(observed.reference.termination.exit_code(), Some(1));
+        assert_eq!(observed.dut.termination.exit_code(), Some(1));
+        assert_eq!(observed.reference_fs["out"].data, case.stdin[..8]);
+        assert_eq!(observed.dut_fs["out"].data, case.stdin[..8]);
+        assert_eq!(observed.reference.stdout, case.stdin);
+        assert_eq!(observed.dut.stdout, case.stdin);
+    }
+
+    // A saved case and its shrink candidates retain the execution condition that triggered failure.
+    #[test]
+    fn file_size_limit_survives_serialization_and_shrinking() {
+        let case = scenario_case("tee", 11).unwrap();
+        let encoded = serde_json::to_vec(&case).unwrap();
+        let restored: GeneratedCase = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(restored, case);
+        let candidates = super::reduce_fixture(&case);
+        assert!(!candidates.is_empty());
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.file_size_limit == Some(8)));
+    }
+
     #[cfg(unix)]
     fn observe_script(script: &str) -> super::RawCaseObservation {
         observe_script_in_cwd(script, ".")
@@ -589,6 +659,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             stdin: Vec::new(),
             cwd: cwd.into(),
@@ -638,6 +709,7 @@ mod tests {
     #[test]
     fn stat_shrinking_preserves_required_format() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-c".into(), "%s".into(), "regular".into()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -657,6 +729,7 @@ mod tests {
     #[test]
     fn stat_shrinking_keeps_missing_format_value_errors() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["--format".into(), "%s".into()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -711,6 +784,7 @@ mod tests {
     #[test]
     fn fixture_reduction_preserves_generated_cwd() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a".to_string(), "z".to_string()],
             fixture: FixtureBlueprint {
                 directories: vec![
@@ -751,6 +825,7 @@ mod tests {
     #[test]
     fn fixture_reduction_preserves_cwd_ancestors() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: Vec::new(),
             fixture: FixtureBlueprint {
                 directories: vec![
@@ -777,6 +852,7 @@ mod tests {
     #[test]
     fn ls_argv_shrink_preserves_time_selector_dependency() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-t".to_string(), "--time=status".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -798,6 +874,7 @@ mod tests {
     #[test]
     fn du_argv_shrink_preserves_byte_accounting() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-b".to_string(), "-s".to_string(), ".".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -825,6 +902,7 @@ mod tests {
     #[test]
     fn ls_followed_metadata_shrink_preserves_fixture_topology() {
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-L".to_string(), "-n".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -882,6 +960,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["first".to_string(), "second".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -1017,6 +1096,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-c".into(), "cat".into()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -1056,6 +1136,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-c".into(), "umask; : > created".into()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -1143,6 +1224,7 @@ mod tests {
             },
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["--version".into()],
             fixture: FixtureBlueprint {
                 directories: vec![DirSpec {
@@ -1216,6 +1298,7 @@ mod tests {
             dut: target("dut"),
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-c".to_string(), "umask".to_string()],
             fixture: FixtureBlueprint {
                 directories: Vec::new(),
@@ -1308,6 +1391,7 @@ mod tests {
             dut: target("dut"),
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["--version".to_string()],
             fixture: FixtureBlueprint {
                 directories: vec![DirSpec {
@@ -1445,6 +1529,7 @@ mod tests {
             dut: target("dut"),
         };
         let case = GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-R".to_string(), "0755".to_string(), "dir".to_string()],
             fixture: FixtureBlueprint {
                 directories: vec![DirSpec {

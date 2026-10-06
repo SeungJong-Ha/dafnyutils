@@ -347,18 +347,21 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
     let fixture = system_state::basic_fixture();
     Some(match iteration {
         0 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a.txt".to_string(), "renamed.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         1 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a.txt".to_string(), "dir".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         2 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-t".to_string(),
                 "dir".to_string(),
@@ -370,6 +373,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         3 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-n".to_string(),
                 "a.txt".to_string(),
@@ -380,12 +384,14 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         4 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a-link".to_string(), "moved-link".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         5 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--debug".to_string(),
                 "-n".to_string(),
@@ -397,6 +403,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         6 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--backup=numbered".to_string(),
                 "-v".to_string(),
@@ -408,6 +415,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         7 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--backup=existing".to_string(),
                 "--suffix=.bak".to_string(),
@@ -419,6 +427,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         8 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--debug".to_string(),
                 "--update=none".to_string(),
@@ -430,6 +439,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         9 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--update=none-fail".to_string(),
                 "a.txt".to_string(),
@@ -440,6 +450,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         10 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--strip-trailing-slashes".to_string(),
                 "dir////".to_string(),
@@ -450,6 +461,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         11 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-u".to_string(),
                 "a.txt".to_string(),
@@ -460,6 +472,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         12 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "--no-copy".to_string(),
                 "a.txt".to_string(),
@@ -470,6 +483,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         13 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-f".to_string(),
                 "a.txt".to_string(),
@@ -480,24 +494,28 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         14 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["--target-directory=dir".to_string(), "a.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         15 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-t".to_string(), "a.txt".to_string(), "b.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         16 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["-T".to_string(), "a.txt".to_string(), "dir".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         17 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-T".to_string(),
                 "srcdir".to_string(),
@@ -508,6 +526,7 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         18 => GeneratedCase {
+            file_size_limit: None,
             argv: vec![
                 "-T".to_string(),
                 "srcdir".to_string(),
@@ -518,29 +537,68 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             cwd: PathBuf::from("."),
         },
         19 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["srcdir".to_string(), "srcdir/child".to_string()],
             fixture: mv_directory_fixture(),
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         20 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["loop-a/file".to_string(), "loop-out".to_string()],
             fixture: mv_symlink_loop_fixture(),
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         21 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["missing.txt".to_string(), "target.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
         22 => GeneratedCase {
+            file_size_limit: None,
             argv: vec!["a.txt/missing".to_string(), "renamed.txt".to_string()],
             fixture,
             stdin: Vec::new(),
             cwd: PathBuf::from("."),
         },
+        23 => support::case(
+            vec!["-T", "a.txt/", ""],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        24 => support::case(
+            vec!["-T", "dir-link/", "new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        25 => support::case(
+            vec!["-T", "loop/", "new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        26 => support::case(
+            vec!["-T", "a.txt", "dir"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        27 => support::case(
+            vec!["-T", "dir", "a.txt"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        28 => support::case(
+            vec!["-T", "dir", "dir/child"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        29 => support::case(
+            vec!["-T", "dir", "occupied"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
         _ => return None,
     })
 }

@@ -19,6 +19,9 @@ pub struct ResolvedTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratedCase {
+    /// A per-target byte limit; SIGXFSZ is ignored so writes report EFBIG.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) file_size_limit: Option<u64>,
     pub(crate) argv: Vec<String>,
     pub(crate) fixture: FixtureBlueprint,
     pub(crate) stdin: Vec<u8>,

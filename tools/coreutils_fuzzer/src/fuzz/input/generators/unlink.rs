@@ -81,6 +81,55 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
             });
             vec!["blocked/target"]
         }
+        24 => {
+            return Some(support::case(
+                vec!["a-link/"],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        25 => {
+            return Some(support::case(
+                vec!["dir-link/"],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        26 => {
+            return Some(support::case(
+                vec!["loop/"],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        27 => {
+            return Some(support::case(
+                vec!["a.txt/"],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        28 => {
+            return Some(support::case(
+                vec!["a.txt/child"],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        29 => {
+            return Some(support::case(
+                vec!["."],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
+        30 => {
+            return Some(support::case(
+                vec![".."],
+                system_state::failure_fixture(),
+                b"",
+            ))
+        }
         _ => return None,
     };
     Some(support::case(args, fixture, b""))

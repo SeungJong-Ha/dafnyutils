@@ -218,6 +218,7 @@ mod tests {
                 .map(|index| ExplicitCaseV1 {
                     id: format!("case-{index}"),
                     case: GeneratedCase {
+                        file_size_limit: None,
                         argv: Vec::new(),
                         fixture: FixtureBlueprint {
                             directories: Vec::new(),

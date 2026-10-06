@@ -52,6 +52,46 @@ pub(super) fn scenario_case(iteration: usize) -> Option<GeneratedCase> {
         ),
         2 => support::case(vec!["-s", "a.txt", "target.txt"], fixture, b""),
         3 => support::case(vec!["-s"], fixture, b""),
+        4 => support::case(
+            vec!["a.txt/", ""],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        5 => support::case(
+            vec!["missing", "new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        6 => support::case(
+            vec!["dir", "new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        7 => support::case(
+            vec!["a.txt", "target.txt"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        8 => support::case(
+            vec!["a.txt", "missing/new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        9 => support::case(
+            vec!["a.txt", "new/"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        10 => support::case(
+            vec!["dir-link/", "new"],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
+        11 => support::case(
+            vec!["a.txt", ""],
+            system_state::failure_fixture(),
+            b"payload longer than limit\n",
+        ),
         _ => return None,
     })
 }

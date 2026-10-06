@@ -153,6 +153,7 @@ pub(crate) fn run_variant(
 
 /// Prepares any target at READY using the same environment, umask and identity policy.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn prepare_variant(
     kind: VariantKind,
     paths: &ResolvedPaths,
@@ -161,6 +162,20 @@ pub(crate) fn prepare_variant(
     root: &Path,
     umask: u32,
     identity: Option<(u32, u32)>,
+) -> Result<PreparedTarget, String> {
+    prepare_variant_with_limit(kind, paths, argv, cwd, root, umask, identity, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_variant_with_limit(
+    kind: VariantKind,
+    paths: &ResolvedPaths,
+    argv: &[String],
+    cwd: &Path,
+    root: &Path,
+    umask: u32,
+    identity: Option<(u32, u32)>,
+    file_size_limit: Option<u64>,
 ) -> Result<PreparedTarget, String> {
     let target = match kind {
         VariantKind::Ref => &paths.reference,
@@ -174,6 +189,7 @@ pub(crate) fn prepare_variant(
         &canonical_process_environment(),
         umask,
         identity,
+        file_size_limit,
     )
 }
 
@@ -417,7 +433,7 @@ pub(crate) fn prepare_unobserved_target(
     umask: u32,
     identity: Option<(u32, u32)>,
 ) -> Result<PreparedTarget, String> {
-    prepare_controlled_target(target, argv, cwd, root, env, umask, identity)
+    prepare_controlled_target(target, argv, cwd, root, env, umask, identity, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -429,6 +445,7 @@ pub(crate) fn prepare_controlled_target(
     env: &BTreeMap<String, String>,
     umask: u32,
     identity: Option<(u32, u32)>,
+    file_size_limit: Option<u64>,
 ) -> Result<PreparedTarget, String> {
     #[cfg(unix)]
     {
@@ -468,6 +485,9 @@ pub(crate) fn prepare_controlled_target(
                 .arg(uid.to_string())
                 .arg("--target-gid")
                 .arg(gid.to_string());
+        }
+        if let Some(limit) = file_size_limit {
+            command.arg("--file-size-limit").arg(limit.to_string());
         }
         command.arg("--").args(argv);
         command.current_dir(root.join(cwd));
@@ -511,7 +531,16 @@ pub(crate) fn prepare_controlled_target(
     }
     #[cfg(not(unix))]
     {
-        let _ = (target, argv, cwd, root, env, umask, identity);
+        let _ = (
+            target,
+            argv,
+            cwd,
+            root,
+            env,
+            umask,
+            identity,
+            file_size_limit,
+        );
         Err("controlled target helper requires Unix".to_string())
     }
 }
@@ -598,7 +627,11 @@ fn helper_executable() -> Result<PathBuf, String> {
                         status.code()
                     ));
                 }
-                Ok(Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/coreutils_fuzzer"))
+                let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("target"));
+                std::fs::canonicalize(target_dir.join("debug/coreutils_fuzzer"))
+                    .map_err(|error| format!("failed to resolve built execution helper: {error}"))
             })
             .clone()
     }
@@ -825,8 +858,49 @@ pub(crate) fn run_exec_helper(args: ExecHelperArgs) -> ! {
             fail(&mut status, error);
         }
     }
+    if let Some(limit) = args.file_size_limit {
+        if let Err(error) = apply_file_size_limit(limit) {
+            fail(&mut status, error);
+        }
+    }
     let error = command.exec();
     fail(&mut status, error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn apply_file_size_limit(limit: u64) -> Result<(), String> {
+    #[repr(C)]
+    struct ResourceLimit {
+        soft: u64,
+        hard: u64,
+    }
+    unsafe extern "C" {
+        fn setrlimit(resource: i32, limit: *const ResourceLimit) -> i32;
+        fn signal(number: i32, handler: usize) -> usize;
+    }
+    let requested = ResourceLimit {
+        soft: limit,
+        hard: limit,
+    };
+    // Linux RLIMIT_FSIZE and SIGXFSZ. Both targets inherit the same disposition.
+    if unsafe { setrlimit(1, &requested) } != 0 {
+        return Err(format!(
+            "failed to set file-size limit: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if unsafe { signal(25, 1) } == usize::MAX {
+        return Err(format!(
+            "failed to ignore SIGXFSZ: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn apply_file_size_limit(_limit: u64) -> Result<(), String> {
+    Err("file-size-limit scenarios require Linux".to_string())
 }
 
 #[cfg(unix)]
