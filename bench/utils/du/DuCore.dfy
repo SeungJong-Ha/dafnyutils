@@ -5,6 +5,7 @@ include "DuSchema.dfy"
 include "DuSpec.dfy"
 
 module DuCore {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -43,7 +44,7 @@ module DuCore {
 
   function OutputPiece(
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match result
@@ -53,7 +54,7 @@ module DuCore {
 
   function ErrorPiece(
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match result
@@ -65,7 +66,7 @@ module DuCore {
     cmd: Schema.DuCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     i: nat
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.operands|
   {
     IOContract.ObservedReadFileResultFields(preFs, preStreams, cmd.operands[i])
@@ -148,21 +149,21 @@ module DuCore {
     var cmd := Schema.Command(raw);
 
     if cmd.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
 
     if cmd.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
 
     if cmd.mode == Schema.ModeUnsupportedAccounting {
-      var _, _ := io.WriteStderr(Spec.UnsupportedAccountingMessageSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.UnsupportedAccountingMessageSpec(), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -183,8 +184,7 @@ module DuCore {
       decreases |cmd.operands| - i
     {
       var path := cmd.operands[i];
-      var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-      var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+      var readResult := io.ReadFile(path);
       assert readResult == ReadResultCore(cmd, preFs, preStreams, i);
 
       match readResult {
@@ -199,10 +199,10 @@ module DuCore {
 
     assert io.stdout() == preStdout;
     assert io.stderr() == preStderr;
-    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr;
-    var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;

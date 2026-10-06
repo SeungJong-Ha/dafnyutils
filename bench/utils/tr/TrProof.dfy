@@ -4,6 +4,7 @@ include "TrCore.dfy"
 include "TrSpec.dfy"
 
 module TrProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = TrSchema
@@ -60,13 +61,6 @@ module TrProof {
   function ToSpecCmd(cmd: Core.TrCmd): Spec.TrCmd
   {
     Spec.TrCmd(ToSpecMode(cmd.mode), cmd.deleteSet, cmd.squeeze, cmd.set1, cmd.set2, cmd.squeezeSet, cmd.warnings)
-  }
-
-  function ToSpecDecode(decoded: Core.SetDecode): Spec.SetDecode
-  {
-    match decoded
-    case SetOk(bytes) => Spec.SetOk(bytes)
-    case SetUnsupported(operand) => Spec.SetUnsupported(operand)
   }
 
   lemma CoreAtomSatisfiesRelation(text: string, lo: nat)
@@ -500,13 +494,17 @@ module TrProof {
     requires inputCuts[i] <= |text|
     requires outputCuts[i] <= |bytes|
     ensures Core.DecodeSetFrom(text, inputCuts[i]) ==
-            Core.SetOk(bytes[outputCuts[i]..])
+            Result.Ok(bytes[outputCuts[i]..])
     decreases |inputCuts| - i
   {
     reveal Spec.SetPartitionFrom();
     if i + 1 == |inputCuts| {
       assert inputCuts[i] == |text|;
       assert outputCuts[i] == |bytes|;
+      assert bytes[outputCuts[i]..] == [];
+      assert Core.DecodeSetFrom(text, inputCuts[i]) == Result.Ok([]) by {
+        reveal Core.DecodeSetFrom();
+      }
     } else {
       SetPartitionFromElement(
         text, start, bytes, inputCuts, outputCuts, i
@@ -537,12 +535,12 @@ module TrProof {
 
   lemma DecodeSetFromOkSatisfiesPartition(text: string, start: nat)
     requires start <= |text|
-    requires Core.DecodeSetFrom(text, start).SetOk?
+    requires Core.DecodeSetFrom(text, start).Ok?
     ensures exists inputCuts: seq<nat>, outputCuts: seq<nat> ::
               Spec.SetPartitionFrom(
                 text,
                 start,
-                Core.DecodeSetFrom(text, start).bytes,
+                Core.DecodeSetFrom(text, start).v,
                 inputCuts,
                 outputCuts
               )
@@ -570,7 +568,7 @@ module TrProof {
             var next := end.next;
             var tail := Core.DecodeSetFrom(text, next);
             match tail
-            case SetOk(rest) =>
+            case Ok(rest) =>
               DecodeSetFromOkSatisfiesPartition(text, next);
               var tailInputCuts: seq<nat>, tailOutputCuts: seq<nat> :|
                 Spec.SetPartitionFrom(
@@ -586,13 +584,13 @@ module TrProof {
                 text, start, next, piece, rest,
                 tailInputCuts, tailOutputCuts
               );
-            case SetUnsupported(_) =>
+            case Err(_) =>
           }
         } else {
           var next := atom.next;
           var tail := Core.DecodeSetFrom(text, next);
           match tail
-          case SetOk(rest) =>
+          case Ok(rest) =>
             DecodeSetFromOkSatisfiesPartition(text, next);
             var tailInputCuts: seq<nat>, tailOutputCuts: seq<nat> :|
               Spec.SetPartitionFrom(
@@ -605,7 +603,7 @@ module TrProof {
               text, start, next, piece, rest,
               tailInputCuts, tailOutputCuts
             );
-          case SetUnsupported(_) =>
+          case Err(_) =>
         }
       }
     }
@@ -613,7 +611,7 @@ module TrProof {
 
   lemma SetBytesRelationMatchesCore(text: string, bytes: BW.Bytes)
     requires Spec.SetBytesRelation(text, bytes)
-    ensures Core.DecodeSet(text) == Core.SetOk(bytes)
+    ensures Core.DecodeSet(text) == Result.Ok(bytes)
   {
     var inputCuts: seq<nat>, outputCuts: seq<nat> :|
       Spec.SetPartition(text, bytes, inputCuts, outputCuts);
@@ -628,11 +626,11 @@ module TrProof {
 
   lemma CoreDecodeSatisfiesRelation(text: string)
     ensures Spec.SetDecodeRelation(
-              text, ToSpecDecode(Core.DecodeSet(text))
+              text, Core.DecodeSet(text)
             )
   {
     match Core.DecodeSet(text)
-    case SetOk(bytes) =>
+    case Ok(bytes) =>
       DecodeSetFromOkSatisfiesPartition(text, 0);
       var inputCuts: seq<nat>, outputCuts: seq<nat> :|
         Spec.SetPartitionFrom(
@@ -640,7 +638,7 @@ module TrProof {
         );
       assert Spec.SetPartition(text, bytes, inputCuts, outputCuts);
       assert Spec.SetBytesRelation(text, bytes);
-    case SetUnsupported(_) =>
+    case Err(_) =>
       assert forall bytes: BW.Bytes ::
           !Spec.SetBytesRelation(text, bytes) by {
         forall bytes: BW.Bytes
@@ -662,14 +660,14 @@ module TrProof {
     if |operands| == 0 then
       []
     else
-      [ToSpecDecode(Core.DecodeSet(operands[0]))] +
+      [Core.DecodeSet(operands[0])] +
       CoreDecodes(operands[1..])
   }
 
   lemma CoreDecodesIndex(operands: seq<string>, i: nat)
     requires i < |operands|
     ensures CoreDecodes(operands)[i] ==
-            ToSpecDecode(Core.DecodeSet(operands[i]))
+            Core.DecodeSet(operands[i])
     decreases |operands|
   {
     if i > 0 {
@@ -724,7 +722,7 @@ module TrProof {
   {
     if |operands| > 0 {
       match Core.DecodeSet(operands[0])
-      case SetOk(_) =>
+      case Ok(_) =>
         CoreFirstUnsupportedSatisfiesRelation(operands[1..]);
         if Core.HasUnsupportedOperand(operands[1..]) == "" {
           if exists operand ::
@@ -738,10 +736,10 @@ module TrProof {
             var i: int :|
               0 <= i < |operands| &&
               CoreDecodes(operands)[i] ==
-              Spec.SetUnsupported(operands[i]) &&
+              Result.Err(operands[i]) &&
               operand == operands[i] &&
               forall j :: 0 <= j < i ==>
-                            CoreDecodes(operands)[j].SetOk?;
+                            CoreDecodes(operands)[j].Ok?;
             if i > 0 {
               var tailIndex := i - 1;
               assert Spec.FirstUnsupportedOperandRelation(
@@ -756,15 +754,15 @@ module TrProof {
           var tailIndex: int :|
             0 <= tailIndex < |operands[1..]| &&
             CoreDecodes(operands[1..])[tailIndex] ==
-            Spec.SetUnsupported(operands[1..][tailIndex]) &&
+            Result.Err(operands[1..][tailIndex]) &&
             operand == operands[1..][tailIndex] &&
             forall j :: 0 <= j < tailIndex ==>
-                          CoreDecodes(operands[1..])[j].SetOk?;
+                          CoreDecodes(operands[1..])[j].Ok?;
           var i := tailIndex + 1;
           assert forall j :: 0 <= j < i ==>
-                               CoreDecodes(operands)[j].SetOk? by {
+                               CoreDecodes(operands)[j].Ok? by {
             forall j | 0 <= j < i
-              ensures CoreDecodes(operands)[j].SetOk?
+              ensures CoreDecodes(operands)[j].Ok?
             {
               if j > 0 {
                 assert CoreDecodes(operands)[j] ==
@@ -776,9 +774,9 @@ module TrProof {
               operands, CoreDecodes(operands), operand
             );
         }
-      case SetUnsupported(_) =>
+      case Err(_) =>
         if operands[0] == "" {
-          assert Core.DecodeSet(operands[0]) == Core.SetOk([]);
+          assert Core.DecodeSet(operands[0]) == Result.Ok([]);
         }
         assert Spec.FirstUnsupportedOperandRelation(
             operands, CoreDecodes(operands), operands[0]
@@ -788,7 +786,7 @@ module TrProof {
 
   lemma DecodedBytesMatchesCore(text: string)
     ensures Spec.DecodedBytes(
-              ToSpecDecode(Core.DecodeSet(text))
+              Core.DecodeSet(text)
             ) == Core.SetBytes(text)
   {
   }

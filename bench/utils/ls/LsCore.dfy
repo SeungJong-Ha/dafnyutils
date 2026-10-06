@@ -4,8 +4,10 @@ include "../../core/IOContract.dfy"
 include "LsSchema.dfy"
 include "LsSpec.dfy"
 include "LsTime.dfy"
+include "../../core/LookupFailureProof.dfy"
 
 module LsCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -13,6 +15,7 @@ module LsCore {
   import Schema = LsSchema
   import Spec = LsSpec
   import Time = LsTime
+  import LookupProof = LookupFailureProof
 
   function DigitCharCore(d: nat): char
     requires d < 10
@@ -625,7 +628,7 @@ module LsCore {
        tree.openErr == 0 && tree.statusErr == 0 &&
        tree.listingFirstStatus == tree.firstStatus + 1 &&
        (exists resolved: BenchWorld.Path ::
-         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == Result.Ok(resolved) &&
          IOContract.ObservedFileStatusContractFields(
            cmd.statusContext.observations, tree.firstStatus, fs, resolved,
            true, true, tree.openedStatus, 0)) &&
@@ -776,7 +779,7 @@ module LsCore {
              (IOContract.OpenDirFailureErrFields(fs, observation.path) == 0)
     requires Spec.OperandStatusResultSpec(
                cmd, fs, observation.path, observation.firstStatus) ==
-             BenchWorld.Ok(observation.status)
+             Result.Ok(observation.status)
     requires if observation.sectionAvailable then
       RecursiveDirectorySummary(
         cmd, fs, observation.operand, observation.path,
@@ -820,7 +823,7 @@ module LsCore {
              (IOContract.OpenDirFailureErrFields(fs, observation.path) == 0)
     requires Spec.OperandStatusResultSpec(
                cmd, fs, observation.path, observation.firstStatus) ==
-             BenchWorld.Ok(observation.status)
+             Result.Ok(observation.status)
     requires !observation.hasCycle
     requires if observation.sectionAvailable then
       DirectoryListingSummary(
@@ -1024,7 +1027,10 @@ module LsCore {
   {
     ghost var preFs := io.fs();
     ghost var preStatus := io.statusCursor();
-    var ok, status, err := io.GetFileStatus(path, followSymlink);
+    var getFileStatusResult := io.GetFileStatus(path, followSymlink);
+    var ok := getFileStatusResult.Ok?;
+    var status := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+    var err := IOContract.ResultErrno(getFileStatusResult);
     var renderName := displayName;
     if ok && status.kind == BenchWorld.SymlinkKind && !followSymlink && cmd.numericLong {
       var linkResult := io.ReadLink(path);
@@ -1312,7 +1318,7 @@ module LsCore {
     statusCuts: seq<nat>
   )
     requires DirectoryStatusCuts(observations, statusCuts, firstStatus, afterStatus)
-    requires IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved)
+    requires IOContract.ResolvePathForMetadataFields(fs, path, true) == Result.Ok(resolved)
     requires BenchWorld.FsContainsPath(fs, resolved)
     requires expected == IOContract.DirectoryEntriesIncludingDotsForPathFields(fs, resolved)
     requires Spec.DistinctDisplayNames(observations)
@@ -1470,7 +1476,7 @@ module LsCore {
     requires handle in io.dirHandles()
     requires io.dirHandles()[handle].DotDirHandleState?
     requires exists resolved: BenchWorld.Path ::
-      IOContract.ResolvePathForMetadataFields(io.fs(), path, true) == BenchWorld.Ok(resolved) &&
+      IOContract.ResolvePathForMetadataFields(io.fs(), path, true) == Result.Ok(resolved) &&
       BenchWorld.FsContainsPath(io.fs(), resolved) &&
       io.dirHandles()[handle].path == resolved &&
       io.dirHandles()[handle].remaining ==
@@ -1510,7 +1516,7 @@ module LsCore {
 
     ghost var expected := io.dirHandles()[handle].remaining;
     ghost var resolved := io.dirHandles()[handle].path;
-    assert IOContract.ResolvePathForMetadataFields(preFs, path, true) == BenchWorld.Ok(resolved);
+    assert IOContract.ResolvePathForMetadataFields(preFs, path, true) == Result.Ok(resolved);
     assert BenchWorld.FsContainsPath(preFs, resolved);
     assert expected == IOContract.DirectoryEntriesIncludingDotsForPathFields(preFs, resolved);
 
@@ -1541,8 +1547,15 @@ module LsCore {
       ghost var beforeObservations := observations;
       ghost var visibleCovered := false;
       ghost var visibleIndex: nat := 0;
-      var hasMore, name, kind, err := io.ReadDir(handle);
+      var readDirResult := io.ReadDir(handle);
+      var hasMore := (readDirResult.Ok? && readDirResult.v.DirectoryItem?);
+      var name := (if readDirResult.Ok? && readDirResult.v.DirectoryItem? then readDirResult.v.name else "");
+      var kind := (if readDirResult.Ok? && readDirResult.v.DirectoryItem? then readDirResult.v.kind else BenchWorld.UnknownDirentKind);
+      var err := IOContract.ResultErrno(readDirResult);
       reveal IOContract.ReadDirContractFields();
+      assert io.dirHandles()[handle].path == resolved by {
+        reveal IOContract.ReadDirContractFields();
+      }
       ghost var entry := BenchWorld.DirEntry("", false, false);
       if hasMore {
         entry :| entry in beforeRemaining && entry.name == name &&
@@ -1638,6 +1651,7 @@ module LsCore {
         ProcessedCoverageRemove(
           cmd, expected, beforeRemaining, entry, beforeObservations, observations);
       }
+      assert io.dirHandles()[handle].path == resolved;
     }
     assert io.dirHandles()[handle].remaining == {};
     var rawObservations := observations;
@@ -1700,8 +1714,12 @@ module LsCore {
               hadError && io.statusCursor() == old(io.statusCursor())
     decreases *
   {
-    var openOk, handle, openErr := io.OpenDir(path, true);
+    var openDirResult := io.OpenDir(path, true);
+    var openOk := openDirResult.Ok?;
+    var handle := IOContract.ResultValue(openDirResult, 0);
+    var openErr := IOContract.ResultErrno(openDirResult);
     reveal IOContract.OpenDirContractFields();
+    LookupProof.OpenDirFailureClassification(io.fs(), path);
     wasOpened := openOk;
     if !openOk {
       observations := [];
@@ -1793,7 +1811,7 @@ module LsCore {
     requires tree.openedStatus.hostKey !in ancestors
     requires tree.listingFirstStatus == tree.firstStatus + 1
     requires exists resolved: BenchWorld.Path ::
-      IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+      IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == Result.Ok(resolved) &&
       IOContract.ObservedFileStatusContractFields(
         cmd.statusContext.observations, tree.firstStatus, fs, resolved,
         true, true, tree.openedStatus, 0)
@@ -2064,8 +2082,12 @@ module LsCore {
   {
     ghost var preFs := io.fs();
     ghost var preStatus := io.statusCursor();
-    var openOk, handle, openErr := io.OpenDir(accessPath, true);
+    var openDirResult2 := io.OpenDir(accessPath, true);
+    var openOk := openDirResult2.Ok?;
+    var handle := IOContract.ResultValue(openDirResult2, 0);
+    var openErr := IOContract.ResultErrno(openDirResult2);
     reveal IOContract.OpenDirContractFields();
+    LookupProof.OpenDirFailureClassification(preFs, accessPath);
     wasOpened := openOk;
     if !openOk {
       wasListed := false;
@@ -2083,7 +2105,10 @@ module LsCore {
       }
       return;
     }
-    var statusOk, openedStatus, statusErr := io.GetOpenDirectoryStatus(handle);
+    var getOpenDirectoryStatusResult := io.GetOpenDirectoryStatus(handle);
+    var statusOk := getOpenDirectoryStatusResult.Ok?;
+    var openedStatus := IOContract.ResultValue(getOpenDirectoryStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+    var statusErr := IOContract.ResultErrno(getOpenDirectoryStatusResult);
     reveal IOContract.GetOpenDirectoryStatusContractFields();
     if !statusOk {
       wasListed := false;
@@ -2375,11 +2400,17 @@ module LsCore {
     var path := Spec.MakeAbsoluteSpec(cwd, operand);
     var follow := Spec.ImplicitDirectoryFollowSpec(cmd) ||
                   Spec.ExplicitCommandLineFollowSpec(cmd);
-    var ok, status, err := io.GetFileStatus(path, follow);
+    var getFileStatusResult2 := io.GetFileStatus(path, follow);
+    var ok := getFileStatusResult2.Ok?;
+    var status := IOContract.ResultValue(getFileStatusResult2, BenchWorld.DEFAULT_FILE_STATUS);
+    var err := IOContract.ResultErrno(getFileStatusResult2);
     reveal IOContract.ObservedFileStatusContractFields();
     if Spec.ImplicitDirectoryFollowSpec(cmd) &&
        (!ok || status.kind != BenchWorld.DirectoryKind) {
-      ok, status, err := io.GetFileStatus(path, false);
+      var getFileStatusResult3 := io.GetFileStatus(path, false);
+      ok := getFileStatusResult3.Ok?;
+      status := IOContract.ResultValue(getFileStatusResult3, BenchWorld.DEFAULT_FILE_STATUS);
+      err := IOContract.ResultErrno(getFileStatusResult3);
       reveal IOContract.ObservedFileStatusContractFields();
     }
     ghost var afterOperandStatus := io.statusCursor();
@@ -2436,7 +2467,7 @@ module LsCore {
         assert observation.sectionAvailable ==
           (IOContract.OpenDirFailureErrFields(preFs, path) == 0);
         assert Spec.OperandStatusResultSpec(cmd, preFs, path, preStatus) ==
-          BenchWorld.Ok(status);
+          Result.Ok(status);
         if wasOpened {
           assert observation.body ==
             (if |cmd.operands| > 1 then Spec.DirectoryHeaderSpec(operand)
@@ -2509,7 +2540,7 @@ module LsCore {
     }
   }
 
-  function PositiveEnvironmentResult(result: BenchWorld.Result<string>): nat
+  function PositiveEnvironmentResult(result: BenchWorld.IOResult<string>): nat
   {
     match result
     case Ok(value) => Spec.ParsedPositiveOrZeroSpec(value)
@@ -2558,7 +2589,7 @@ module LsCore {
     var parsedCmd := Schema.Command(raw);
     var cmd := parsedCmd;
     if parsedCmd.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -2566,7 +2597,7 @@ module LsCore {
       return;
     }
     if parsedCmd.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -2574,7 +2605,7 @@ module LsCore {
       return;
     }
     if parsedCmd.mode != Schema.ModeRun {
-      var _, _ := io.WriteStderr(Spec.InvalidModeMessageSpec(parsedCmd.mode), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.InvalidModeMessageSpec(parsedCmd.mode), BenchWorld.ThrowOnError);
       exit := if parsedCmd.mode.ModeInvalidTime? then 1 else 2;
       assert CoreSummary(raw, io, exit) by {
         reveal CoreSummary();
@@ -2637,8 +2668,8 @@ module LsCore {
     var groups := OutputGroupsCore(cmd, sorted);
     output := JoinOutputGroupsCore(groups);
     errors := AccessErrorsCore(observations) + SectionErrorsCore(sorted);
-    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
-    var _, _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
     exit := OperandExitCore(observations);
     assert RunSummary(cmd, preFs, preCwd, preStatus, io.statusCursor(),
                       output, errors, exit);

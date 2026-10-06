@@ -33,11 +33,11 @@ module FalseCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
       exit := 1;
     } else if cmd.mode == Schema.ModeVersion {
       var out := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchIO.BenchWorld.ThrowOnError);
       exit := 1;
     } else {
       exit := 1;

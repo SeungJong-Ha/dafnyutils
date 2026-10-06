@@ -6,6 +6,7 @@ include "CatSpec.dfy"
 
 // Pure cat execution semantics used by the executable loop and proof helpers.
 module CatCoreModel {
+  import Result = Results
   import BenchWorld
   import CatSchema
 
@@ -162,6 +163,7 @@ module CatCoreModel {
 // Public core surface: executable loop plus summary predicates. The richer
 // pure model stays in `CatCoreModel`.
 module CatCore {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -183,7 +185,7 @@ module CatCore {
 
   datatype InputObservation = InputObservation(
     input: CatSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
 
   datatype CoreWitness =
@@ -359,7 +361,7 @@ module CatCore {
     observation.input == cmd.inputs[i] &&
     observation.result ==
     match observation.input
-    case Stdin => BenchWorld.Ok(ExpectedStdinAt(cmd, preStdin, i))
+    case Stdin => Result.Ok(ExpectedStdinAt(cmd, preStdin, i))
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -369,7 +371,7 @@ module CatCore {
   {
     match observation.result
     case Ok(data) => data
-    case Err(_) => []
+    case Err(error) => IOContract.ReadFailureData(error)
   }
 
   ghost function InputErrorPiece(
@@ -847,6 +849,12 @@ module CatCore {
       {
         if i >= |observations| {
           assert i == |observations|;
+          assert errorCuts[i] == |errors|;
+          assert (errors + InputErrorPiece(observation))[|errors|..] ==
+            InputErrorPiece(observation);
+        } else {
+          assert errorCuts[i + 1] <= |errors|;
+          PrefixSliceUnchanged(errors, InputErrorPiece(observation), errorCuts[i], errorCuts[i + 1]);
         }
       }
     }
@@ -1082,7 +1090,7 @@ module CatCore {
 
     if cmd.mode == CatSchema.ModeHelp {
       var help := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + Spec.HelpTextSpec();
@@ -1099,7 +1107,7 @@ module CatCore {
 
     if cmd.mode == CatSchema.ModeVersion {
       var version := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + Spec.VersionTextSpec();
@@ -1163,12 +1171,12 @@ module CatCore {
           assert beforeStdin == ExpectedStdinAt(cmd, preStdin, i) by {
             reveal InputTraceWitnessRelation();
           }
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           assert data == beforeStdin;
           ghost var observation := InputObservation(
             input,
-            BenchWorld.Ok(data)
+            Result.Ok(data)
           );
           assert InputObservationRelation(
               cmd,
@@ -1236,14 +1244,14 @@ module CatCore {
           assert beforeStdin == ExpectedStdinAt(cmd, preStdin, i) by {
             reveal InputTraceWitnessRelation();
           }
-          var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-          var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+          var readResult := io.ReadFile(path);
           var dataPiece: BenchWorld.Bytes := [];
           var errorPiece: BenchWorld.Bytes := [];
           var inputHadError := false;
           if readResult.Ok? {
             dataPiece := readResult.v;
           } else {
+            dataPiece := IOContract.ReadFailureData(readResult.e);
             var msg := Spec.ErrorMessageSpec(path, readResult.e);
             errorPiece := msg;
             inputHadError := true;
@@ -1309,11 +1317,11 @@ module CatCore {
     var initialState := Model.InitState();
     var processed, renderWitness := ProcessBytesMethod(cmd, combined, initialState);
     if |processed.out| > 0 {
-      var _, _ := io.WriteStdout(processed.out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(processed.out, BenchWorld.ThrowOnError);
     }
     assert io.stdout() == preStdout + processed.out;
     if |err| > 0 {
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     }
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;

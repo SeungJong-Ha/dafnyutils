@@ -7,6 +7,7 @@ include "HeadCore.dfy"
 include "HeadSpec.dfy"
 
 module HeadProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = HeadSchema
@@ -334,7 +335,7 @@ module HeadProof {
     preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
     preStdin: BW.Bytes,
     count: nat
-  ): seq<BW.Result<BW.Bytes>>
+  ): seq<BW.IOResult<BW.Bytes>>
     requires count <= |cmd.inputs|
   {
     seq(count, i requires 0 <= i < count =>
@@ -845,7 +846,7 @@ module HeadProof {
     output: BW.Bytes,
     errorOutput: BW.Bytes,
     hadError: bool,
-    results: seq<BW.Result<BW.Bytes>>,
+    results: seq<BW.IOResult<BW.Bytes>>,
     outputFragments: seq<BW.Bytes>,
     errorFragments: seq<BW.Bytes>,
     successful: seq<bool>,

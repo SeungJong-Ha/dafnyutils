@@ -1,4 +1,7 @@
+include "Result.dfy"
+
 module BenchWorld {
+  import opened R = Results
   type Path = string
   type Bytes = RawBytes
 
@@ -10,7 +13,7 @@ module BenchWorld {
   // native reads or writes, but successful prefixes and the terminal errno stay
   // observable to utility code.
   datatype TrustedStreamRequest =
-    | StreamReadFile(preFs: FileSystem, path: Path, mode: FileReadMode)
+    | StreamReadFile(preFs: FileSystem, path: Path)
     | StreamReadStdin(preStdin: Bytes)
     | StreamWriteStdout(preStdout: Bytes, requested: Bytes)
     | StreamWriteStderr(preStderr: Bytes, requested: Bytes)
@@ -20,8 +23,8 @@ module BenchWorld {
     | StreamReadStdinResult(data: Bytes, remaining: Bytes, err: int)
     | StreamWriteResult(committed: nat, postOutput: Bytes, err: int)
 
-  datatype FileReadMode = FromStart | AfterSeekEnd
   datatype FileReadStage = ReadSucceeded | OpenFailed | ReadFailed | CloseFailed
+  datatype FileWriteStage = WriteSucceeded | WriteOpenFailed | WriteFailed | WriteCloseFailed
   datatype StreamErrorPolicy = ReturnError | ThrowOnError
   datatype FileTimes = FileTimes(
     atimeSec: int,
@@ -132,7 +135,14 @@ module BenchWorld {
       )
     | FilesystemUnlink(preFs: FileSystem, path: Path, now: int)
     | FilesystemTruncate(preFs: FileSystem, path: Path, size: nat, now: int)
-    | FilesystemAppend(preFs: FileSystem, path: Path, data: Bytes, now: int)
+    | FilesystemWrite(
+        preFs: FileSystem, path: Path, data: Bytes, now: int,
+        props: map<string, string>, credentials: ProcessCredentials
+      )
+    | FilesystemAppend(
+        preFs: FileSystem, path: Path, data: Bytes, now: int,
+        props: map<string, string>, credentials: ProcessCredentials
+      )
     | FilesystemCreateSpecialNode(
         preFs: FileSystem,
         path: Path,
@@ -157,7 +167,9 @@ module BenchWorld {
     isSymlink: bool,
     device: int,
     inode: int,
-    linkCount: int
+    linkCount: int,
+    writeCommitted: nat,
+    writeStage: FileWriteStage
   )
 
   datatype DirEntry =
@@ -542,8 +554,22 @@ module BenchWorld {
     | PermissionDenied
     | InvalidPath
     | Other(msg: string)
+    | ReadFailure(errno: int, message: string, partial: Bytes, readStage: FileReadStage)
+    | NativeFailure(errno: int, message: string)
+    | WriteFailure(errno: int, message: string, committed: nat, writeStage: FileWriteStage)
+    | StreamFailure(errno: int, message: string, partial: Bytes, committed: nat)
+    | TimeParseFailure(message: string, sec: int, nsec: int)
 
-  datatype Result<T> = Ok(v: T) | Err(e: IOError)
+  datatype Unit = Unit
+  datatype WriteReceipt = WriteReceipt(committed: nat)
+  datatype ParsedInstant = ParsedInstant(sec: int, nsec: int)
+  datatype FileTimeStatus = FileTimeStatus(
+    atimeSec: int, atimeNsec: int, mtimeSec: int, mtimeNsec: int,
+    isDir: bool, isSymlink: bool, device: int, inode: int, linkCount: int
+  )
+  datatype DirectoryRead = DirectoryEnd | DirectoryItem(name: string, kind: DirectoryEntryKind)
+
+  type IOResult<T> = R.Result<T, IOError>
 
   function FsNodeCanHaveChildren(node: FsNode): bool
   {
@@ -555,12 +581,12 @@ module BenchWorld {
   function FsLookupSegments(
     fs: FileSystem,
     segs: seq<string>
-  ): Result<InodeTree>
+  ): IOResult<InodeTree>
   {
     InodeFsLookupTreeSegments(fs.inodes, fs.namespace, segs)
   }
 
-  function FsLookupNode(fs: FileSystem, path: Path): Result<FsNode>
+  function FsLookupNode(fs: FileSystem, path: Path): IOResult<FsNode>
   {
     InodeFsLookupNode(fs, path)
   }
@@ -987,7 +1013,7 @@ module BenchWorld {
     inodes: map<InodeId, InodeRecord>,
     tree: InodeTree,
     segs: seq<string>
-  ): Result<InodeTree>
+  ): IOResult<InodeTree>
     ensures InodeFsLookupTreeSegments(inodes, tree, segs).Ok? ==>
               InodeFsLookupTreeSegments(inodes, tree, segs).v.id in inodes
     decreases |segs|
@@ -1012,7 +1038,7 @@ module BenchWorld {
   function InodeFsLookupId(
     fs: InodeFileSystemData,
     path: Path
-  ): Result<InodeId>
+  ): IOResult<InodeId>
     ensures InodeFsLookupId(fs, path).Ok? ==>
               InodeFsLookupId(fs, path).v in fs.inodes
   {
@@ -1024,7 +1050,7 @@ module BenchWorld {
   function InodeFsLookupNode(
     fs: InodeFileSystemData,
     path: Path
-  ): Result<FsNode>
+  ): IOResult<FsNode>
   {
     match InodeFsLookupId(fs, path)
     case Ok(id) => Ok(fs.inodes[id].node)

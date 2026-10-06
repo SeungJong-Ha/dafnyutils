@@ -6,6 +6,7 @@ include "TailRecordCore.dfy"
 include "TailSpec.dfy"
 
 module TailCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -140,11 +141,11 @@ module TailCore {
     preStdin: BenchWorld.Bytes,
     i: nat,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
-    case Stdin(_) => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
+    case Stdin(_) => Result.Ok(PrefixStdinCore(cmd, preStdin, i))
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -241,22 +242,22 @@ module TailCore {
     }
   }
 
-  function ResultHasHeader(cmd: TailSchema.TailCmd, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function ResultHasHeader(cmd: TailSchema.TailCmd, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match result
     case Ok(_) => !SuppressZeroTrailingSelection(cmd)
-    case Err(err) => err == BenchWorld.IsDirectory
+    case Err(err) => IOContract.IOErrorIsDirectory(err)
   } by method {
     return
       match result
       case Ok(_) => !SuppressZeroTrailingSelection(cmd)
-      case Err(err) => err == BenchWorld.IsDirectory;
+      case Err(err) => IOContract.IOErrorIsDirectory(err);
   }
 
   function OutputPiece(
     cmd: TailSchema.TailCmd,
     input: TailSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               printedHeaders: int
   ): BenchWorld.Bytes
   {
@@ -266,7 +267,7 @@ module TailCore {
         []
       else
         HeaderForInput(cmd, input, printedHeaders) + RenderData(cmd, data)
-    case Err(err) => if err == BenchWorld.IsDirectory then HeaderForInput(cmd, input, printedHeaders) else []
+    case Err(err) => if IOContract.IOErrorIsDirectory(err) then HeaderForInput(cmd, input, printedHeaders) else []
   } by method {
     match result
     case Ok(data) =>
@@ -276,14 +277,14 @@ module TailCore {
         return HeaderForInput(cmd, input, printedHeaders) + RenderData(cmd, data);
       }
     case Err(err) =>
-      if err == BenchWorld.IsDirectory {
+      if IOContract.IOErrorIsDirectory(err) {
         return HeaderForInput(cmd, input, printedHeaders);
       } else {
         return [];
       }
   }
 
-  function ErrorPiece(input: TailSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: TailSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin(_) => []
@@ -303,7 +304,7 @@ module TailCore {
         return Spec.ErrorMessage(path, err);
   }
 
-  function HadErrorPiece(input: TailSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: TailSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin(_) => false
@@ -530,7 +531,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeHelp {
       var help := GetHelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -540,7 +541,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeVersion {
       var version := GetVersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -550,7 +551,7 @@ module TailCore {
 
     if cmd.mode == TailSchema.ModeInvalidCount {
       var invalid := Spec.InvalidCountMessage(cmd.invalidCountUnit, cmd.invalidCountValue);
-      var _, _ := io.WriteStderr(invalid, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(invalid, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -585,12 +586,12 @@ module TailCore {
       decreases |cmd.inputs| - i
     {
       var input := cmd.inputs[i];
-      var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+      var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
       match input {
         case Stdin(_) =>
           ghost var beforeStdin := io.stdin();
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-          readResult := BenchWorld.Ok(data);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+          readResult := Result.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
           PrefixHeaderCountCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
           PrefixOutputCoreStep(cmd, preFs, preStdin, i, old(io.trustedStreams()));
@@ -600,8 +601,7 @@ module TailCore {
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           assert data == beforeStdin;
         case File(path) =>
-          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+          readResult := io.ReadFile(path);
       }
       if input.File? {
         PrefixStdinCoreStep(cmd, preStdin, i);
@@ -625,13 +625,13 @@ module TailCore {
     }
 
     if |out| > 0 {
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     } else {
       assert out == [];
       assert io.stdout() == preStdout + out;
     }
     if |err| > 0 {
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     } else {
       assert err == [];
       assert io.stderr() == preStderr + err;

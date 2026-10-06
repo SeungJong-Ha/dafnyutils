@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/Utf8.dfy"
 include "../../core/IO.dfy"
@@ -6,6 +7,8 @@ include "ChmodSchema.dfy"
 include "ChmodQuoteSpec.dfy"
 
 module ChmodSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchWorld
   import BenchIO
   import IOContract
@@ -81,11 +84,11 @@ module ChmodSpec {
 
   function ErrnoTextSpec(err: int): string
   {
-    if err == 2 then "No such file or directory"
-    else if err == 13 then "Permission denied"
-    else if err == 20 then "Not a directory"
-    else if err == 21 then "Is a directory"
-    else if err == 40 then "Too many levels of symbolic links"
+    if err == Errno.ENOENT then "No such file or directory"
+    else if err == Errno.EACCES then "Permission denied"
+    else if err == Errno.ENOTDIR then "Not a directory"
+    else if err == Errno.EISDIR then "Is a directory"
+    else if err == Errno.ELOOP then "Too many levels of symbolic links"
     else "unknown error"
   }
 
@@ -292,7 +295,7 @@ module ChmodSpec {
 
   function SpecIsDanglingSymlinkFailure(isSymlink: bool, err: int): bool
   {
-    isSymlink && err == 2
+    isSymlink && err == Errno.ENOENT
   }
 
   function SpecPathIsDanglingSymlinkFailure(
@@ -953,7 +956,7 @@ module ChmodSpec {
     cwd: BenchWorld.Path,
     fs: BenchWorld.FileSystem,
     path: string,
-    resolution: BenchWorld.Result<BenchWorld.Path>,
+    resolution: BenchWorld.IOResult<BenchWorld.Path>,
     result: SpecPathResult,
     now: int
   )
@@ -979,7 +982,7 @@ module ChmodSpec {
               case Ok(followedTarget) =>
                 BenchWorld.FsContainsPath(fs, followedTarget);
             var err := IOContract.MetadataFailureErrFields(fs, actual, true);
-            if !followedOk && err != 2 then
+            if !followedOk && err != Errno.ENOENT then
               result == SpecPathAccessFailureResult(
                 cmd, fs, path, actual, true, err
               )

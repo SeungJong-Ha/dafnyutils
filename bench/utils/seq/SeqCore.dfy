@@ -4,6 +4,7 @@ include "SeqSchema.dfy"
 include "SeqSpec.dfy"
 
 module SeqCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -11,7 +12,7 @@ module SeqCore {
   import Spec = SeqSpec
 
   datatype Decimal = Decimal(raw: string, value: int, scale: nat, negativeZero: bool)
-  datatype DecimalParse = DecimalOk(number: Decimal) | DecimalErr(token: string)
+  type DecimalParse = Result.Result<Decimal, string>
   datatype Scan = Scan(ok: bool, sawDigit: bool, sawDot: bool, mantissa: int, scale: nat)
   datatype NatScan = NatScan(ok: bool, sawDigit: bool, value: nat)
   datatype ExponentParse = ExponentOk(value: int) | ExponentErr
@@ -209,12 +210,12 @@ module SeqCore {
   function ParseDecimal(token: string): DecimalParse
   {
     if |token| == 0 then
-      DecimalErr(token)
+      Result.Err(token)
     else
       var negative := token[0] == '-';
       var start := if token[0] == '-' || token[0] == '+' then 1 else 0;
       if start >= |token| then
-        DecimalErr(token)
+        Result.Err(token)
       else
         var exponentIndex := ExponentIndex(token, start);
         var mantissaText := if exponentIndex < 0 then token else token[..exponentIndex];
@@ -223,44 +224,44 @@ module SeqCore {
           var value := if negative then -scanned.mantissa else scanned.mantissa;
           var negativeZero := negative && scanned.mantissa == 0;
           if exponentIndex < 0 then
-            DecimalOk(Decimal(token, value, scanned.scale, negativeZero))
+            Result.Ok(Decimal(token, value, scanned.scale, negativeZero))
           else
             var exponentText := token[exponentIndex + 1..];
             var exponentParse := ParseExponent(exponentText);
             match exponentParse
             case ExponentErr =>
-              DecimalErr(token)
+              Result.Err(token)
             case ExponentOk(exponent) =>
-              DecimalOk(ApplyExponent(token, value, scanned.scale, negativeZero, exponent))
+              Result.Ok(ApplyExponent(token, value, scanned.scale, negativeZero, exponent))
         else
-          DecimalErr(token)
+          Result.Err(token)
   } by method
   {
     if |token| == 0 {
-      return DecimalErr(token);
+      return Result.Err(token);
     }
     var negative := token[0] == '-';
     var start := if token[0] == '-' || token[0] == '+' then 1 else 0;
     if start >= |token| {
-      return DecimalErr(token);
+      return Result.Err(token);
     }
     var exponentIndex := ExponentIndex(token, start);
     var mantissaText := if exponentIndex < 0 then token else token[..exponentIndex];
     var scanned := ScanDecimal(mantissaText, start, false, false, 0, 0);
     if !scanned.ok || !scanned.sawDigit {
-      return DecimalErr(token);
+      return Result.Err(token);
     }
     var value := if negative then -scanned.mantissa else scanned.mantissa;
     var negativeZero := negative && scanned.mantissa == 0;
     if exponentIndex < 0 {
-      return DecimalOk(Decimal(token, value, scanned.scale, negativeZero));
+      return Result.Ok(Decimal(token, value, scanned.scale, negativeZero));
     }
     var exponentText := token[exponentIndex + 1..];
     match ParseExponent(exponentText)
     case ExponentErr =>
-      return DecimalErr(token);
+      return Result.Err(token);
     case ExponentOk(exponent) =>
-      return DecimalOk(ApplyExponent(token, value, scanned.scale, negativeZero, exponent));
+      return Result.Ok(ApplyExponent(token, value, scanned.scale, negativeZero, exponent));
   }
 
   function ParseNumbers(args: seq<string>): NumberPlan
@@ -275,22 +276,22 @@ module SeqCore {
       var lastText := if |args| == 1 then args[0] else if |args| == 2 then args[1] else args[2];
       var firstParse := ParseDecimal(firstText);
       match firstParse
-      case DecimalErr(token) =>
+      case Err(token) =>
         NumbersErr(Spec.InvalidNumberMessage(token))
-      case DecimalOk(first) =>
+      case Ok(first) =>
         var stepParse := ParseDecimal(stepText);
         match stepParse
-        case DecimalErr(token) =>
+        case Err(token) =>
           NumbersErr(Spec.InvalidNumberMessage(token))
-        case DecimalOk(step) =>
+        case Ok(step) =>
           if step.value == 0 then
             NumbersErr(Spec.ZeroIncrementMessage(step.raw))
           else
             var lastParse := ParseDecimal(lastText);
             match lastParse
-            case DecimalErr(token) =>
+            case Err(token) =>
               NumbersErr(Spec.InvalidNumberMessage(token))
-            case DecimalOk(last) =>
+            case Ok(last) =>
               NumbersOk(first, step, last)
   } by method
   {
@@ -306,24 +307,24 @@ module SeqCore {
     var stepText := if |args| == 3 then args[1] else "1";
     var lastText := if |args| == 1 then args[0] else if |args| == 2 then args[1] else args[2];
     match ParseDecimal(firstText)
-    case DecimalErr(token) =>
+    case Err(token) =>
       var message := InvalidNumberMessageRuntime(token);
       return NumbersErr(message);
-    case DecimalOk(first) =>
+    case Ok(first) =>
       match ParseDecimal(stepText)
-      case DecimalErr(token) =>
+      case Err(token) =>
         var message := InvalidNumberMessageRuntime(token);
         return NumbersErr(message);
-      case DecimalOk(step) =>
+      case Ok(step) =>
         if step.value == 0 {
           var message := ZeroIncrementMessageRuntime(step.raw);
           return NumbersErr(message);
         }
         match ParseDecimal(lastText)
-        case DecimalErr(token) =>
+        case Err(token) =>
           var message := InvalidNumberMessageRuntime(token);
           return NumbersErr(message);
-        case DecimalOk(last) =>
+        case Ok(last) =>
           return NumbersOk(first, step, last);
   }
 
@@ -736,8 +737,8 @@ module SeqCore {
     decreases *
   {
     var result := Evaluate(raw);
-    var _, _ := io.WriteStdout(result.stdout, BenchWorld.ThrowOnError);
-    var _, _ := io.WriteStderr(result.stderr, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(result.stdout, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(result.stderr, BenchWorld.ThrowOnError);
     exit := result.exit;
     assert CoreSummary(raw, io, exit);
   }

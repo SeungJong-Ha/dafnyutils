@@ -5,6 +5,7 @@ include "WcSchema.dfy"
 include "WcSpec.dfy"
 
 module WcCore {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -22,7 +23,7 @@ module WcCore {
     columns: seq<nat>
   )
   datatype InputObservation = InputObservation(
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     entries: seq<Entry>,
     errorOutput: BenchWorld.Bytes,
     failed: bool,
@@ -84,11 +85,11 @@ module WcCore {
     preStdin: BenchWorld.Bytes,
     i: nat,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
-    case Stdin(_) => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
+    case Stdin(_) => Result.Ok(PrefixStdinCore(cmd, preStdin, i))
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -271,7 +272,7 @@ module WcCore {
 
   ghost predicate InputStepWitnessRelation(
     input: WcSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               entries: seq<Entry>,
                               errorOutput: BenchWorld.Bytes,
                               failed: bool,
@@ -301,7 +302,7 @@ module WcCore {
            countWitnesses == [countTrace]
        case Err(err) =>
          entries ==
-         (if err == BenchWorld.IsDirectory
+         (if IOContract.IOErrorIsDirectory(err)
           then [Entry(path, ZeroCounts(), true)]
           else []) &&
          errorOutput == Spec.ErrorMessage(path, err) &&
@@ -1121,7 +1122,7 @@ module WcCore {
 
   method ProcessReadMethod(
     input: WcSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ) returns (
       entries: seq<Entry>,
       errorPiece: BenchWorld.Bytes,
@@ -1164,7 +1165,7 @@ module WcCore {
     case Err(err) =>
       assert input.File?;
       var path := input.path;
-      if err == BenchWorld.IsDirectory {
+      if IOContract.IOErrorIsDirectory(err) {
         var zero := ZeroCounts();
         entries := [Entry(name, zero, true)];
       } else {
@@ -1429,7 +1430,7 @@ module WcCore {
 
     if cmd.mode == WcSchema.ModeHelp {
       var help := GetHelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1438,7 +1439,7 @@ module WcCore {
 
     if cmd.mode == WcSchema.ModeVersion {
       var version := GetVersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1503,19 +1504,18 @@ module WcCore {
       );
       assert io.stdin() == PrefixStdinCore(cmd, preStdin, i);
       var input := cmd.inputs[i];
-      var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+      var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
       ghost var inputStdin := io.stdin();
       match input {
         case Stdin(_) =>
           ghost var beforeStdin := io.stdin();
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-          readResult := BenchWorld.Ok(data);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+          readResult := Result.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
           assert beforeStdin == PrefixStdinCore(cmd, preStdin, i);
           assert data == beforeStdin;
         case File(path) =>
-          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+          readResult := io.ReadFile(path);
       }
       if input.File? {
         PrefixStdinCoreStep(cmd, preStdin, i);
@@ -1573,13 +1573,13 @@ module WcCore {
     var out := RunOutputFromEntriesCore(cmd, entries);
 
     if |out| > 0 {
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     } else {
       assert out == [];
       assert io.stdout() == preStdout + out;
     }
     if |err| > 0 {
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     } else {
       assert err == [];
       assert io.stderr() == preStderr + err;

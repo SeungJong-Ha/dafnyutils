@@ -5,6 +5,7 @@ include "UniqSchema.dfy"
 include "UniqSpec.dfy"
 
 module UniqCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -377,7 +378,7 @@ module UniqCore {
 
   function OutputForRead(
     cmd: UniqSchema.UniqCmd,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match result
@@ -391,7 +392,7 @@ module UniqCore {
 
   function ErrorForRead(
     input: UniqSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match input
@@ -411,7 +412,7 @@ module UniqCore {
 
   function HadInputError(
     input: UniqSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   ): bool
   {
     match input
@@ -437,7 +438,7 @@ module UniqCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
-    readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     stdoutPart: BenchWorld.Bytes,
     stderrPart: BenchWorld.Bytes,
     hadError: bool
@@ -446,7 +447,7 @@ module UniqCore {
     |readResults| == 1 &&
     match cmd.input
     case Stdin =>
-      readResults[0] == BenchWorld.Ok(preStdin) &&
+      readResults[0] == Result.Ok(preStdin) &&
       OutputRelation(cmd, preStdin, stdoutPart) &&
       stderrPart == [] &&
       !hadError
@@ -469,7 +470,7 @@ module UniqCore {
     raw: UniqSchema.UniqCmdRaw,
     io: BenchIO.IO,
     exit: int,
-    new readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    new readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     new stdoutPart: BenchWorld.Bytes,
     new stderrPart: BenchWorld.Bytes,
     hadError: bool
@@ -567,7 +568,7 @@ module UniqCore {
     io: BenchIO.IO
   ) returns (
       exit: int,
-      ghost witnessResult: BenchWorld.Result<BenchWorld.Bytes>,
+      ghost witnessResult: BenchWorld.IOResult<BenchWorld.Bytes>,
                                              ghost stdoutPart: BenchWorld.Bytes,
                                              ghost stderrPart: BenchWorld.Bytes,
                                              ghost hadError: bool
@@ -581,7 +582,7 @@ module UniqCore {
     ghost var preStdin := io.stdin();
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
-    witnessResult := BenchWorld.Ok([]);
+    witnessResult := Result.Ok([]);
     stdoutPart := [];
     stderrPart := [];
     hadError := false;
@@ -590,7 +591,7 @@ module UniqCore {
     match cmd.mode {
       case ModeHelp =>
         var help := GetHelpText();
-        var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -599,7 +600,7 @@ module UniqCore {
 
       case ModeVersion =>
         var version := GetVersionText();
-        var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -608,7 +609,7 @@ module UniqCore {
 
       case ModeUnsupportedOutput(path) =>
         var msg := UnsupportedOutputMessage(path);
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -618,7 +619,7 @@ module UniqCore {
 
       case ModeUnsupportedSkipChars(operand) =>
         var msg := UnsupportedSkipCharsMessage(operand);
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -628,7 +629,7 @@ module UniqCore {
 
       case ModeExtraOperand(operand) =>
         var msg := ExtraOperandMessage(operand);
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -637,15 +638,13 @@ module UniqCore {
         return;
 
       case ModeRun =>
-        var result: BenchWorld.Result<BenchWorld.Bytes>;
+        var result: BenchWorld.IOResult<BenchWorld.Bytes>;
         match cmd.input {
           case Stdin =>
-            var data, readErr := io.ReadStdin(BenchWorld.ThrowOnError);
-            assert readErr == 0;
-            result := BenchWorld.Ok(data);
+            var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+            result := Result.Ok(data);
           case File(path) =>
-            var data, err, stage := io.ReadFile(path, BenchWorld.FromStart);
-            result := IOContract.FileReadResultFromOutcome(data, err);
+            result := io.ReadFile(path);
         }
 
         var out := OutputForRead(cmd, result);
@@ -655,8 +654,8 @@ module UniqCore {
         stdoutPart := out;
         stderrPart := err;
         hadError := inputHadError;
-        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := if inputHadError then 1 else 0;
         reveal InputTraceRelation();
                reveal OutputRelation();

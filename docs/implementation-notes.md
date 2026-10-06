@@ -1,7 +1,7 @@
 # Utility implementation notes
 
-Use these notes when writing a utility specification, implementation, proof and
-GNU comparison tests. The examples show common mistakes.
+Notes for writing a utility's specification, implementation, proof and GNU
+comparison tests. Each example shows a common mistake.
 
 For the contribution workflow, see [Extending benchmark](../CONTRIBUTING.md#extending-benchmark).
 
@@ -16,31 +16,31 @@ For the contribution workflow, see [Extending benchmark](../CONTRIBUTING.md#exte
 
 ### Handle stream errors and partial output
 
-**Example: copy stdin to stdout, even when reading returns partial data and an error.**
-These are method-body examples using `io: BenchIO.IO`. The method changes
-`io.stdinRegion` and `io.stdoutRegion`. See the full [copy example](../example/copy/Copy.dfy).
+**Example: copy stdin to stdout when a read returns partial data and an error.**
+Method bodies with `io: BenchIO.IO` that modify `io.stdinRegion` and
+`io.stdoutRegion`. Full version: [copy example](../example/copy/Copy.dfy).
 
-Bad — loses bytes returned with a read error and ignores write errors:
+Bad — drops bytes returned with a read error and ignores write errors:
 
 ```dafny
-var data, readErr := io.ReadStdin(BenchWorld.ReturnError);
-if readErr != 0 {
-  return 1; // data may still contain bytes that must be written.
+var read := io.ReadStdin(BenchWorld.ReturnError);
+if read.Err? {
+  return 1; // The error may retain bytes that must still be written.
 }
-var committed, writeErr := io.WriteStdout(data, BenchWorld.ReturnError);
+var write := io.WriteStdout(read.v, BenchWorld.ReturnError);
 return 0; // A failed write is reported as success.
 ```
 
 Good — writes the returned bytes and checks both errors:
 
 ```dafny
-var data, readErr := io.ReadStdin(BenchWorld.ReturnError);
-var committed, writeErr := io.WriteStdout(data, BenchWorld.ReturnError);
-return if readErr == 0 && writeErr == 0 then 0 else 1;
+var read := io.ReadStdin(BenchWorld.ReturnError);
+var write := io.WriteStdout(IOContract.ReadResultData(read), BenchWorld.ReturnError);
+return if read.Ok? && write.Ok? then 0 else 1;
 ```
 
 **Example: specify a write that may stop after two bytes.**
-These predicates use the real library types. `C` means `IOContract`.
+These predicates use the real library types. `C` is `IOContract`.
 
 Bad — requires all bytes to be written, even on failure:
 
@@ -52,7 +52,7 @@ predicate BadWrite(before: BenchWorld.Bytes, after: BenchWorld.Bytes,
 }
 ```
 
-Good — describes the bytes actually written and preserves earlier output:
+Good — describes only the bytes written and keeps earlier output:
 
 ```dafny
 predicate WrittenPrefix(before: BenchWorld.Bytes, after: BenchWorld.Bytes,
@@ -69,38 +69,41 @@ lemma PartialWriteExample()
 }
 ```
 
-`WrittenPrefix` explains one property; it is not a complete write specification.
-Use `C.WriteStdoutSpec` with `BenchWorld.ReturnError` to connect the result and `errno` to the
-trusted IO observation, as [CopySpec.dfy](../example/copy/CopySpec.dfy) does.
+`WrittenPrefix` shows one property, not a full write specification. Use
+`C.WriteStdoutSpec` with `BenchWorld.ReturnError` to tie the result and `errno`
+to the trusted IO observation, as [CopySpec.dfy](../example/copy/CopySpec.dfy)
+does.
 
 **Required tests and limits**
 
-- Include missing files, directories used as input, access denied and invalid
-  arguments in the specification and GNU comparison tests. Follow GNU's rules
-  for file operands, repeated `-`, continuing after errors and exit status.
-- Test failed writes, including `/dev/full`. Record a signal as a signal, not success.
-- Use stable finite regular files, captured stdin and enough memory. Exclude
-  interactive terminals, infinite/device input, concurrent changes, forced memory
-  exhaustion, disk spilling and injected late read/close failures.
-- `ReadFile(path, BenchWorld.FromStart)` returns the read prefix, native error
-  code and `FileReadStage`, distinguishing open/read/close failures. The current
-  utility consumers discard a prefix when the error code is nonzero. Exact
-  output timing and buffering under asynchronous faults remain outside the model.
-- Reads may update host access times; this is not a modeled filesystem change.
-  Claim only the evaluator's declared observations. New observations return the
-  task to `model_preparation` until maintainer review and approval.
-- An excluded option may still be valid GNU behavior. Do not label it invalid.
+- Specify and test missing files, directory inputs, access denied and invalid
+  arguments. Follow GNU for file operands, repeated `-`, continuing after errors
+  and exit status.
+- Test failed writes, including `/dev/full`. Record a signal as a signal, not
+  success.
+- Use stable finite regular files, captured stdin and enough memory. Out of
+  scope: interactive terminals, infinite/device input, concurrent changes, forced
+  memory exhaustion, disk spilling and injected late read/close failures.
+- `ReadFile(path)` returns `IOResult<Bytes>`. On failure,
+  `ReadFailure` holds the bytes read, the native errno, the message and the
+  `FileReadStage`. Each utility decides what to do with those bytes; `cat` writes
+  them, then reports the error. Exact output timing and buffering under
+  asynchronous faults are not modeled.
+- Reads may update host access times; the model ignores this. Claim only the
+  evaluator's declared observations. A new observation sends the task back to
+  `model_preparation` until a maintainer approves it.
+- An excluded option may still be valid GNU behavior; do not call it invalid.
   Keep the same scope in the description, formal specification, generated
-  profile and case generator. Changes to a released benchmark's scope need
+  profile and case generator. Scope changes to a released benchmark need
   maintainer review and must not narrow it.
 
 ### Check filesystem effects
 
 **Example: create one directory.**
-These methods use `BenchIO`, `BenchWorld` and `C = IOContract`.
-They illustrate the IO contract, not the full `mkdir` command or its diagnostics.
+These methods use `BenchIO`, `BenchWorld` and `C = IOContract`. They show the IO
+contract only, not the full `mkdir` command or its diagnostics.
 
-Bad — this verifies without creating anything:
+Bad — verifies without creating anything:
 
 ```dafny
 method BadCreate(io: BenchIO.IO, path: BenchWorld.Path, mode: bv32)
@@ -111,7 +114,7 @@ method BadCreate(io: BenchIO.IO, path: BenchWorld.Path, mode: bv32)
 }
 ```
 
-Good — connects the requested path and mode to the observed filesystem result:
+Good — ties the requested path and mode to the observed filesystem result:
 
 ```dafny
 method CreateOne(io: BenchIO.IO, path: BenchWorld.Path, mode: bv32)
@@ -121,58 +124,59 @@ method CreateOne(io: BenchIO.IO, path: BenchWorld.Path, mode: bv32)
     old(io.fs()), old(io.now()), old(io.trustedFilesystem()),
     old(io.umask()), io.fs(), path, mode, ok, err)
 {
-  ok, err := io.CreateDirectory(path, mode);
+  var result := io.CreateDirectory(path, mode);
+  ok := result.Ok?;
+  err := C.ResultErrno(result);
 }
 ```
 
-The library connects the typed request to `ok`, `errno` and the complete returned
-filesystem through `TrustedFilesystemEffectContractFields`. The IO handle owns
-the fixed observation function. Do not choose another state to make a proof pass.
-POSIX/libc correctness remains trusted. For `mkdir`,
-`DirectoryValidFilesystemObservations` and `DirectoryCreationEffectFields` also
-constrain successful directory creation.
+`TrustedFilesystemEffectContractFields` ties the typed request to `ok`, `errno`
+and the complete returned filesystem. The IO handle owns this fixed observation function;
+do not pick another state to make a proof pass. POSIX/libc correctness stays
+trusted. For `mkdir`, `ValidFilesystemObservations` and
+`DirectoryCreationEffectFields` also constrain success.
 
 **Example: the first operation succeeds and the second fails.**
-Inside a method that changes `io.fsRegion`:
+Inside a method that modifies `io.fsRegion`:
 
 ```dafny
-var firstOK, firstErr := io.CreateDirectory(firstPath, mode);
-var secondOK, secondErr := io.CreateDirectory(secondPath, mode);
+var first := io.CreateDirectory(firstPath, mode);
+var second := io.CreateDirectory(secondPath, mode);
 
 // Bad: the first call may already have changed the filesystem.
 // This assertion is not valid in general.
-assert !secondOK ==> io.fs() == old(io.fs());
+assert second.Err? ==> io.fs() == old(io.fs());
 ```
 
-Good — relate **each** call to its own starting state using `CreateDirectorySpec`,
-as `CreateOne` does. Keep the first call's effects when processing the second
+Good — relate **each** call to its own starting state with `CreateDirectorySpec`,
+as `CreateOne` does, and keep the first call's effects when handling the second
 result. The utility specification must also require the correct operand order,
-exact diagnostics and final exit status.
+exact diagnostics
+and the final exit status.
 
 **Test environment and comparisons**
 
 - Use a stable, isolated local Linux test tree, the evaluator's fixed non-root
-  user, controlled `umask` and ordinary permission bits. Keep all operands inside
-  that tree; never target the host root or mounts to cause a failure.
-- Use regular files, directories, symlinks and hard links. Cross-mount tests,
+  user, a controlled `umask` and ordinary permission bits. Keep all operands in
+  that tree; never target the host root or mounts to force a failure.
+- Use regular files, directories, symlinks and hard links. These need separate
+  maintainer review of behavior and model first: cross-mount tests,
   access/default ACLs, SELinux/SMACK, capabilities, setgid inheritance,
-  block/character devices, resource exhaustion and concurrent changes need
-  separate maintainer review of the behavior and model.
+  block/character devices, resource exhaustion and concurrent changes.
 - Check paths, node types, contents, modes, owners, link targets, link counts and
-  alias relationships as applicable. For example, two hard links must point to
-  the same file **within each run**; their raw inode numbers need not match
-  between GNU and Dafny runs. The comparator removes host keys and checks
-  identity changes separately.
+  aliases as applicable. Example: two hard links must point to the same file
+  **within each run**; raw inode numbers need not match between GNU and Dafny
+  runs. The comparator removes host keys and checks identity changes separately.
 - Keep parent/child timestamp effects in the returned state. Compare timestamps
-  under the evaluator's policy, not by requiring exact wall-clock equality
-  between runs. Stronger checks need maintainer observation work first.
-- Include GNU comparison cases for every behavior in the utility's scope.
+  by the evaluator's policy, not exact wall-clock equality between runs. Stronger
+  checks need maintainer observation work first.
+- Add GNU comparison cases for every behavior in the utility's scope.
   Shared-model tests cover only their recorded native success/error cases, not a
   whole utility.
 
 ### Prove the utility contract
 
-**Example: an API exists, but the utility proof is still missing.**
+**Example: the API exists, but the utility proof is missing.**
 These entry points use the existing `CopyCore` and `CopySpec` modules.
 
 Bad — calls the API but promises no utility behavior:
@@ -186,7 +190,7 @@ method BadRun(io: BenchIO.IO) returns (exit: int)
 }
 ```
 
-Good — requires the complete copy specification, including the error policy:
+Good — ensures the complete copy specification, including the error policy:
 
 ```dafny
 method RunCore(io: BenchIO.IO) returns (exit: int)
@@ -199,16 +203,15 @@ method RunCore(io: BenchIO.IO) returns (exit: int)
 }
 ```
 
-This is the entry point in [Copy.dfy](../example/copy/Copy.dfy).
-Changing its exit assignment to `exit := 0` makes verification fail.
+This is the entry point in [Copy.dfy](../example/copy/Copy.dfy). Changing its
+exit assignment to `exit := 0` makes verification fail.
 
 - `open` means an API and a sufficient observable contract exist for the listed
-  scope, based on source review and representative contract/native checks.
-  It does not mean the utility specification or proof is complete.
+  scope, based on source review and representative contract/native checks. It does not mean the
+  utility specification or proof is complete.
 - Each contribution must rule out the counterexamples listed in its scope.
-- `ReadStdin` attempts to consume all input. A successful read leaves no suffix;
-  a failed read can return a prefix and leave remaining input. Deliberately
-  stopping after a requested byte count is outside the current API.
-  Logical input consumption is modeled; matching GNU's kernel
-  read-ahead or a shared descriptor's final offset is not established by this
-  API or the current stdout/stderr/filesystem comparator.
+- `ReadStdin` tries to read all input. Success leaves nothing unread; failure can
+  return a prefix and leave the rest. Stopping after a requested byte count is
+  not supported. Logical input consumption is modeled; GNU's kernel read-ahead
+  and a shared descriptor's final offset are not checked by this API or the
+  current stdout/stderr/filesystem comparator.

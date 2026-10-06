@@ -5,6 +5,7 @@ include "../../core/StringEscaping.dfy"
 include "DuSchema.dfy"
 
 module DuSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -62,6 +63,11 @@ module DuSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -102,7 +108,7 @@ module DuSpec {
   ghost predicate FileObservationRelation(
     cmd: Schema.DuCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
-    observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>
+    observations: map<nat, BenchWorld.IOResult<BenchWorld.Bytes>>
   )
   {
     (forall i: nat :: i in observations.Keys <==> i < |cmd.operands|) &&
@@ -110,14 +116,14 @@ module DuSpec {
       observations[i] == IOContract.ObservedReadFileResultFields(preFs, preStreams, cmd.operands[i])
   }
 
-  function OutputPieceSpec(path: BenchWorld.Path, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function OutputPieceSpec(path: BenchWorld.Path, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match result
     case Ok(data) => CountLineSpec(|data|, path)
     case Err(_) => []
   }
 
-  function ErrorPieceSpec(path: BenchWorld.Path, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPieceSpec(path: BenchWorld.Path, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match result
     case Ok(_) => []
@@ -126,7 +132,7 @@ module DuSpec {
 
   ghost predicate PieceSequencesRelation(
     cmd: Schema.DuCmd,
-    observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>,
+    observations: map<nat, BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>
   )
@@ -163,7 +169,7 @@ module DuSpec {
     exit: int
   )
   {
-    exists observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>,
+    exists observations: map<nat, BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputPieces: seq<BenchWorld.Bytes>,
       outputCuts: seq<nat>,
       errorPieces: seq<BenchWorld.Bytes>,

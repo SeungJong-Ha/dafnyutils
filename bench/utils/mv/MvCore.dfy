@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "MvPathCore.dfy"
@@ -5,6 +6,7 @@ include "MvSchema.dfy"
 include "MvSpec.dfy"
 
 module MvCore {
+  import Errno = Errnos
   import BenchIO
   import Utf8 = Utf8Semantics
   import IOContract
@@ -14,11 +16,6 @@ module MvCore {
   import Schema = MvSchema
   import Spec = MvSpec
 
-  const ENOENT: int := 2
-  const EBUSY: int := 16
-  const EISDIR: int := 21
-  const ENOTDIR: int := 20
-  const EINVAL: int := 22
 
   ghost function ShowActionMessage(verbose: bool, debug: bool): bool
   {
@@ -37,7 +34,7 @@ module MvCore {
   ): int
   {
     if target == "" then
-      if sourceIsDir then EBUSY else EISDIR
+      if sourceIsDir then Errno.EBUSY else Errno.EISDIR
     else
       renameErr
   }
@@ -264,7 +261,7 @@ module MvCore {
   ghost function TargetDirectoryErr(statOk: bool, isDir: bool, statErr: int): int
   {
     if statOk then
-      if !isDir then ENOTDIR else statErr
+      if !isDir then Errno.ENOTDIR else statErr
     else
       statErr
   }
@@ -396,6 +393,17 @@ module MvCore {
   )
     ensures (left + right)[|left|..] == right
   {
+  }
+
+  lemma StatusCallConsIndex(
+    first: Spec.StatusCallEvidence,
+    tail: seq<Spec.StatusCallEvidence>,
+    i: nat
+  )
+    requires 1 <= i <= |tail|
+    ensures ([first] + tail)[i] == tail[i - 1]
+  {
+    StatusCallTail([first], tail);
   }
 
   lemma {:isolate_assertions} StatusBoundsSnoc(
@@ -657,7 +665,7 @@ module MvCore {
   {
   }
 
-  lemma BatchStatusEvidenceFromParts(
+  lemma {:induction false} BatchStatusEvidenceFromParts(
     observations: BenchWorld.StatusTimeObservations,
     first: nat,
     calls: seq<Spec.StatusCallEvidence>,
@@ -711,6 +719,8 @@ module MvCore {
         assert bounds[i] == evidence.statusBounds[i];
         assert bounds[i + 1] == evidence.statusBounds[i + 1];
         assert steps[i] == evidence.steps[i];
+        assert calls[bounds[i] - first .. bounds[i + 1] - first] ==
+          steps[i].statusCalls;
       }
     }
     PackageBatchStatusEvidence(observations, evidence);
@@ -1188,7 +1198,9 @@ module MvCore {
             target,
             SourceRenameDiagnosticErr(
               target, sourceIsDir, calls[0].err
-            )
+            ),
+            sourceIsDir && IOContract.PathExistsContractFields(
+              beforeFs, target, false, true, 0)
           ),
           true
         )
@@ -1238,7 +1250,8 @@ module MvCore {
               target,
               SourceRenameDiagnosticErr(
                 target, sourceIsDir, calls[1].err
-              )
+              ),
+              false
             ),
             true
           )
@@ -2142,19 +2155,22 @@ module MvCore {
     source: string,
     target: string,
     sourceIsDir: bool,
+    targetFound: bool,
     err: int
   ) returns (out: BenchWorld.Bytes)
     ensures out ==
             Spec.SourceRenameFailureMessageSpec(
               source,
               target,
-              SourceRenameDiagnosticErr(target, sourceIsDir, err)
+              SourceRenameDiagnosticErr(target, sourceIsDir, err),
+              sourceIsDir && targetFound
             )
   {
     out := Spec.SourceRenameFailureMessageSpec(
       source,
       target,
-      SourceRenameDiagnosticErr(target, sourceIsDir, err)
+      SourceRenameDiagnosticErr(target, sourceIsDir, err),
+      sourceIsDir && targetFound
     );
   }
 
@@ -2222,7 +2238,10 @@ module MvCore {
   {
     ghost var firstStatus := io.statusCursor();
     var candidate := NumberedBackupPath(target, index);
-    var rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6 := io.GetFileStatus(candidate, false);
+    var getFileStatusResult := io.GetFileStatus(candidate, false);
+    var rawMetadataOk6 := getFileStatusResult.Ok?;
+    var rawMetadataStatus6 := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr6 := IOContract.ResultErrno(getFileStatusResult);
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), candidate, false, rawMetadataOk6, rawMetadataStatus6, rawMetadataErr6);
     var found := rawMetadataOk6;
     var err := rawMetadataErr6;
@@ -2319,12 +2338,16 @@ module MvCore {
     }
     if backupMode == Schema.BackupExisting {
       var numberedSeed := NumberedBackupPath(target, 1);
-      var rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5 := io.GetFileStatus(numberedSeed, false);
+      var getFileStatusResult2 := io.GetFileStatus(numberedSeed, false);
+      var rawMetadataOk5 := getFileStatusResult2.Ok?;
+      var rawMetadataStatus5 := IOContract.ResultValue(getFileStatusResult2, BenchWorld.DEFAULT_FILE_STATUS);
+      var rawMetadataErr5 := IOContract.ResultErrno(getFileStatusResult2);
       IOContract.FileStatusStructureImpliesMetadata(io.fs(), numberedSeed, false, rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5);
       var found := rawMetadataOk5;
       var err := rawMetadataErr5;
       ghost var seedCall := Spec.StatusCallEvidence(old(io.fs()), numberedSeed, false,
                                                rawMetadataOk5, rawMetadataStatus5, rawMetadataErr5);
+      assert Spec.StatusRequest(seedCall, old(io.fs()), numberedSeed, false);
       if !found {
         path := SimpleBackupPath(target, suffix);
         evidence := SelectedBackup(path, [], true, found, err);
@@ -2341,11 +2364,38 @@ module MvCore {
       assert IOContract.PathExistsContractFields(
           old(io.fs()), numberedSeed, false, true, err
         );
+      assert BackupStatusSuffixFor(backupMode, old(io.fs()), target, calls) by {
+        forall i: nat | 1 <= i < |calls|
+          ensures Spec.StatusRequest(calls[i], old(io.fs()), NumberedBackupPath(target, i), false)
+        {
+          StatusCallConsIndex(seedCall, numberedCalls, i);
+          assert calls[i] == numberedCalls[i - 1];
+        }
+        forall i: nat | 1 <= i + 1 < |calls|
+          ensures calls[i].ok
+        {
+          if i == 0 {
+            assert calls[i] == seedCall;
+          } else {
+            StatusCallConsIndex(seedCall, numberedCalls, i);
+            assert calls[i] == numberedCalls[i - 1];
+            assert checks[i - 1].found;
+          }
+        }
+        assert calls[|calls| - 1] == numberedCalls[|numberedCalls| - 1];
+      }
       return;
     }
     ghost var checks: seq<BackupCheckEvidence>;
     path, checks, calls := FindUnusedNumberedBackupPath(target, 1, io);
     evidence := SelectedBackup(path, checks, false, false, 0);
+    assert BackupStatusSuffixFor(backupMode, old(io.fs()), target, calls) by {
+      forall i: nat | i + 1 < |calls|
+        ensures calls[i].ok
+      {
+        assert checks[i].found;
+      }
+    }
   }
 
   method CaptureMetadata(
@@ -2364,7 +2414,10 @@ module MvCore {
     ensures io.statusCursor() == old(io.statusCursor()) + 1
   {
     ghost var ordinal := io.statusCursor();
-    var ok, status, err := io.GetFileStatus(path, followSymlink);
+    var getFileStatusResult3 := io.GetFileStatus(path, followSymlink);
+    var ok := getFileStatusResult3.Ok?;
+    var status := IOContract.ResultValue(getFileStatusResult3, BenchWorld.DEFAULT_FILE_STATUS);
+    var err := IOContract.ResultErrno(getFileStatusResult3);
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), path, followSymlink, ok, status, err);
     var atimeSec := status.times.atimeSec;
     var atimeNsec := status.times.atimeNsec;
@@ -2834,7 +2887,7 @@ module MvCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeInvalidBackup {
       var err := GetInvalidBackupArgumentMessage(cmd.invalidBackupArg);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2842,7 +2895,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeInvalidUpdate {
       var err := GetInvalidUpdateArgumentMessage(cmd.invalidUpdateArg);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2850,7 +2903,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2858,7 +2911,7 @@ module MvCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2866,7 +2919,7 @@ module MvCore {
 
     if cmd.targetDirectory != "" && cmd.noTargetDirectory {
       var err := GetTargetDirectoryConflictMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2874,7 +2927,7 @@ module MvCore {
 
     if |cmd.operands| == 0 {
       var err := GetMissingFileOperandMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2913,7 +2966,7 @@ module MvCore {
 
     if |cmd.operands| == 1 {
       var err := GetMissingDestinationMessage(cmd.operands[0]);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2921,7 +2974,7 @@ module MvCore {
 
     if cmd.noTargetDirectory && |cmd.operands| > 2 {
       var err := GetExtraOperandMessage(cmd.operands[2]);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummaryIO(raw, preFs, preCwd, preStdout, preStderr, io, exit);
       return;
@@ -2938,7 +2991,10 @@ module MvCore {
         preFs, dest, true, false, BenchWorld.DEFAULT_FILE_STATUS, 0
       );
       if !cmd.noTargetDirectory {
-        var rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4 := io.GetFileStatus(dest, true);
+        var getFileStatusResult4 := io.GetFileStatus(dest, true);
+        var rawMetadataOk4 := getFileStatusResult4.Ok?;
+        var rawMetadataStatus4 := IOContract.ResultValue(getFileStatusResult4, BenchWorld.DEFAULT_FILE_STATUS);
+        var rawMetadataErr4 := IOContract.ResultErrno(getFileStatusResult4);
         directoryCall := Spec.StatusCallEvidence(preFs, dest, true,
           rawMetadataOk4, rawMetadataStatus4, rawMetadataErr4);
         calls := [directoryCall];
@@ -2967,8 +3023,8 @@ module MvCore {
         if cmd.noTargetDirectory then DirectMoveStatus(step)
         else ProbedMoveStatus(directoryCall, step);
       ghost var movedFs := io.fs();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-      var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
       exit := if hadError then 1 else 0;
       assert preMoveFs == preFs;
       assert (exit == 1) == hadError;
@@ -3222,7 +3278,10 @@ module MvCore {
     ensures io.statusCursor() == old(io.statusCursor()) + 1
     ensures StatusCallsFor(io.statusObservations(), old(io.statusCursor()), [call])
   {
-    var rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3 := io.GetFileStatus(directory, true);
+    var getFileStatusResult5 := io.GetFileStatus(directory, true);
+    var rawMetadataOk3 := getFileStatusResult5.Ok?;
+    var rawMetadataStatus3 := IOContract.ResultValue(getFileStatusResult5, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr3 := IOContract.ResultErrno(getFileStatusResult5);
     call := Spec.StatusCallEvidence(old(io.fs()), directory, true,
       rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3);
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), directory, true, rawMetadataOk3, rawMetadataStatus3, rawMetadataErr3);
@@ -3231,7 +3290,7 @@ module MvCore {
     var statErr := rawMetadataErr3;
     ok := statOk && isDir;
     if statOk && !isDir {
-      err := ENOTDIR;
+      err := Errno.ENOTDIR;
     } else {
       err := statErr;
     }
@@ -3280,7 +3339,7 @@ module MvCore {
     if !dirOk {
       evidence := FailedDirectoryStatus(dirCall);
       var err := GetTargetFailureMessage(directory, explicitTargetDirectory, dirErr);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert TargetDirectoryCheckSummaryFields(directory, preFs, false, dirErr);
       assert RunIntoDirectoryEvidenceFields(
@@ -3304,8 +3363,8 @@ module MvCore {
     calls := [dirCall] + batch.statusCalls;
     evidence := SuccessfulDirectoryStatus(dirCall, batch);
     ghost var movedFs := io.fs();
-    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-    var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert dirErr == 0;
     assert (exit == 1) == hadError;
@@ -3355,7 +3414,10 @@ module MvCore {
     ghost var renameCalls: seq<RenameCallEvidence> := [];
     ghost var backupFs := preFs;
 
-    var rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2 := io.GetFileStatus(source, false);
+    var getFileStatusResult6 := io.GetFileStatus(source, false);
+    var rawMetadataOk2 := getFileStatusResult6.Ok?;
+    var rawMetadataStatus2 := IOContract.ResultValue(getFileStatusResult6, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr2 := IOContract.ResultErrno(getFileStatusResult6);
     ghost var nextStatusCall := Spec.StatusCallEvidence(
       preFs, source, false,
       rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2
@@ -3388,7 +3450,10 @@ module MvCore {
       return;
     }
 
-    var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(target, false);
+    var getFileStatusResult7 := io.GetFileStatus(target, false);
+    var rawMetadataOk1 := getFileStatusResult7.Ok?;
+    var rawMetadataStatus1 := IOContract.ResultValue(getFileStatusResult7, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr1 := IOContract.ResultErrno(getFileStatusResult7);
     nextStatusCall := Spec.StatusCallEvidence(
       preFs, target, false,
       rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1
@@ -3399,6 +3464,8 @@ module MvCore {
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), target, false, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
     var found := rawMetadataOk1;
     var existsErr := rawMetadataErr1;
+    assert found == IOContract.PathExistsContractFields(
+      preFs, target, false, true, 0);
     if found {
       if cmd.overwriteMode == Schema.OverwriteSkip {
         if cmd.debug {
@@ -3510,8 +3577,10 @@ module MvCore {
         assert io.statusCursor() == firstStatus + |statusCalls|;
         assert MetadataEvidenceFor(preFs, source, true, followed);
         sourceFollowed := SomeMetadataEvidence(followed);
-        var resolveOk, resolvedSource, resolveErr :=
-          io.ResolvePathIdentity(source);
+        var resolvePathIdentityResult := io.ResolvePathIdentity(source);
+        var resolveOk := resolvePathIdentityResult.Ok?;
+        var resolvedSource := IOContract.ResultValue(resolvePathIdentityResult, "");
+        var resolveErr := IOContract.ResultErrno(resolvePathIdentityResult);
         if resolveOk {
           assert IOContract.ResolvePathIdentityContractFields(
               preFs, preCwd, source, true, resolvedSource, 0
@@ -3807,7 +3876,9 @@ module MvCore {
         );
         assert StepStatusEvidenceFor(
           source, target, cmd, backupStatusTemplate);
-        var okBackup, backupErr := io.RenamePath(target, backupPath);
+        var renamePathResult := io.RenamePath(target, backupPath);
+        var okBackup := renamePathResult.Ok?;
+        var backupErr := IOContract.ResultErrno(renamePathResult);
         ghost var afterBackupFs := io.fs();
         backupFs := afterBackupFs;
         ghost var backupCall :=
@@ -3831,19 +3902,21 @@ module MvCore {
             sameFileEvidence, backupEvidence, renameCalls, backupFs,
         StatusTranscript(firstStatus, statusCalls)
           );
+          assert step.firstStatus == firstStatus;
+          assert step.statusCalls == statusCalls;
+          assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
           PackageExistingTargetRenameStep(
             source, target, cmd, preCwd, step
           );
           StepStatusEvidenceTransfer(
             source, target, cmd, backupStatusTemplate, step);
-          assert step.firstStatus == firstStatus;
-          assert step.statusCalls == statusCalls;
-          assert io.statusCursor() == step.firstStatus + |step.statusCalls|;
           assert StatusCallsFor(io.statusObservations(), step.firstStatus, step.statusCalls);
           return;
         }
 
-        var okRenameWithBackup, renameErrWithBackup := io.RenamePath(source, target);
+        var renamePathResult2 := io.RenamePath(source, target);
+        var okRenameWithBackup := renamePathResult2.Ok?;
+        var renameErrWithBackup := IOContract.ResultErrno(renamePathResult2);
         assert io.statusCursor() == firstStatus + |statusCalls|;
         ghost var afterRenameFs := io.fs();
         ghost var sourceCall := RenameCallEvidence(
@@ -3869,7 +3942,7 @@ module MvCore {
           assert errOut == [];
         } else {
           errOut := GetSourceRenameFailureMessage(
-            source, target, sourceIsDir, renameErrWithBackup
+            source, target, sourceIsDir, false, renameErrWithBackup
           );
           assert out == [];
         }
@@ -3914,7 +3987,9 @@ module MvCore {
 
     assert io.fs() == preFs;
     assert io.statusCursor() == firstStatus + |statusCalls|;
-    var okRename, renameErr := io.RenamePath(source, target);
+    var renamePathResult3 := io.RenamePath(source, target);
+    var okRename := renamePathResult3.Ok?;
+    var renameErr := IOContract.ResultErrno(renamePathResult3);
     assert io.statusCursor() == firstStatus + |statusCalls|;
     ghost var afterRenameFs := io.fs();
     assert IOContract.RenamePathContractFields(
@@ -3934,7 +4009,7 @@ module MvCore {
     }
     if !okRename {
       errOut := GetSourceRenameFailureMessage(
-        source, target, sourceIsDir, renameErr
+        source, target, sourceIsDir, found, renameErr
       );
       assert out == [];
     } else {
@@ -4190,6 +4265,22 @@ module MvCore {
       assert Spec.ConcatenateFragments(
           stderrFragments
         ) == errOut;
+      assert forall j: nat | j < |steps| ::
+          var normalized := NormalizeSource(sources[j], cmd.stripTrailingSlashes);
+          StepStatusEvidenceFor(normalized, TargetInDirectory(directory, normalized), cmd, steps[j]) by {
+        forall j: nat | j < |steps|
+          ensures
+            var normalized := NormalizeSource(sources[j], cmd.stripTrailingSlashes);
+            StepStatusEvidenceFor(normalized, TargetInDirectory(directory, normalized), cmd, steps[j])
+        {
+          if j < i {
+            assert steps[j] == prefixSteps[j];
+          } else {
+            assert j == i;
+            assert steps[j] == step;
+          }
+        }
+      }
       i := i + 1;
     }
     assert sources[..i] == sources;

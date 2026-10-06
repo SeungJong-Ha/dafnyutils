@@ -5,6 +5,7 @@ include "CatCore.dfy"
 include "CatSpec.dfy"
 
 module CatProofBridge {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = CatSchema
@@ -69,6 +70,7 @@ module CatProofBridge {
 }
 
 module CatProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = CatSchema
@@ -79,7 +81,7 @@ module CatProof {
 
   ghost function ObservationResults(
     observations: seq<Core.InputObservation>
-  ): seq<BW.Result<BW.Bytes>>
+  ): seq<BW.IOResult<BW.Bytes>>
   {
     seq(
     |observations|,
@@ -834,7 +836,7 @@ module CatProof {
     errors2: BW.Bytes,
     hadError2: bool
   )
-    requires exists readResults: seq<BW.Result<BW.Bytes>>,
+    requires exists readResults: seq<BW.IOResult<BW.Bytes>>,
                dataFragments: seq<BW.Bytes>,
                dataCuts: seq<nat>,
                errorFragments: seq<BW.Bytes>,
@@ -853,7 +855,7 @@ module CatProof {
                  errorFragments,
                  errorCuts
                )
-    requires exists readResults: seq<BW.Result<BW.Bytes>>,
+    requires exists readResults: seq<BW.IOResult<BW.Bytes>>,
                dataFragments: seq<BW.Bytes>,
                dataCuts: seq<nat>,
                errorFragments: seq<BW.Bytes>,
@@ -877,7 +879,7 @@ module CatProof {
     ensures errors1 == errors2
     ensures hadError1 == hadError2
   {
-    var readResults1: seq<BW.Result<BW.Bytes>>,
+    var readResults1: seq<BW.IOResult<BW.Bytes>>,
         dataFragments1: seq<BW.Bytes>,
         dataCuts1: seq<nat>,
         errorFragments1: seq<BW.Bytes>,
@@ -896,7 +898,7 @@ module CatProof {
         errorFragments1,
         errorCuts1
       );
-    var readResults2: seq<BW.Result<BW.Bytes>>,
+    var readResults2: seq<BW.IOResult<BW.Bytes>>,
         dataFragments2: seq<BW.Bytes>,
         dataCuts2: seq<nat>,
         errorFragments2: seq<BW.Bytes>,
@@ -1057,7 +1059,7 @@ module CatProof {
     cmd: Schema.CatCmd, preFs: BW.FileSystem, preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult, preStdin: BW.Bytes,
     postStdin: BW.Bytes, output: BW.Bytes, errors: BW.Bytes, exit: int
   ) returns (
-    readResults: seq<BW.Result<BW.Bytes>>, data: BW.Bytes,
+    readResults: seq<BW.IOResult<BW.Bytes>>, data: BW.Bytes,
     dataFragments: seq<BW.Bytes>, dataCuts: seq<nat>,
     errorFragments: seq<BW.Bytes>, errorCuts: seq<nat>, hadError: bool,
     byteFragments: seq<BW.Bytes>, outputCuts: seq<nat>, numbers: seq<nat>

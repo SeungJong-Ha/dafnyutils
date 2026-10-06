@@ -6,6 +6,7 @@ include "CommRenderCore.dfy"
 include "CommSpec.dfy"
 
 module CommCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -104,10 +105,10 @@ module CommCore {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     input: Schema.CommInput
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     match input
-    case Stdin => BenchWorld.Ok(preStdin)
+    case Stdin => Result.Ok(preStdin)
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -122,12 +123,12 @@ module CommCore {
     cmd: Schema.CommCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
       InputResult(preFs, preStreams, preStdin, cmd.input1)
     else
-      BenchWorld.Ok([])
+      Result.Ok([])
   }
 
   ghost function AfterFirstRead(cmd: Schema.CommCmd, preStdin: BenchWorld.Bytes): BenchWorld.Bytes
@@ -139,12 +140,12 @@ module CommCore {
     cmd: Schema.CommCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
       InputResult(preFs, preStreams, AfterFirstRead(cmd, preStdin), cmd.input2)
     else
-      BenchWorld.Ok([])
+      Result.Ok([])
   }
 
   ghost function AfterSecondRead(cmd: Schema.CommCmd, preStdin: BenchWorld.Bytes): BenchWorld.Bytes
@@ -154,8 +155,8 @@ module CommCore {
 
   function OutputForReads(
     cmd: Schema.CommCmd,
-    first: BenchWorld.Result<BenchWorld.Bytes>,
-                             second: BenchWorld.Result<BenchWorld.Bytes>
+    first: BenchWorld.IOResult<BenchWorld.Bytes>,
+                             second: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match first
@@ -193,8 +194,8 @@ module CommCore {
 
   function ErrorForReads(
     cmd: Schema.CommCmd,
-    first: BenchWorld.Result<BenchWorld.Bytes>,
-                             second: BenchWorld.Result<BenchWorld.Bytes>
+    first: BenchWorld.IOResult<BenchWorld.Bytes>,
+                             second: BenchWorld.IOResult<BenchWorld.Bytes>
   ): BenchWorld.Bytes
   {
     match first
@@ -229,8 +230,8 @@ module CommCore {
 
   function HadRunError(
     cmd: Schema.CommCmd,
-    first: BenchWorld.Result<BenchWorld.Bytes>,
-                             second: BenchWorld.Result<BenchWorld.Bytes>
+    first: BenchWorld.IOResult<BenchWorld.Bytes>,
+                             second: BenchWorld.IOResult<BenchWorld.Bytes>
   ): bool
   {
     match first
@@ -305,7 +306,7 @@ module CommCore {
       case Err(_) =>
         io.stdin() == AfterFirstRead(cmd, old(io.stdin())) &&
         io.stdout() == old(io.stdout()) &&
-        io.stderr() == old(io.stderr()) + ErrorForReads(cmd, first, BenchWorld.Ok([])) &&
+        io.stderr() == old(io.stderr()) + ErrorForReads(cmd, first, Result.Ok([])) &&
         exit == 1
       case Ok(_) =>
         var second := ReadSecondResult(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));
@@ -315,18 +316,17 @@ module CommCore {
         exit == (if HadRunError(cmd, first, second) then 1 else 0)
   }
 
-  method ReadInputMethod(input: Schema.CommInput, io: BenchIO.IO) returns (result: BenchWorld.Result<BenchWorld.Bytes>)
+  method ReadInputMethod(input: Schema.CommInput, io: BenchIO.IO) returns (result: BenchWorld.IOResult<BenchWorld.Bytes>)
     modifies io.stdinRegion
     ensures result == InputResult(old(io.fs()), old(io.trustedStreams()), old(io.stdin()), input)
     ensures io.stdin() == AfterInputRead(old(io.stdin()), input)
   {
     match input
     case Stdin =>
-      var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-      result := BenchWorld.Ok(data);
+      var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+      result := Result.Ok(data);
     case File(path) =>
-      var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-      result := IOContract.FileReadResultFromOutcome(readData, readErr);
+      result := io.ReadFile(path);
   }
 
   method RunCore(raw: Schema.CommCmdRaw, io: BenchIO.IO) returns (exit: int)
@@ -344,7 +344,7 @@ module CommCore {
     match cmd.mode {
       case ModeHelp =>
         var help := Spec.HelpTextSpec();
-        var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -352,7 +352,7 @@ module CommCore {
         return;
       case ModeVersion =>
         var version := Spec.VersionTextSpec();
-        var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
         exit := 0;
         assert io.stdin() == preStdin;
         assert io.stderr() == preStderr;
@@ -360,7 +360,7 @@ module CommCore {
         return;
       case ModeMissingOperand =>
         var msg := Spec.MissingOperandMessageSpec();
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -368,7 +368,7 @@ module CommCore {
         return;
       case ModeMissingOperandAfter(operand) =>
         var msg := Spec.MissingOperandAfterMessageSpec(operand);
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -376,7 +376,7 @@ module CommCore {
         return;
       case ModeExtraOperand(operand) =>
         var msg := Spec.ExtraOperandMessageSpec(operand);
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -384,7 +384,7 @@ module CommCore {
         return;
       case ModeMultipleOutputDelimiters =>
         var msg := Spec.MultipleOutputDelimitersMessageSpec();
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -392,7 +392,7 @@ module CommCore {
         return;
       case ModeRepeatedStdinOperand =>
         var msg := Spec.RepeatedStdinOperandMessageSpec();
-        var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
         exit := 1;
         assert io.stdin() == preStdin;
         assert io.stdout() == preStdout;
@@ -403,11 +403,11 @@ module CommCore {
         assert first == ReadFirstResult(cmd, preFs, preStreams, preStdin);
         assert io.stdin() == AfterFirstRead(cmd, preStdin);
         if first.Err? {
-          var err := ErrorForReads(cmd, first, BenchWorld.Ok([]));
-          var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+          var err := ErrorForReads(cmd, first, Result.Ok([]));
+          var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
           exit := 1;
           assert io.stdout() == preStdout;
-          assert io.stderr() == preStderr + ErrorForReads(cmd, first, BenchWorld.Ok([]));
+          assert io.stderr() == preStderr + ErrorForReads(cmd, first, Result.Ok([]));
           return;
         } else {
           ghost var stdinAfterFirst := io.stdin();
@@ -420,8 +420,8 @@ module CommCore {
           var out := OutputForReads(cmd, first, second);
           var err := ErrorForReads(cmd, first, second);
           var hadError := HadRunError(cmd, first, second);
-          var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-          var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+          var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+          var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
           exit := if hadError then 1 else 0;
           assert io.stdout() == preStdout + OutputForReads(cmd, first, second);
           assert io.stderr() == preStderr + ErrorForReads(cmd, first, second);

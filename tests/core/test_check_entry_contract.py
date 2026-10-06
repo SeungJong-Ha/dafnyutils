@@ -376,6 +376,7 @@ def test_chmod_entry_contract_records_split_specification_sources() -> None:
         for definition in generated.dafny.spec_definitions
     )
     assert {key.split("::", 1)[0] for key in manifest.spec_definition_sha256} == {
+        "bench/core/Errno.dfy",
         "bench/core/IO.dfy",
         "bench/core/IOContract.dfy",
         "bench/core/Utf8.dfy",

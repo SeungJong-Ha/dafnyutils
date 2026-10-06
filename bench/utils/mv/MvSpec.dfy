@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/Utf8.dfy"
 include "../../core/IO.dfy"
@@ -8,6 +9,8 @@ include "MvQuoteSpec.dfy"
 include "MvSchema.dfy"
 
 module MvSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchIO
   import IOContract
   import BenchWorld
@@ -21,31 +24,26 @@ module MvSpec {
 
 
 
-  const ENOTDIR: int := 20
-  const EISDIR: int := 21
-  const EINVAL: int := 22
-  const ENOTEMPTY: int := 39
-  const EBUSY: int := 16
 
   function ErrnoTextSpec(err: int): string
   {
-    if err == 2 then
+    if err == Errno.ENOENT then
       "No such file or directory"
-    else if err == 13 then
+    else if err == Errno.EACCES then
       "Permission denied"
-    else if err == 16 then
+    else if err == Errno.EBUSY then
       "Device or resource busy"
-    else if err == 17 then
+    else if err == Errno.EEXIST then
       "File exists"
-    else if err == 20 then
+    else if err == Errno.ENOTDIR then
       "Not a directory"
-    else if err == 21 then
+    else if err == Errno.EISDIR then
       "Is a directory"
-    else if err == 22 then
+    else if err == Errno.EINVAL then
       "Invalid argument"
-    else if err == 39 then
+    else if err == Errno.ENOTEMPTY then
       "Directory not empty"
-    else if err == 40 then
+    else if err == Errno.ELOOP then
       "Too many levels of symbolic links"
     else
       "unknown error"
@@ -158,10 +156,10 @@ module MvSpec {
 
   function RenameFailureMessageSpec(source: string, target: string, err: int): BenchWorld.Bytes
   {
-    if err == EISDIR then
+    if err == Errno.EISDIR then
       "mv: cannot overwrite directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
       " with non-directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) + "\n"
-    else if err == ENOTEMPTY then
+    else if err == Errno.ENOTEMPTY then
       "mv: cannot overwrite " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
       ": " + ErrnoTextSpec(err) + "\n"
     else
@@ -173,10 +171,14 @@ module MvSpec {
   function SourceRenameFailureMessageSpec(
     source: string,
     target: string,
-    err: int
+    err: int,
+    directorySourceWithExistingTarget: bool
   ): BenchWorld.Bytes
   {
-    if err == EINVAL then
+    if directorySourceWithExistingTarget && err == Errno.ENOTDIR then
+      "mv: cannot overwrite non-directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) +
+      " with directory " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) + "\n"
+    else if err == Errno.EINVAL then
       "mv: cannot move " + Quote.SpecQuoteAfBytes(Utf8.Encode(source)) +
       " to a subdirectory of itself, " + Quote.SpecQuoteAfBytes(Utf8.Encode(target)) + "\n"
     else
@@ -190,7 +192,7 @@ module MvSpec {
   ): int
   {
     if target == "" then
-      if sourceIsDir then EBUSY else EISDIR
+      if sourceIsDir then Errno.EBUSY else Errno.EISDIR
     else
       renameErr
   }
@@ -318,9 +320,9 @@ module MvSpec {
   {
     exists resolvedLeft: BenchWorld.Path, resolvedRight: BenchWorld.Path ::
       IOContract.ResolvePathForMetadataFields(fs, left, false) ==
-      BenchWorld.Ok(resolvedLeft) &&
+      Result.Ok(resolvedLeft) &&
       IOContract.ResolvePathForMetadataFields(fs, right, false) ==
-      BenchWorld.Ok(resolvedRight) &&
+      Result.Ok(resolvedRight) &&
       BenchWorld.InodeSameObject(fs, resolvedLeft, resolvedRight)
   }
 
@@ -344,9 +346,9 @@ module MvSpec {
         Basename.BasenameRelation(right, rightLeaf) &&
         leftLeaf == rightLeaf &&
         IOContract.ResolvePathForMetadataFields(fs, leftParent, false) ==
-        BenchWorld.Ok(resolvedLeftParent) &&
+        Result.Ok(resolvedLeftParent) &&
         IOContract.ResolvePathForMetadataFields(fs, rightParent, false) ==
-        BenchWorld.Ok(resolvedRightParent) &&
+        Result.Ok(resolvedRightParent) &&
         BenchWorld.InodeSameObject(
           fs, resolvedLeftParent, resolvedRightParent
         )
@@ -364,7 +366,7 @@ module MvSpec {
       resolvedReferent: BenchWorld.Path
       ::
         IOContract.ResolvePathForMetadataFields(fs, source, false) ==
-        BenchWorld.Ok(resolvedSource) &&
+        Result.Ok(resolvedSource) &&
         BenchWorld.FsContainsPath(fs, resolvedSource) &&
         BenchWorld.FsNodeAt(fs, resolvedSource).Symlink? &&
         IOContract.ResolvePathIdentityContractFields(
@@ -491,7 +493,7 @@ module MvSpec {
   function TargetDirectoryErrSpec(statOk: bool, isDir: bool, statErr: int): int
   {
     if statOk then
-      if !isDir then ENOTDIR else statErr
+      if !isDir then Errno.ENOTDIR else statErr
     else
       statErr
   }
@@ -771,10 +773,10 @@ module MvSpec {
       ::
         IOContract.ResolvePathForMetadataFields(
           fs, source, false
-        ) == BenchWorld.Ok(resolvedSource) &&
+        ) == Result.Ok(resolvedSource) &&
         IOContract.ResolvePathForMetadataFields(
           fs, SimpleBackupPathSpec(target, cmd.backupSuffix), true
-        ) == BenchWorld.Ok(resolvedBackup) &&
+        ) == Result.Ok(resolvedBackup) &&
         BenchWorld.InodeSameObject(
           fs, resolvedSource, resolvedBackup
         )
@@ -817,7 +819,9 @@ module MvSpec {
              target,
              SourceRenameDiagnosticErrSpec(
                target, sourceIsDir, renameErr
-             )
+             ),
+             sourceIsDir && IOContract.PathExistsContractFields(
+               beforeFs, target, false, true, 0)
            ),
            true
          )) ||
@@ -854,7 +858,8 @@ module MvSpec {
              target,
              SourceRenameDiagnosticErrSpec(
                target, sourceIsDir, renameErr
-             )
+             ),
+             false
            ),
            true
          ))

@@ -6,6 +6,7 @@ include "HeadRecordCore.dfy"
 include "HeadSpec.dfy"
 
 module HeadCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -136,11 +137,11 @@ module HeadCore {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
-    case Stdin(_) => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
+    case Stdin(_) => Result.Ok(PrefixStdinCore(cmd, preStdin, i))
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -214,7 +215,7 @@ module HeadCore {
     }
   }
 
-  function IsSuccessfulRead(result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function IsSuccessfulRead(result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match result
     case Ok(_) => true
@@ -229,7 +230,7 @@ module HeadCore {
   function OutputPiece(
     cmd: HeadSchema.HeadCmd,
     input: HeadSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               printedHeaders: int
   ): BenchWorld.Bytes
   {
@@ -245,7 +246,7 @@ module HeadCore {
       return [];
   }
 
-  function ErrorPiece(input: HeadSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: HeadSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin(_) => []
@@ -265,7 +266,7 @@ module HeadCore {
         return Spec.ErrorMessage(path, err);
   }
 
-  function HadErrorPiece(input: HeadSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: HeadSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin(_) => false
@@ -467,7 +468,7 @@ module HeadCore {
 
     if cmd.mode == HeadSchema.ModeHelp {
       var help := Spec.HelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -477,7 +478,7 @@ module HeadCore {
 
     if cmd.mode == HeadSchema.ModeVersion {
       var version := Spec.VersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -488,7 +489,7 @@ module HeadCore {
     if cmd.mode == HeadSchema.ModeInvalidCount {
       var invalid :=
         Spec.InvalidCountMessage(cmd.invalidCountUnit, cmd.invalidCountValue);
-      var _, _ := io.WriteStderr(invalid, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(invalid, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -514,12 +515,12 @@ module HeadCore {
       decreases |cmd.inputs| - i
     {
       var input := cmd.inputs[i];
-      var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+      var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
       match input {
         case Stdin(_) =>
           ghost var beforeStdin := io.stdin();
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-          readResult := BenchWorld.Ok(data);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+          readResult := Result.Ok(data);
           PrefixStdinCoreStep(cmd, preStdin, i);
           PrefixSuccessCountCoreStep(cmd, preFs, preStreams, preStdin, i);
           PrefixOutputCoreStep(cmd, preFs, preStreams, preStdin, i);
@@ -529,8 +530,7 @@ module HeadCore {
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           assert data == beforeStdin;
         case File(path) =>
-          var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+          readResult := io.ReadFile(path);
       }
       if input.File? {
         PrefixStdinCoreStep(cmd, preStdin, i);
@@ -554,13 +554,13 @@ module HeadCore {
     }
 
     if |out| > 0 {
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     } else {
       assert out == [];
       assert io.stdout() == preStdout + out;
     }
     if |err| > 0 {
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     } else {
       assert err == [];
       assert io.stderr() == preStderr + err;

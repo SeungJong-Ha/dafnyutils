@@ -4,6 +4,7 @@ include "LognameCore.dfy"
 include "LognameSpec.dfy"
 
 module LognameProof {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import Schema = LognameSchema
@@ -19,7 +20,7 @@ module LognameProof {
     } else if cmd.mode == Schema.ModeVersion {
     } else if |cmd.operands| > 0 {
     } else {
-      var login: BenchWorld.Result<string> :|
+      var login: BenchWorld.IOResult<string> :|
         Core.LoginNameResultFields(
           old(io.props()),
           login,

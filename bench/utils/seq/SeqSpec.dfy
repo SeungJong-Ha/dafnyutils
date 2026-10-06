@@ -4,6 +4,7 @@ include "../../core/StringEscaping.dfy"
 include "SeqSchema.dfy"
 
 module SeqSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -11,7 +12,7 @@ module SeqSpec {
   import SE = StringEscaping
 
   datatype Decimal = Decimal(raw: string, value: int, scale: nat, negativeZero: bool)
-  datatype DecimalParse = DecimalOk(number: Decimal) | DecimalErr(token: string)
+  type DecimalParse = Result.Result<Decimal, string>
   datatype NumberPlan =
     | NumbersOk(first: Decimal, step: Decimal, last: Decimal)
     | NumbersErr(stderr: BenchWorld.Bytes)
@@ -281,8 +282,8 @@ module SeqSpec {
   ghost predicate DecimalParseRelation(token: string, parsed: DecimalParse)
   {
     match parsed
-    case DecimalOk(number) => DecimalValueRelation(token, number)
-    case DecimalErr(errorToken) =>
+    case Ok(number) => DecimalValueRelation(token, number)
+    case Err(errorToken) =>
       errorToken == token &&
       !(exists number: Decimal :: DecimalValueRelation(token, number))
   }
@@ -320,24 +321,24 @@ module SeqSpec {
       exists firstParse: DecimalParse ::
         DecimalParseRelation(firstText, firstParse) &&
         match firstParse
-        case DecimalErr(token) =>
+        case Err(token) =>
           plan == NumbersErr(InvalidNumberMessage(token))
-        case DecimalOk(first) =>
+        case Ok(first) =>
           exists stepParse: DecimalParse ::
             DecimalParseRelation(stepText, stepParse) &&
             match stepParse
-            case DecimalErr(token) =>
+            case Err(token) =>
               plan == NumbersErr(InvalidNumberMessage(token))
-            case DecimalOk(step) =>
+            case Ok(step) =>
               if step.value == 0 then
                 plan == NumbersErr(ZeroIncrementMessage(step.raw))
               else
                 exists lastParse: DecimalParse ::
                   DecimalParseRelation(lastText, lastParse) &&
                   match lastParse
-                  case DecimalErr(token) =>
+                  case Err(token) =>
                     plan == NumbersErr(InvalidNumberMessage(token))
-                  case DecimalOk(last) =>
+                  case Ok(last) =>
                     plan == NumbersOk(first, step, last)
   }
 

@@ -4,6 +4,7 @@ include "UniqCore.dfy"
 include "UniqSpec.dfy"
 
 module UniqProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = UniqSchema
@@ -738,7 +739,7 @@ module UniqProof {
     cmd: Schema.UniqCmd,
     io: BenchIO.IO,
     preStreams: (BW.TrustedStreamRequest) -> BW.TrustedStreamResult,
-    new readResults: seq<BW.Result<BW.Bytes>>,
+    new readResults: seq<BW.IOResult<BW.Bytes>>,
     new stdoutPart: BW.Bytes,
     new stderrPart: BW.Bytes,
     hadError: bool
@@ -777,7 +778,7 @@ module UniqProof {
     raw: Schema.UniqCmdRaw,
     io: BenchIO.IO,
     exit: int,
-    new readResults: seq<BW.Result<BW.Bytes>>,
+    new readResults: seq<BW.IOResult<BW.Bytes>>,
     new stdoutPart: BW.Bytes,
     new stderrPart: BW.Bytes,
     hadError: bool

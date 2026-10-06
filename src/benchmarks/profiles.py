@@ -15,8 +15,11 @@ from .repository import BenchmarkRepository
 FUNCTIONAL_CORE_SOURCE = "bench/core/Functional.dfy"
 
 COREUTILS_IMPLEMENTATION_SUPPORT_FILES = (
+    "bench/core/Result.dfy",
+    "bench/core/Errno.dfy",
     "bench/core/World.dfy",
     "bench/core/WorldLookupProof.dfy",
+    "bench/core/LookupFailureProof.dfy",
     "bench/core/WorldInsertProof.dfy",
     "bench/core/WorldRemoveProof.dfy",
     "bench/core/WorldRenameProof.dfy",

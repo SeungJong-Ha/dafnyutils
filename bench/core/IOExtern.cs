@@ -9,6 +9,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
 using Dafny;
+using Errno = Errnos.__default;
 
 public static partial class IOExtern {
   private enum NativeStartupFailure {
@@ -74,7 +75,6 @@ public static partial class IOExtern {
 
   private const string StartupLibrary = "libdafnyutils_startup.so";
   private const int StartupOk = 0;
-  private const int BadFileDescriptor = 9;
 
   [DllImport(StartupLibrary)]
   private static extern int dfy_startup_take_standard(
@@ -126,7 +126,7 @@ public static partial class IOExtern {
           transferred.Add(new BigInteger(role), new DescriptorCapability(nativeFd));
           continue;
         }
-        if (availabilityErrno == BadFileDescriptor && nativeFd == -1) continue;
+        if (availabilityErrno == EBADF && nativeFd == -1) continue;
         if (nativeFd >= 0) ownedFds.Add(nativeFd);
         CloseTransferredDescriptors(ownedFds);
         capabilityLifecycle = CapabilityLifecycle.NativeFailed;
@@ -347,7 +347,6 @@ public static partial class IOExtern {
   private const int O_APPEND = 0x400;
   private const int SEEK_SET = 0;
   private const int SEEK_CUR = 1;
-  private const int SEEK_END = 2;
   private const int O_WRONLY = 0x1;
   private const int O_RDONLY = 0x0;
   private const int O_CREAT = 0x40;
@@ -373,14 +372,14 @@ public static partial class IOExtern {
   private const int S_IFLNK = 0xA000;
   private const int S_IFSOCK = 0xC000;
   private const uint PermissionModeMask = 0x0FFF;
-  private const int ENOENT = 2;
-  private const int EINTR = 4;
-  private const int EIO = 5;
-  private const int EBADF = 9;
-  private const int EINVAL = 22;
-  private const int ENAMETOOLONG = 36;
-  private const int ENOTSUP = 95;
-  private const int EOPNOTSUPP = 95;
+  private static readonly int ENOENT = (int)Errno.ENOENT;
+  private static readonly int EINTR = (int)Errno.EINTR;
+  private static readonly int EIO = (int)Errno.EIO;
+  private static readonly int EBADF = (int)Errno.EBADF;
+  private static readonly int EINVAL = (int)Errno.EINVAL;
+  private static readonly int ENAMETOOLONG = (int)Errno.ENAMETOOLONG;
+  private static readonly int EOPNOTSUPP = (int)Errno.EOPNOTSUPP;
+  private static readonly int EOVERFLOW = (int)Errno.EOVERFLOW;
   private const long SYS_CLOCK_GETTIME_LINUX_X86_64 = 228;
   private const ulong TCGETS_LINUX = 0x5401;
   private const int LINUX_KERNEL_TERMIOS_SIZE = 36;
@@ -771,11 +770,6 @@ public static partial class IOExtern {
     }
   }
 
-  private static bool TryWriteAllToFd(int fd, byte[] bytes, out int err) {
-    WriteAllToFdWithOutcome(fd, bytes, out var committed, out err);
-    return committed == bytes.Length && err == 0;
-  }
-
   private static void ReadAllFromFdWithOutcome(int fd, out byte[] data, out int err) {
     err = 0;
     using var output = new MemoryStream();
@@ -872,7 +866,7 @@ public static partial class IOExtern {
   public static void ReadCapability(
       BigInteger handle, int capacity, out byte[] data, out int err, out bool invoked) {
     data = Array.Empty<byte>();
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -885,7 +879,7 @@ public static partial class IOExtern {
   public static void WriteCapability(
       BigInteger handle, byte[] data, out int count, out int err, out bool invoked) {
     count = -1;
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -896,7 +890,7 @@ public static partial class IOExtern {
   }
 
   public static void CloseCapability(BigInteger handle, out int err, out bool invoked) {
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -913,7 +907,7 @@ public static partial class IOExtern {
       BigInteger handle, long offset, int whence,
       out long position, out int err, out bool invoked) {
     position = -1;
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -926,7 +920,7 @@ public static partial class IOExtern {
   public static void GetCapabilityFlags(
       BigInteger handle, out int flags, out int err, out bool invoked) {
     flags = -1;
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -939,7 +933,7 @@ public static partial class IOExtern {
   public static void FstatCapability(
       BigInteger handle, out BenchWorld._IFileStatus status, out int err, out bool invoked) {
     status = BenchWorld.FileStatus.Default();
-    err = 9;
+    err = EBADF;
     invoked = false;
     if (!FindCapability(handle, out var capability)) return;
     lock (capability.Gate) {
@@ -957,7 +951,6 @@ public static partial class IOExtern {
 
   public static void ReadFile(
       ISequence<Dafny.Rune> path,
-      BenchWorld._IFileReadMode mode,
       out ISequence<Dafny.Rune> content,
       out BigInteger err,
       out BenchWorld._IFileReadStage stage) {
@@ -974,9 +967,6 @@ public static partial class IOExtern {
       var openErr = Marshal.GetLastPInvokeError();
       err = new BigInteger(openErr == 0 ? EIO : openErr);
       return;
-    }
-    if (mode.is_AfterSeekEnd) {
-      _ = lseek(fd, 0, SEEK_END);
     }
     stage = BenchWorld.FileReadStage.create_ReadFailed();
     ReadAllFromFdWithOutcome(fd, out var bytes, out var readErr);
@@ -1137,12 +1127,12 @@ public static partial class IOExtern {
   public static void GetAuxiliaryValue(BigInteger tag, out BigInteger value, out int err) {
     value = BigInteger.Zero;
     if (tag < BigInteger.Zero || tag > ulong.MaxValue) {
-      err = 75; // EOVERFLOW: the request does not fit unsigned long on LP64.
+      err = EOVERFLOW; // EOVERFLOW: the request does not fit unsigned long on LP64.
       return;
     }
     if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
         || RuntimeInformation.ProcessArchitecture != Architecture.X64) {
-      err = ENOTSUP;
+      err = EOPNOTSUPP;
       return;
     }
     // .NET SetLastError clears errno before this call, preserving successful 0.
@@ -1158,7 +1148,7 @@ public static partial class IOExtern {
     nsec = BigInteger.Zero;
     if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
         || RuntimeInformation.ProcessArchitecture != Architecture.X64) {
-      err = ENOTSUP;
+      err = EOPNOTSUPP;
       return;
     }
     var result = syscall(SYS_CLOCK_GETTIME_LINUX_X86_64, 0, out var value); // CLOCK_REALTIME
@@ -1532,76 +1522,67 @@ public static partial class IOExtern {
 
   public static void CreateFile(ISequence<Dafny.Rune> path, out bool ok, out BigInteger err) {
     ok = false;
-    err = new BigInteger(0);
-    var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
-    if (string.IsNullOrEmpty(pathStr)) {
-      err = new BigInteger(EINVAL);
-      return;
-    }
-    int fd;
-    try {
-      fd = open(pathStr, O_WRONLY | O_CREAT | O_NONBLOCK | O_NOCTTY, DefaultCreateMode);
-    } catch {
-      fd = -1;
-    }
+    if (!TryPublicPath(path, out var pathStr, out err, allowEmpty: true)) return;
+    var fd = open(pathStr, O_WRONLY | O_CREAT | O_NONBLOCK | O_NOCTTY, DefaultCreateMode);
     if (fd < 0) {
-      err = new BigInteger(Marshal.GetLastWin32Error());
+      err = new BigInteger(Marshal.GetLastPInvokeError());
       return;
     }
-    try {
-      close(fd);
-    } catch {
+    if (close(fd) < 0) {
+      err = new BigInteger(Marshal.GetLastPInvokeError());
+      return;
     }
     ok = true;
   }
 
-  public static void WriteFile(ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
-    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY, out ok, out err);
+  public static void WriteFile(
+      ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data,
+      out bool ok, out BigInteger err, out BigInteger committed,
+      out BenchWorld._IFileWriteStage stage) {
+    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_TRUNC | O_NOCTTY,
+      out ok, out err, out committed, out stage);
   }
 
-  public static void AppendFile(ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
-    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY, out ok, out err);
+  public static void AppendFile(
+      ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data,
+      out bool ok, out BigInteger err, out BigInteger committed,
+      out BenchWorld._IFileWriteStage stage) {
+    WriteFileWithFlags(path, data, O_WRONLY | O_CREAT | O_APPEND | O_NOCTTY,
+      out ok, out err, out committed, out stage);
   }
 
   private static void WriteFileWithFlags(
       ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> data, int flags,
-      out bool ok, out BigInteger err) {
+      out bool ok, out BigInteger err, out BigInteger committed,
+      out BenchWorld._IFileWriteStage stage) {
     ok = false;
-    err = new BigInteger(0);
-    var pathStr = path?.ToVerbatimString(false) ?? string.Empty;
-    if (string.IsNullOrEmpty(pathStr)) {
-      err = new BigInteger(EINVAL);
-      return;
-    }
+    committed = BigInteger.Zero;
+    stage = BenchWorld.FileWriteStage.create_WriteOpenFailed();
+    if (!TryPublicPath(path, out var pathStr, out err, allowEmpty: true)) return;
     var text = data?.ToVerbatimString(false) ?? string.Empty;
     var bytes = Encoding.Latin1.GetBytes(text);
-    int fd;
-    try {
-      fd = open(pathStr, flags, DefaultCreateMode);
-    } catch {
-      fd = -1;
-    }
+    var fd = open(pathStr, flags, DefaultCreateMode);
     if (fd < 0) {
-      err = new BigInteger(Marshal.GetLastWin32Error());
+      err = new BigInteger(Marshal.GetLastPInvokeError());
       return;
     }
 
-    var writeOk = TryWriteAllToFd(fd, bytes, out var writeErr);
-    int closeRc;
-    try {
-      closeRc = close(fd);
-    } catch {
-      closeRc = -1;
-    }
-    if (!writeOk) {
+    WriteAllToFdWithOutcome(fd, bytes, out var written, out var writeErr);
+    committed = new BigInteger(written);
+    var closeRc = close(fd);
+    var closeErr = closeRc < 0 ? Marshal.GetLastPInvokeError() : 0;
+    if (writeErr != 0) {
       err = new BigInteger(writeErr);
+      stage = BenchWorld.FileWriteStage.create_WriteFailed();
       return;
     }
     if (closeRc < 0) {
-      err = new BigInteger(Marshal.GetLastWin32Error());
+      err = new BigInteger(closeErr);
+      stage = BenchWorld.FileWriteStage.create_WriteCloseFailed();
       return;
     }
     ok = true;
+    stage = BenchWorld.FileWriteStage.create_WriteSucceeded();
   }
 
   public static void CreateSymlink(ISequence<Dafny.Rune> path, ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
@@ -1779,9 +1760,10 @@ public static partial class IOExtern {
   }
 
   private static bool TryPublicPath(
-      ISequence<Dafny.Rune> path, out string pathText, out BigInteger err) {
+      ISequence<Dafny.Rune> path, out string pathText, out BigInteger err,
+      bool allowEmpty = false) {
     pathText = path?.ToVerbatimString(false) ?? string.Empty;
-    if (string.IsNullOrEmpty(pathText) || !IsAbiPath(pathText)) {
+    if ((!allowEmpty && string.IsNullOrEmpty(pathText)) || !IsAbiPath(pathText)) {
       err = new BigInteger(string.IsNullOrEmpty(pathText) ? ENOENT : EINVAL);
       return false;
     }
@@ -1818,8 +1800,9 @@ public static partial class IOExtern {
       ISequence<Dafny.Rune> target,
       out bool ok,
       out BigInteger err) {
-    if (!TryPublicPath(source, out var sourceText, out err) ||
-        !TryPublicPath(target, out var targetText, out err)) {
+    // Let native link select errno when an empty operand competes with another path error.
+    if (!TryPublicPath(source, out var sourceText, out err, allowEmpty: true) ||
+        !TryPublicPath(target, out var targetText, out err, allowEmpty: true)) {
       ok = false;
       return;
     }
@@ -2048,8 +2031,8 @@ public static partial class IOExtern {
       // If fchmodat with AT_SYMLINK_NOFOLLOW fails with ENOTSUP/EOPNOTSUPP on symlinks, that's expected
       if (rc < 0) {
         var errno = Marshal.GetLastWin32Error();
-        // For symlinks, ENOTSUP is expected when trying to chmod without following
-        if (errno == ENOTSUP || errno == EOPNOTSUPP) {
+        // For symlinks, EOPNOTSUPP is expected when trying to chmod without following
+        if (errno == EOPNOTSUPP) {
           // Check if it's actually a symlink
           if (TryStatPath(pathStr, false, out var statResult, out _)) {
             if ((statResult.st_mode & S_IFMT) == S_IFLNK) {
@@ -2370,24 +2353,14 @@ public static partial class IOExtern {
 
   public static void RenamePath(ISequence<Dafny.Rune> source, ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
     ok = false;
-    err = new BigInteger(0);
-    var sourceStr = source?.ToVerbatimString(false) ?? string.Empty;
-    var targetStr = target?.ToVerbatimString(false) ?? string.Empty;
-    int rc;
-    var renameErr = 0;
-    try {
-      rc = rename(sourceStr, targetStr);
-    } catch {
-      rc = -1;
-      renameErr = EIO;
-    }
-
+    if (!TryPublicPath(source, out var sourceStr, out err, allowEmpty: true) ||
+        !TryPublicPath(target, out var targetStr, out err, allowEmpty: true)) return;
+    var rc = rename(sourceStr, targetStr);
     if (rc == 0) {
       ok = true;
       return;
     }
-    var errno = renameErr != 0 ? renameErr : Marshal.GetLastWin32Error();
-    err = new BigInteger(errno == 0 ? EIO : errno);
+    err = new BigInteger(Marshal.GetLastPInvokeError());
   }
 
 }
@@ -2402,45 +2375,44 @@ public static class BenchIOExtern {
 
 namespace BenchIO {
   public partial class IO {
-    public void ReadFile(
+    private void NativeReadFile(
         ISequence<Dafny.Rune> path,
-        BenchWorld._IFileReadMode mode,
         out ISequence<Dafny.Rune> data,
         out BigInteger err,
         out BenchWorld._IFileReadStage stage) {
-      IOExtern.ReadFile(path, mode, out data, out err, out stage);
+      IOExtern.ReadFile(path, out data, out err, out stage);
     }
 
-    public BenchWorld._IResult<Dafny.ISequence<Dafny.Rune>> ReadLink(ISequence<Dafny.Rune> path) {
+    public Results._IResult<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError> ReadLink(ISequence<Dafny.Rune> path) {
       IOExtern.ReadLinkTarget(path, out var ok, out var target, out var errCode);
       if (ok) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Ok(target);
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Ok(target);
       }
-      if (errCode == new BigInteger(2)) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_NoSuchFile());
+      if (errCode == Errno.ENOENT) {
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(BenchWorld.IOError.create_NoSuchFile());
       }
-      if (errCode == new BigInteger(13)) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_PermissionDenied());
+      if (errCode == Errno.EACCES) {
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(BenchWorld.IOError.create_PermissionDenied());
       }
-      if (errCode == new BigInteger(20)) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_NotDirectory());
+      if (errCode == Errno.ENOTDIR) {
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(BenchWorld.IOError.create_NotDirectory());
       }
-      if (errCode == new BigInteger(22) || errCode == new BigInteger(40)) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(BenchWorld.IOError.create_InvalidPath());
+      if (errCode == Errno.EINVAL || errCode == Errno.ELOOP) {
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(BenchWorld.IOError.create_InvalidPath());
       }
-      return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(
+      return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(
         BenchWorld.IOError.create_Other(IOExtern.ErrnoMessage(errCode))
       );
     }
 
-    public void ReadStdin(
+    private void NativeReadStdin(
         BenchWorld._IStreamErrorPolicy policy,
         out ISequence<Dafny.Rune> data,
         out BigInteger err) {
       IOExtern.ReadStdin(policy, out data, out err);
     }
 
-    public void WriteStdout(
+    private void NativeWriteStdout(
         Dafny.ISequence<Dafny.Rune> b,
         BenchWorld._IStreamErrorPolicy policy,
         out BigInteger committed,
@@ -2448,7 +2420,7 @@ namespace BenchIO {
       IOExtern.WriteStdout(b, policy, out committed, out err);
     }
 
-    public void WriteStderr(
+    private void NativeWriteStderr(
         Dafny.ISequence<Dafny.Rune> b,
         BenchWorld._IStreamErrorPolicy policy,
         out BigInteger committed,
@@ -2476,13 +2448,13 @@ namespace BenchIO {
       return Sequence<Dafny.Rune>.UnicodeFromString(".");
     }
 
-    public BenchWorld._IResult<Dafny.ISequence<Dafny.Rune>> GetEnv(Dafny.ISequence<Dafny.Rune> key) {
+    public Results._IResult<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError> GetEnv(Dafny.ISequence<Dafny.Rune> key) {
       IOExtern.GetEnv(key, out var ok, out var value);
       if (ok) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Ok(value);
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Ok(value);
       }
       var keyStr = key?.ToVerbatimString(false) ?? string.Empty;
-      return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(
+      return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(
         BenchWorld.IOError.create_Other(Sequence<Dafny.Rune>.UnicodeFromString("missing env key: " + keyStr))
       );
     }
@@ -2491,12 +2463,12 @@ namespace BenchIO {
       return IOExtern.GetEnvironment();
     }
 
-    public BenchWorld._IResult<Dafny.ISequence<Dafny.Rune>> GetLoginName() {
+    public Results._IResult<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError> GetLoginName() {
       IOExtern.GetLoginName(out var ok, out var value);
       if (ok) {
-        return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Ok(value);
+        return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Ok(value);
       }
-      return BenchWorld.Result<Dafny.ISequence<Dafny.Rune>>.create_Err(
+      return Results.Result<Dafny.ISequence<Dafny.Rune>, BenchWorld._IIOError>.create_Err(
         BenchWorld.IOError.create_Other(Sequence<Dafny.Rune>.UnicodeFromString("missing login name"))
       );
     }
@@ -2506,77 +2478,83 @@ namespace BenchIO {
       return sec;
     }
 
-    public void ParseTimestamp(Dafny.ISequence<Dafny.Rune> timestamp, BigInteger nowSec, BigInteger nowNsec, out bool ok, out BigInteger sec, out BigInteger nsec) {
+    private void NativeParseTimestamp(Dafny.ISequence<Dafny.Rune> timestamp, BigInteger nowSec, BigInteger nowNsec, out bool ok, out BigInteger sec, out BigInteger nsec) {
       IOExtern.ParseTimestamp(timestamp, nowSec, nowNsec, out ok, out sec, out nsec);
     }
 
-    public void ParseDate(Dafny.ISequence<Dafny.Rune> date, BigInteger refSec, BigInteger refNsec, out bool ok, out BigInteger sec, out BigInteger nsec) {
+    private void NativeParseDate(Dafny.ISequence<Dafny.Rune> date, BigInteger refSec, BigInteger refNsec, out bool ok, out BigInteger sec, out BigInteger nsec) {
       IOExtern.ParseDate(date, refSec, refNsec, out ok, out sec, out nsec);
     }
 
-    public void PathExists(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool found, out BigInteger err) {
+    private void NativePathExists(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool found, out BigInteger err) {
       IOExtern.PathExists(path, followSymlink, out found, out err);
     }
 
 
-    public void SetFileTimesNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
+    private void NativeSetFileTimesNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
       IOExtern.SetFileTimesNow(path, followSymlink, out ok, out err);
     }
 
-    public void SetFileAccessTimeNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
+    private void NativeSetFileAccessTimeNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
       IOExtern.SetFileAccessTimeNow(path, followSymlink, out ok, out err);
     }
 
-    public void SetFileModificationTimeNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
+    private void NativeSetFileModificationTimeNow(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger err) {
       IOExtern.SetFileModificationTimeNow(path, followSymlink, out ok, out err);
     }
 
 
-    public void GetFileTimes(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger atimeSec, out BigInteger atimeNsec, out BigInteger mtimeSec, out BigInteger mtimeNsec, out bool isDir, out bool isSymlink, out BigInteger device, out BigInteger inode, out BigInteger linkCount, out BigInteger err) {
+    private void NativeGetFileTimes(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BigInteger atimeSec, out BigInteger atimeNsec, out BigInteger mtimeSec, out BigInteger mtimeNsec, out bool isDir, out bool isSymlink, out BigInteger device, out BigInteger inode, out BigInteger linkCount, out BigInteger err) {
       IOExtern.GetFileTimes(path, followSymlink, out ok, out atimeSec, out atimeNsec, out mtimeSec, out mtimeNsec, out isDir, out isSymlink, out device, out inode, out linkCount, out err);
     }
 
 
-    public void SetFileTimes(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, BigInteger atimeSec, BigInteger atimeNsec, BigInteger mtimeSec, BigInteger mtimeNsec, out bool ok, out BigInteger err) {
+    private void NativeSetFileTimes(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, BigInteger atimeSec, BigInteger atimeNsec, BigInteger mtimeSec, BigInteger mtimeNsec, out bool ok, out BigInteger err) {
       IOExtern.SetFileTimes(path, followSymlink, atimeSec, atimeNsec, mtimeSec, mtimeNsec, out ok, out err);
     }
 
 
-    public void GetFileMode(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out uint mode, out BigInteger err) {
+    private void NativeGetFileMode(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out uint mode, out BigInteger err) {
       IOExtern.GetFileMode(path, followSymlink, out ok, out mode, out err);
     }
 
 
-    public void IsDirectory(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out bool isDir, out BigInteger err) {
+    private void NativeIsDirectory(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out bool isDir, out BigInteger err) {
       IOExtern.IsDirectory(path, followSymlink, out ok, out isDir, out err);
     }
 
 
-    public void IsSymlink(Dafny.ISequence<Dafny.Rune> path, out bool ok, out bool isSymlink, out BigInteger err) {
+    private void NativeIsSymlink(Dafny.ISequence<Dafny.Rune> path, out bool ok, out bool isSymlink, out BigInteger err) {
       IOExtern.IsSymlink(path, out ok, out isSymlink, out err);
     }
 
-    public void CreateFile(Dafny.ISequence<Dafny.Rune> path, out bool ok, out BigInteger err) {
+    private void NativeCreateFile(Dafny.ISequence<Dafny.Rune> path, out bool ok, out BigInteger err) {
       IOExtern.CreateFile(path, out ok, out err);
     }
 
-    public void WriteFile(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
-      IOExtern.WriteFile(path, data, out ok, out err);
+    private void NativeWriteFile(
+        Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data,
+        out bool ok, out BigInteger err, out BigInteger committed,
+        out BenchWorld._IFileWriteStage stage) {
+      IOExtern.WriteFile(path, data, out ok, out err, out committed, out stage);
     }
 
-    public void AppendFile(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data, out bool ok, out BigInteger err) {
-      IOExtern.AppendFile(path, data, out ok, out err);
+    private void NativeAppendFile(
+        Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> data,
+        out bool ok, out BigInteger err, out BigInteger committed,
+        out BenchWorld._IFileWriteStage stage) {
+      IOExtern.AppendFile(path, data, out ok, out err, out committed, out stage);
     }
 
-    public void CreateSymlink(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
+    private void NativeCreateSymlink(Dafny.ISequence<Dafny.Rune> path, Dafny.ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
       IOExtern.CreateSymlink(path, target, out ok, out err);
     }
 
-    public void DeletePath(Dafny.ISequence<Dafny.Rune> path, out bool ok, out BigInteger err) {
+    private void NativeDeletePath(Dafny.ISequence<Dafny.Rune> path, out bool ok, out BigInteger err) {
       IOExtern.DeletePath(path, out ok, out err);
     }
 
-    public void CreateDirectory(
+    private void NativeCreateDirectory(
         Dafny.ISequence<Dafny.Rune> path,
         uint mode,
         out bool ok,
@@ -2584,14 +2562,14 @@ namespace BenchIO {
       IOExtern.CreateDirectory(path, mode, out ok, out err);
     }
 
-    public void RemoveDirectory(
+    private void NativeRemoveDirectory(
         Dafny.ISequence<Dafny.Rune> path,
         out bool ok,
         out BigInteger err) {
       IOExtern.RemoveDirectory(path, out ok, out err);
     }
 
-    public void CreateHardLink(
+    private void NativeCreateHardLink(
         Dafny.ISequence<Dafny.Rune> source,
         Dafny.ISequence<Dafny.Rune> target,
         out bool ok,
@@ -2599,14 +2577,14 @@ namespace BenchIO {
       IOExtern.CreateHardLink(source, target, out ok, out err);
     }
 
-    public void UnlinkPath(
+    private void NativeUnlinkPath(
         Dafny.ISequence<Dafny.Rune> path,
         out bool ok,
         out BigInteger err) {
       IOExtern.UnlinkPath(path, out ok, out err);
     }
 
-    public void TruncateFile(
+    private void NativeTruncateFile(
         Dafny.ISequence<Dafny.Rune> path,
         BigInteger size,
         out bool ok,
@@ -2614,7 +2592,7 @@ namespace BenchIO {
       IOExtern.TruncateFile(path, size, out ok, out err);
     }
 
-    public void CreateSpecialNode(
+    private void NativeCreateSpecialNode(
         Dafny.ISequence<Dafny.Rune> path,
         BenchWorld._ISpecialNodeKind kind,
         uint mode,
@@ -2625,7 +2603,7 @@ namespace BenchIO {
       IOExtern.CreateSpecialNode(path, kind, mode, major, minor, out ok, out err);
     }
 
-    public void Sync(
+    private void NativeSync(
         BenchWorld._ISyncTarget target,
         BenchWorld._ISyncMode mode,
         out bool ok,
@@ -2633,27 +2611,27 @@ namespace BenchIO {
       IOExtern.Sync(target, mode, out ok, out err);
     }
 
-    public void GetFileStatus(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BenchWorld._IFileStatus status, out BigInteger err) {
+    private void NativeGetFileStatus(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, out bool ok, out BenchWorld._IFileStatus status, out BigInteger err) {
       IOExtern.GetFileStatus(path, followSymlink, out ok, out status, out err);
     }
 
-    public void SetStdoutTimesNow(out bool ok, out BigInteger err) {
+    private void NativeSetStdoutTimesNow(out bool ok, out BigInteger err) {
       IOExtern.SetStdoutTimesNow(out ok, out err);
     }
 
-    public void SetStdoutAccessTimeNow(out bool ok, out BigInteger err) {
+    private void NativeSetStdoutAccessTimeNow(out bool ok, out BigInteger err) {
       IOExtern.SetStdoutAccessTimeNow(out ok, out err);
     }
 
-    public void SetStdoutModificationTimeNow(out bool ok, out BigInteger err) {
+    private void NativeSetStdoutModificationTimeNow(out bool ok, out BigInteger err) {
       IOExtern.SetStdoutModificationTimeNow(out ok, out err);
     }
 
-    public void SetStdoutTimes(BenchWorld._ITimestampUpdate atime, BenchWorld._ITimestampUpdate mtime, out bool ok, out BigInteger err) {
+    private void NativeSetStdoutTimes(BenchWorld._ITimestampUpdate atime, BenchWorld._ITimestampUpdate mtime, out bool ok, out BigInteger err) {
       IOExtern.SetStdoutTimes(atime, mtime, out ok, out err);
     }
 
-    public void SetFileMode(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, uint mode, out bool ok, out BigInteger err) {
+    private void NativeSetFileMode(Dafny.ISequence<Dafny.Rune> path, bool followSymlink, uint mode, out bool ok, out BigInteger err) {
       IOExtern.SetFileMode(path, followSymlink, mode, out ok, out err);
     }
 
@@ -2661,7 +2639,7 @@ namespace BenchIO {
       return IOExtern.GetUmask();
     }
 
-    public void OpenDir(
+    private void NativeOpenDir(
       Dafny.ISequence<Dafny.Rune> path,
       bool includeDots,
       out bool ok,
@@ -2671,11 +2649,11 @@ namespace BenchIO {
       IOExtern.OpenDir(path, includeDots, out ok, out handle, out err);
     }
 
-    public void GetOpenDirectoryStatus(BigInteger handle, out bool ok, out BenchWorld._IFileStatus status, out BigInteger err) {
+    private void NativeGetOpenDirectoryStatus(BigInteger handle, out bool ok, out BenchWorld._IFileStatus status, out BigInteger err) {
       IOExtern.GetOpenDirectoryStatus(handle, out ok, out status, out err);
     }
 
-    public void ResolvePathIdentity(
+    private void NativeResolvePathIdentity(
       Dafny.ISequence<Dafny.Rune> path,
       out bool ok,
       out Dafny.ISequence<Dafny.Rune> resolvedPath,
@@ -2684,7 +2662,7 @@ namespace BenchIO {
       IOExtern.ResolvePathIdentity(path, out ok, out resolvedPath, out err);
     }
 
-    public void ReadDir(BigInteger handle, out bool hasMore, out Dafny.ISequence<Dafny.Rune> name, out BenchWorld._IDirectoryEntryKind kind, out BigInteger err) {
+    private void NativeReadDir(BigInteger handle, out bool hasMore, out Dafny.ISequence<Dafny.Rune> name, out BenchWorld._IDirectoryEntryKind kind, out BigInteger err) {
       IOExtern.ReadDir(handle, out hasMore, out name, out kind, out err);
     }
 
@@ -2692,7 +2670,7 @@ namespace BenchIO {
       IOExtern.CloseDir(handle);
     }
 
-    public void RenamePath(Dafny.ISequence<Dafny.Rune> source, Dafny.ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
+    private void NativeRenamePath(Dafny.ISequence<Dafny.Rune> source, Dafny.ISequence<Dafny.Rune> target, out bool ok, out BigInteger err) {
       IOExtern.RenamePath(source, target, out ok, out err);
     }
   }

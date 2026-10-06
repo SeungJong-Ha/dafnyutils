@@ -6,6 +6,7 @@ include "MvCore.dfy"
 include "MvSpec.dfy"
 
 module MvProof {
+  import Result = Results
   import BenchIO
   import IOContract
   import BW = BenchWorld
@@ -406,10 +407,10 @@ module MvProof {
               ::
                 IOContract.ResolvePathForMetadataFields(
                   fs, leftPath, followLeft
-                ) == BW.Ok(resolvedLeft) &&
+                ) == Result.Ok(resolvedLeft) &&
                 IOContract.ResolvePathForMetadataFields(
                   fs, rightPath, followRight
-                ) == BW.Ok(resolvedRight) &&
+                ) == Result.Ok(resolvedRight) &&
                 BW.InodeSameObject(fs, resolvedLeft, resolvedRight)
   {
     var resolvedLeft :=
@@ -490,10 +491,10 @@ module MvProof {
                ::
                  IOContract.ResolvePathForMetadataFields(
                    fs, leftPath, followLeft
-                 ) == BW.Ok(resolvedLeft) &&
+                 ) == Result.Ok(resolvedLeft) &&
                  IOContract.ResolvePathForMetadataFields(
                    fs, rightPath, followRight
-                 ) == BW.Ok(resolvedRight) &&
+                 ) == Result.Ok(resolvedRight) &&
                  BW.InodeSameObject(fs, resolvedLeft, resolvedRight)
     ensures left.key == right.key
   {
@@ -555,10 +556,10 @@ module MvProof {
       leftLeaf == rightLeaf &&
       IOContract.ResolvePathForMetadataFields(
         fs, leftParent, false
-      ) == BW.Ok(resolvedLeftParent) &&
+      ) == Result.Ok(resolvedLeftParent) &&
       IOContract.ResolvePathForMetadataFields(
         fs, rightParent, false
-      ) == BW.Ok(resolvedRightParent) &&
+      ) == Result.Ok(resolvedRightParent) &&
       BW.InodeSameObject(
         fs, resolvedLeftParent, resolvedRightParent
       );
@@ -572,10 +573,10 @@ module MvProof {
     reveal Core.MetadataEvidenceFor();
     assert IOContract.ResolvePathForMetadataFields(
         fs, left.parent, false
-      ) == BW.Ok(resolvedLeftParent);
+      ) == Result.Ok(resolvedLeftParent);
     assert IOContract.ResolvePathForMetadataFields(
         fs, right.parent, false
-      ) == BW.Ok(resolvedRightParent);
+      ) == Result.Ok(resolvedRightParent);
     assert BW.FsContainsPath(fs, resolvedLeftParent);
     assert BW.FsContainsPath(fs, resolvedRightParent);
     assert left.parentMetadata.ok;
@@ -680,7 +681,7 @@ module MvProof {
           var publicResolvedSource, publicResolvedReferent :|
             IOContract.ResolvePathForMetadataFields(
               fs, source, false
-            ) == BW.Ok(publicResolvedSource) &&
+            ) == Result.Ok(publicResolvedSource) &&
             BW.FsContainsPath(fs, publicResolvedSource) &&
             BW.FsNodeAt(fs, publicResolvedSource).Symlink? &&
             IOContract.ResolvePathIdentityContractFields(
@@ -1828,7 +1829,29 @@ module MvProof {
       );
   }
 
-  lemma {:isolate_assertions} BatchStatusStepImpliesObserved(
+  lemma {:induction false} BatchStatusStepInterval(
+    observations: BW.StatusTimeObservations,
+    batch: Core.BatchEvidence,
+    i: nat
+  )
+    requires i < |batch.steps|
+    requires Core.BatchStatusEvidenceFor(observations, batch)
+    ensures Core.StatusCallsFor(
+      observations, batch.firstStatus, batch.statusCalls)
+    ensures i + 1 < |batch.statusBounds|
+    ensures batch.firstStatus <= batch.statusBounds[i] <= batch.statusBounds[i + 1] <=
+      batch.firstStatus + |batch.statusCalls|
+    ensures batch.steps[i].firstStatus == batch.statusBounds[i]
+    ensures batch.statusBounds[i + 1] ==
+      batch.steps[i].firstStatus + |batch.steps[i].statusCalls|
+    ensures batch.statusCalls[
+      batch.statusBounds[i] - batch.firstStatus ..
+      batch.statusBounds[i + 1] - batch.firstStatus] == batch.steps[i].statusCalls
+  {
+    reveal Core.BatchStatusEvidenceFor();
+  }
+
+  lemma {:isolate_assertions} {:induction false} BatchStatusStepImpliesObserved(
     source: string,
     directory: string,
     cmd: Schema.MvCmd,
@@ -1863,6 +1886,9 @@ module MvProof {
         batch.statusBounds[i] - batch.firstStatus ..
         batch.statusBounds[i + 1] - batch.firstStatus])
   {
+    hide Spec.ObservedStepRelation();
+    hide Core.BatchStatusEvidenceFor();
+    BatchStatusStepInterval(observations, batch, i);
     NormalizeSourceSpecEqualsCore(source, cmd.stripTrailingSlashes);
     var normalizedSource := Core.NormalizeSource(
       source, cmd.stripTrailingSlashes);
@@ -1871,21 +1897,89 @@ module MvProof {
     assert Core.StepEvidenceFor(
       normalizedSource, Core.TargetInDirectory(directory, normalizedSource),
       cmd, preCwd, batch.steps[i]);
+    assert batch.steps[i].beforeFs == batch.fsBounds[i];
+    assert batch.steps[i].afterFs == batch.fsBounds[i + 1];
+    assert batch.steps[i].outcome == batch.outcomes[i];
+    assert Spec.NormalizeSourceSpec(source, cmd.stripTrailingSlashes) == normalizedSource;
+    assert Spec.TargetInDirectorySpec(directory, normalizedSource) ==
+      Core.TargetInDirectory(directory, normalizedSource);
     var lo := batch.statusBounds[i] - batch.firstStatus;
     var hi := batch.statusBounds[i + 1] - batch.firstStatus;
     Core.StatusCallsSlice(
       observations, batch.firstStatus, batch.statusCalls, lo, hi);
     assert batch.statusCalls[lo..hi] == batch.steps[i].statusCalls;
     assert batch.steps[i].firstStatus == batch.statusBounds[i];
+    assert batch.statusBounds[i + 1] ==
+      batch.steps[i].firstStatus + |batch.steps[i].statusCalls|;
     assert Core.StatusCallsFor(
       observations, batch.steps[i].firstStatus,
       batch.steps[i].statusCalls);
     StepStatusEvidenceImpliesObservedStep(
       normalizedSource, Core.TargetInDirectory(directory, normalizedSource),
       cmd, preCwd, batch.steps[i], observations);
+    assert Spec.ObservedStepRelation(
+      normalizedSource, Core.TargetInDirectory(directory, normalizedSource),
+      cmd, batch.steps[i].beforeFs, preCwd, batch.steps[i].afterFs,
+      batch.steps[i].outcome, observations, batch.steps[i].firstStatus,
+      batch.steps[i].firstStatus + |batch.steps[i].statusCalls|,
+      batch.steps[i].statusCalls);
+    assert Spec.ObservedStepRelation(
+      Spec.NormalizeSourceSpec(source, cmd.stripTrailingSlashes),
+      Spec.TargetInDirectorySpec(directory, Spec.NormalizeSourceSpec(source, cmd.stripTrailingSlashes)),
+      cmd, batch.fsBounds[i], preCwd, batch.fsBounds[i + 1], batch.outcomes[i],
+      observations, batch.statusBounds[i], batch.statusBounds[i + 1], batch.statusCalls[lo..hi]);
   }
 
-  lemma {:isolate_assertions} BatchStatusEvidenceImpliesObservedBatch(
+  lemma {:isolate_assertions} {:induction false} ObservedBatchComponentsImplyRelation(
+    sources: seq<string>,
+    directory: string,
+    cmd: Schema.MvCmd,
+    beforeFs: BW.FileSystem,
+    preCwd: BW.Path,
+    afterFs: BW.FileSystem,
+    hadError: bool,
+    out: BW.Bytes,
+    err: BW.Bytes,
+    observations: BW.StatusTimeObservations,
+    firstStatus: nat,
+    afterStatus: nat,
+    calls: seq<Spec.StatusCallEvidence>,
+    fsBounds: seq<BW.FileSystem>,
+    outcomes: seq<Spec.MoveOutcome>,
+    stdoutFragments: seq<BW.Bytes>,
+    stderrFragments: seq<BW.Bytes>,
+    statusBounds: seq<nat>
+  )
+    requires afterStatus == firstStatus + |calls|
+    requires Spec.StatusCallsFor(observations, firstStatus, calls)
+    requires Spec.BatchMoveWitnessRelation(
+      sources, directory, cmd, beforeFs, preCwd, afterFs,
+      hadError, out, err, fsBounds, outcomes, stdoutFragments, stderrFragments)
+    requires |fsBounds| == |sources| + 1
+    requires |outcomes| == |sources|
+    requires |statusBounds| == |sources| + 1
+    requires statusBounds[0] == firstStatus
+    requires statusBounds[|sources|] == afterStatus
+    requires forall i: nat {:trigger statusBounds[i]} | i < |sources| ::
+      firstStatus <= statusBounds[i] <= statusBounds[i + 1] <= afterStatus &&
+      Spec.ObservedStepRelation(
+        Spec.NormalizeSourceSpec(sources[i], cmd.stripTrailingSlashes),
+        Spec.TargetInDirectorySpec(
+          directory, Spec.NormalizeSourceSpec(sources[i], cmd.stripTrailingSlashes)),
+        cmd, fsBounds[i], preCwd, fsBounds[i + 1], outcomes[i], observations,
+        statusBounds[i], statusBounds[i + 1],
+        calls[statusBounds[i] - firstStatus .. statusBounds[i + 1] - firstStatus])
+    ensures Spec.ObservedBatchRelation(
+      sources, directory, cmd, beforeFs, preCwd, afterFs,
+      hadError, out, err, observations, firstStatus, afterStatus, calls)
+  {
+    hide Spec.ObservedStepRelation();
+    hide Spec.BatchMoveWitnessRelation();
+    hide Spec.StatusCallsFor();
+    reveal Spec.ObservedBatchRelation();
+  }
+
+  lemma {:isolate_assertions} {:induction false} BatchStatusEvidenceImpliesObservedBatch(
     sources: seq<string>,
     directory: string,
     cmd: Schema.MvCmd,
@@ -1910,6 +2004,12 @@ module MvProof {
       batch.firstStatus + |batch.statusCalls|,
       batch.statusCalls)
   {
+    hide Spec.ObservedBatchRelation();
+    hide Spec.ObservedStepRelation();
+    hide Spec.BatchMoveWitnessRelation();
+    hide Spec.StatusCallsFor();
+    hide Core.BatchStepEvidenceFor();
+    hide Core.StepStatusEvidenceFor();
     BatchEvidenceImpliesMoveRelation(
       sources, directory, cmd, beforeFs, preCwd, afterFs,
       hadError, out, err, batch
@@ -1917,7 +2017,9 @@ module MvProof {
     reveal Core.BatchMoveStatusEvidenceFor();
     reveal Core.BatchStatusEvidenceFor();
     reveal Core.BatchEvidenceFor();
-    forall i: nat | i < |sources|
+    forall i: nat {:trigger batch.statusBounds[i]} | i < |sources|
+      ensures batch.firstStatus <= batch.statusBounds[i] <=
+        batch.statusBounds[i + 1] <= batch.firstStatus + |batch.statusCalls|
       ensures Spec.ObservedStepRelation(
         Spec.NormalizeSourceSpec(sources[i], cmd.stripTrailingSlashes),
         Spec.TargetInDirectorySpec(
@@ -1940,6 +2042,12 @@ module MvProof {
       BatchStatusStepImpliesObserved(
         sources[i], directory, cmd, preCwd, observations, batch, i);
     }
+    ObservedBatchComponentsImplyRelation(
+      sources, directory, cmd, beforeFs, preCwd, afterFs,
+      hadError, out, err, observations,
+      batch.firstStatus, batch.firstStatus + |batch.statusCalls|,
+      batch.statusCalls, batch.fsBounds, batch.outcomes,
+      batch.stdoutFragments, batch.stderrFragments, batch.statusBounds);
   }
 
   lemma RunIntoDirectoryEvidenceImpliesCandidate(
@@ -2121,7 +2229,6 @@ module MvProof {
     requires Core.TargetDirectoryCheckSummaryFields(directory, preFs, ok, err)
     ensures Spec.TargetDirectoryCheckSpecFields(directory, preFs, ok, err)
   {
-    assert Spec.ENOTDIR == Core.ENOTDIR;
     assert forall statOk: bool, isDir: bool, statErr: int ::
         Spec.TargetDirectoryErrSpec(statOk, isDir, statErr) == Core.TargetDirectoryErr(statOk, isDir, statErr);
   }

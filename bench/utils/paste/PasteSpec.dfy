@@ -5,6 +5,7 @@ include "PasteSchema.dfy"
 include "../../core/StringEscaping.dfy"
 
 module PasteSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -13,9 +14,9 @@ module PasteSpec {
   import SE = StringEscaping
 
   datatype Entry = Entry(lines: seq<BenchWorld.Bytes>, readOk: bool)
-  datatype DelimPlan = DelimsOk(delims: seq<BenchWorld.Bytes>) | DelimsErr(stderr: BenchWorld.Bytes)
+  type DelimPlan = Result.Result<seq<BenchWorld.Bytes>, BenchWorld.Bytes>
   datatype InputObservation = InputObservation(
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     entry: Entry,
     errorPiece: BenchWorld.Bytes,
     failed: bool,
@@ -65,6 +66,11 @@ module PasteSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function NeedsErrorQuoting(path: string): bool
@@ -133,13 +139,13 @@ module PasteSpec {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if PasteSchema.Stdin in cmd.inputs[..i]
         then []
         else preStdin)
@@ -148,7 +154,7 @@ module PasteSpec {
   }
 
   ghost predicate EntryRelation(
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               recordDelimiter: BenchWorld.RawByte,
                               entry: Entry
   )
@@ -162,7 +168,7 @@ module PasteSpec {
         LinePartitionRelation(
           data, recordDelimiter, entry.lines, terminated, fragments, cuts)
     case Err(err) =>
-      entry == Entry([], err == BenchWorld.IsDirectory)
+      entry == Entry([], IOContract.IOErrorIsDirectory(err))
   }
 
   ghost predicate InputObservationRelation(
@@ -194,7 +200,7 @@ module PasteSpec {
       case Err(err) =>
         observation.errorPiece == ErrorMessage(path, err) &&
         observation.failed &&
-        observation.blocking == (err != BenchWorld.IsDirectory)
+        observation.blocking == (!IOContract.IOErrorIsDirectory(err))
   }
 
   ghost function ObservationEntries(
@@ -410,12 +416,12 @@ module PasteSpec {
     i <= |text| &&
     match assembly
     case DelimiterDone =>
-      i == |text| && plan == DelimsOk([])
+      i == |text| && plan == Result.Ok([])
     case DelimiterFailure =>
       i < |text| &&
       text[i] == '\\' &&
       i + 1 == |text| &&
-      plan == DelimsErr(DelimiterBackslashError(text))
+      plan == Result.Err(DelimiterBackslashError(text))
     case DelimiterStep(index, nextIndex, delimiter, rest) =>
       index == i &&
       i < |text| &&
@@ -430,8 +436,8 @@ module PasteSpec {
         DelimiterParseRelation(text, nextIndex, restPlan, rest) &&
         plan ==
         match restPlan
-        case DelimsErr(stderr) => DelimsErr(stderr)
-        case DelimsOk(delims) => DelimsOk([delimiter] + delims)
+        case Err(stderr) => Result.Err(stderr)
+        case Ok(delims) => Result.Ok([delimiter] + delims)
   }
 
   ghost predicate DelimiterPlanRelation(
@@ -440,7 +446,7 @@ module PasteSpec {
   )
   {
     if |text| == 0 then
-      plan == DelimsOk([[]])
+      plan == Result.Ok([[]])
     else
       exists assembly: DelimiterAssembly ::
         DelimiterParseRelation(Utf8.Encode(text), 0, plan, assembly)
@@ -651,12 +657,12 @@ module PasteSpec {
       exists plan: DelimPlan ::
         DelimiterPlanRelation(cmd.delimiterText, plan) &&
         match plan
-        case DelimsErr(stderr) =>
+        case Err(stderr) =>
           io.stdin() == old(io.stdin()) &&
           io.stdout() == old(io.stdout()) &&
           io.stderr() == old(io.stderr()) + stderr &&
           exit == 1
-        case DelimsOk(delims) =>
+        case Ok(delims) =>
           exists entries: seq<Entry>,
             errorOutput: BenchWorld.Bytes,
             hadError: bool,

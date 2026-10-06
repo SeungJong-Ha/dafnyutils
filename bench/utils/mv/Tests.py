@@ -280,6 +280,73 @@ def test_no_target_directory_rejects_directory_destination() -> None:
         assert not (bench_cwd / "dest" / "source.txt").exists()
 
 
+# A directory cannot overwrite an existing regular file, and both trees remain intact.
+def test_directory_onto_regular_file_reports_type_conflict() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "srcdir").mkdir()
+            (cwd / "srcdir" / "child").write_bytes(b"source contents\n")
+            (cwd / "a.txt").write_bytes(b"destination contents\n")
+
+        args = ["-T", "srcdir", "a.txt"]
+        expected = (
+            b"",
+            b"mv: cannot overwrite non-directory 'a.txt' with directory 'srcdir'\n",
+            1,
+        )
+        assert run_system_mv(args, ref_cwd) == expected
+        assert run_bench_mv(args, bench_cwd) == expected
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "srcdir" / "child").read_bytes() == b"source contents\n"
+            assert (cwd / "a.txt").read_bytes() == b"destination contents\n"
+
+
+# A destination symlink is a non-directory entry even when its referent is a directory.
+def test_directory_onto_symlink_reports_type_conflict() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "srcdir").mkdir()
+            (cwd / "referent").mkdir()
+            (cwd / "dest").symlink_to("referent")
+
+        args = ["-T", "srcdir", "dest"]
+        expected = (
+            b"",
+            b"mv: cannot overwrite non-directory 'dest' with directory 'srcdir'\n",
+            1,
+        )
+        assert run_system_mv(args, ref_cwd) == expected
+        assert run_bench_mv(args, bench_cwd) == expected
+        for cwd in (ref_cwd, bench_cwd):
+            assert (cwd / "srcdir").is_dir()
+            assert (cwd / "dest").is_symlink()
+            assert (cwd / "dest").readlink() == Path("referent")
+            assert (cwd / "referent").is_dir()
+
+
+# A backup permits replacing a regular destination file with a directory.
+def test_directory_onto_regular_file_with_backup_succeeds() -> None:
+    with tempfile.TemporaryDirectory() as ref_tmp, tempfile.TemporaryDirectory() as bench_tmp:
+        ref_cwd = Path(ref_tmp)
+        bench_cwd = Path(bench_tmp)
+        for cwd in (ref_cwd, bench_cwd):
+            (cwd / "srcdir").mkdir()
+            (cwd / "srcdir" / "child").write_bytes(b"source contents\n")
+            (cwd / "a.txt").write_bytes(b"destination contents\n")
+
+        args = ["-T", "--backup=numbered", "srcdir", "a.txt"]
+        assert run_system_mv(args, ref_cwd) == (b"", b"", 0)
+        assert run_bench_mv(args, bench_cwd) == (b"", b"", 0)
+        for cwd in (ref_cwd, bench_cwd):
+            assert not (cwd / "srcdir").exists()
+            assert (cwd / "a.txt" / "child").read_bytes() == b"source contents\n"
+            assert (cwd / "a.txt.~1~").read_bytes() == b"destination contents\n"
+
+
 def test_no_target_directory_rejects_nonempty_directory_destination() -> None:
     # upstream: coreutils/tests/mv/no-target-dir.sh
     # upstream: coreutils/tests/mv/dir2dir.sh

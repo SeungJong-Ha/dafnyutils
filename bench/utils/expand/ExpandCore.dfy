@@ -5,6 +5,7 @@ include "ExpandSchema.dfy"
 include "ExpandSpec.dfy"
 
 module ExpandCore {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -533,13 +534,13 @@ module ExpandCore {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     match input
     case Stdin =>
-      result == BenchWorld.Ok(stdinBefore) && stdinAfter == []
+      result == Result.Ok(stdinBefore) && stdinAfter == []
     case File(path) =>
       result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path) &&
       stdinAfter == stdinBefore
@@ -547,7 +548,7 @@ module ExpandCore {
 
   ghost predicate InputPieceSummary(
     cmd: Schema.ExpandCmd,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               column: nat,
                               leading: bool,
                               output: BenchWorld.Bytes,
@@ -569,7 +570,7 @@ module ExpandCore {
 
   ghost predicate ErrorPieceSummary(
     input: Schema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               output: BenchWorld.Bytes,
                               hadError: bool
   )
@@ -592,7 +593,7 @@ module ExpandCore {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>,
     errorFlags: seq<bool>,
@@ -644,7 +645,7 @@ module ExpandCore {
   )
   {
     exists
-      results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputPieces: seq<BenchWorld.Bytes>,
       errorPieces: seq<BenchWorld.Bytes>,
       errorFlags: seq<bool>,
@@ -682,14 +683,14 @@ module ExpandCore {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>,
     errorFlags: seq<bool>,
     columns: seq<nat>,
     leadings: seq<bool>,
     stdinStates: seq<BenchWorld.Bytes>,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               outputPiece: BenchWorld.Bytes,
                               errorPiece: BenchWorld.Bytes,
                               errorFlag: bool,
@@ -925,7 +926,7 @@ module ExpandCore {
 
   method ProcessInputPieceMethod(
     cmd: Schema.ExpandCmd,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               column: nat,
                               leading: bool
   )
@@ -953,7 +954,7 @@ module ExpandCore {
       nextLeading := leading;
   }
 
-  method ErrorPieceMethod(input: Schema.Input, result: BenchWorld.Result<BenchWorld.Bytes>)
+  method ErrorPieceMethod(input: Schema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>)
     returns (out: BenchWorld.Bytes, had: bool)
     ensures ErrorPieceSummary(input, result, out, had)
   {
@@ -1020,15 +1021,15 @@ module ExpandCore {
     match cmd.mode
     case ModeHelp =>
       var help := Spec.HelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
     case ModeVersion =>
       var version := Spec.VersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
     case ModeInvalidTabs =>
       var msg := Spec.InvalidTabsMessage(cmd.invalidTabsValue);
-      var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
       exit := 1;
     case ModeRun =>
       var out: BenchWorld.Bytes := [];
@@ -1036,7 +1037,7 @@ module ExpandCore {
       var hadError := false;
       var column: nat := 0;
       var leading := true;
-      ghost var results: seq<BenchWorld.Result<BenchWorld.Bytes>> := [];
+      ghost var results: seq<BenchWorld.IOResult<BenchWorld.Bytes>> := [];
       ghost var outputPieces: seq<BenchWorld.Bytes> := [];
       ghost var errorPieces: seq<BenchWorld.Bytes> := [];
       ghost var errorFlags: seq<bool> := [];
@@ -1062,17 +1063,16 @@ module ExpandCore {
         decreases *
       {
         var input := cmd.inputs[i];
-        var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+        var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
         ghost var currentStdin := io.stdin();
         match input {
           case Stdin =>
             ghost var beforeStdin := io.stdin();
-            var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-            readResult := BenchWorld.Ok(data);
+            var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+            readResult := Result.Ok(data);
             assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           case File(path) =>
-            var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
-            readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+            readResult := io.ReadFile(path);
             assert readResult == IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
         }
         assert ReadStepSummary(
@@ -1112,8 +1112,8 @@ module ExpandCore {
           cmd, preFs, preStdin, io.stdin(), out, err, hadError,
           old(io.trustedStreams())
         );
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := if hadError then 1 else 0;
       assert InputTraceSummary(
           cmd, preFs, preStdin, io.stdin(), out, err, hadError,

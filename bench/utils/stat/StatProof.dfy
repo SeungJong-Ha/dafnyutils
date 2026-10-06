@@ -5,6 +5,7 @@ include "StatSpec.dfy"
 include "StatCore.dfy"
 
 module StatProof {
+  import Result = Results
   import BenchWorld
   import BenchIO
   import IOContract
@@ -40,7 +41,7 @@ module StatProof {
     ensures IOContract.ObservedFileStatusResultFields(
               CapturedObservationProvider(captured), index, fs,
               cmd.files[index], cmd.followSymlink
-            ) == BenchWorld.Ok(status)
+            ) == Result.Ok(status)
   {
     reveal Spec.CapturedStatusesStructureRelation();
     reveal IOContract.FileStatusStructureContractFields();
@@ -356,7 +357,7 @@ module StatProof {
     }
   }
 
-  lemma RunFilesRelationSnoc(
+  lemma {:induction false} RunFilesRelationSnoc(
     cmd: Schema.StatCmd,
     prefix: seq<BenchWorld.Path>,
     path: BenchWorld.Path,
@@ -415,6 +416,13 @@ module StatProof {
       stepOut,
       stepErrOut
     );
+    assert Spec.RunFilesRelation(
+      cmd, prefix + [path], fs, prefixError || stepError,
+      prefixOut + stepOut, prefixErrOut + stepErrOut
+    ) by {
+      assert |stdoutFragments + [stepOut]| == |prefix + [path]|;
+      assert |stderrFragments + [stepErrOut]| == |prefix + [path]|;
+    }
   }
 
   lemma {:isolate_assertions} RunFilesSummaryImpliesRelation(

@@ -6,6 +6,7 @@ include "TailSchema.dfy"
 include "TailRecordSpec.dfy"
 
 module TailSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -17,7 +18,7 @@ module TailSpec {
 
 
   datatype InputObservation = InputObservation(
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     stdoutFragment: BenchWorld.Bytes,
     stderrFragment: BenchWorld.Bytes,
     failed: bool,
@@ -68,11 +69,16 @@ module TailSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   opaque function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    if err == BenchWorld.IsDirectory then
+    if IOContract.IOErrorIsReadFailure(err) then
       "tail: error reading " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + ": " + Utf8.Encode(ErrnoText(err)) + "\n"
     else
       "tail: cannot open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + " for reading: " + Utf8.Encode(ErrnoText(err)) + "\n"
@@ -165,14 +171,14 @@ module TailSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin(_) =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if exists j: nat :: j < i && cmd.inputs[j].Stdin? then [] else preStdin
       )
     case File(path) => result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
@@ -254,17 +260,17 @@ module TailSpec {
       []
   }
 
-  function ResultHasHeader(cmd: TailSchema.TailCmd, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function ResultHasHeader(cmd: TailSchema.TailCmd, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match result
     case Ok(_) => !SuppressZeroTrailingSelection(cmd)
-    case Err(err) => err == BenchWorld.IsDirectory
+    case Err(err) => IOContract.IOErrorIsDirectory(err)
   }
 
   ghost predicate OutputFragmentRelation(
     cmd: TailSchema.TailCmd,
     input: TailSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               printedHeaders: nat,
                               fragment: BenchWorld.Bytes
   )
@@ -279,12 +285,12 @@ module TailSpec {
           fragment == HeaderForInput(cmd, input, printedHeaders) + rendered
     case Err(err) =>
       fragment ==
-      (if err == BenchWorld.IsDirectory
+      (if IOContract.IOErrorIsDirectory(err)
        then HeaderForInput(cmd, input, printedHeaders)
        else [])
   }
 
-  function ErrorPiece(input: TailSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: TailSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin(_) => []
@@ -294,7 +300,7 @@ module TailSpec {
       case Err(err) => ErrorMessage(path, err)
   }
 
-  function HadErrorPiece(input: TailSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: TailSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin(_) => false

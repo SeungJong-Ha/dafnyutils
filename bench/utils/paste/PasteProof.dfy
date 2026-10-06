@@ -4,6 +4,7 @@ include "PasteCore.dfy"
 include "PasteSpec.dfy"
 
 module PasteProof {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BW = BenchWorld
@@ -24,13 +25,6 @@ module PasteProof {
       []
     else
       [ToSpecEntry(entries[0])] + ToSpecEntries(entries[1..])
-  }
-
-  function ToSpecDelimPlan(plan: Core.DelimPlan): Spec.DelimPlan
-  {
-    match plan
-    case DelimsOk(delims) => Spec.DelimsOk(delims)
-    case DelimsErr(stderr) => Spec.DelimsErr(stderr)
   }
 
   ghost function ShiftCuts(cuts: seq<nat>, offset: nat): seq<nat>
@@ -264,7 +258,7 @@ module PasteProof {
   }
 
   lemma EntryRefines(
-    result: BW.Result<BW.Bytes>,
+    result: BW.IOResult<BW.Bytes>,
                       recordDelimiter: BW.RawByte
   )
     ensures Spec.EntryRelation(
@@ -918,7 +912,7 @@ module PasteProof {
     ensures Spec.DelimiterParseRelation(
               text,
               i,
-              ToSpecDelimPlan(Core.CollapseDelimitersFrom(text, i)),
+              Core.CollapseDelimitersFrom(text, i),
               assembly)
     decreases |text| - i
   {
@@ -944,7 +938,7 @@ module PasteProof {
 
   lemma DelimiterPlanRefines(text: string)
     ensures Spec.DelimiterPlanRelation(
-              text, ToSpecDelimPlan(Core.CollapseDelimiters(text)))
+              text, Core.CollapseDelimiters(text))
   {
     if |text| == 0 {
       reveal Spec.DelimiterPlanRelation();
@@ -957,7 +951,7 @@ module PasteProof {
           Spec.DelimiterParseRelation(
             Utf8.Encode(text),
             0,
-            ToSpecDelimPlan(Core.CollapseDelimiters(text)),
+            Core.CollapseDelimiters(text),
             a) by {
         ghost var a := assembly;
       }
@@ -968,8 +962,8 @@ module PasteProof {
     requires i < |text|
     ensures
       match Core.CollapseDelimitersFrom(text, i)
-      case DelimsOk(delims) => |delims| > 0
-      case DelimsErr(_) => true
+      case Ok(delims) => |delims| > 0
+      case Err(_) => true
     decreases |text| - i
   {
     if text[i] == '\\' {
@@ -986,8 +980,8 @@ module PasteProof {
   lemma CollapseDelimitersNonEmpty(text: string)
     ensures
       match Core.CollapseDelimiters(text)
-      case DelimsOk(delims) => |delims| > 0
-      case DelimsErr(_) => true
+      case Ok(delims) => |delims| > 0
+      case Err(_) => true
   {
     if |text| > 0 {
       CollapseDelimitersFromNonEmpty(Utf8.Encode(text), 0);
@@ -1252,14 +1246,12 @@ module PasteProof {
     } else {
       DelimiterPlanRefines(cmd.delimiterText);
       CollapseDelimitersNonEmpty(cmd.delimiterText);
-      ghost var plan :=
-        ToSpecDelimPlan(
-          Core.CollapseDelimiters(cmd.delimiterText));
+      ghost var plan := Core.CollapseDelimiters(cmd.delimiterText);
       assert Spec.DelimiterPlanRelation(
           cmd.delimiterText, plan);
       match Core.CollapseDelimiters(cmd.delimiterText)
-      case DelimsErr(stderr) =>
-      case DelimsOk(delims) =>
+      case Err(stderr) =>
+      case Ok(delims) =>
         assert |delims| > 0;
         InputTraceRefines(
           cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()));

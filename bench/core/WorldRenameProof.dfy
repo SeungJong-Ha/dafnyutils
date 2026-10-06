@@ -4,6 +4,7 @@ include "WorldRemoveProof.dfy"
 
 // Subtree relocation and rename validity.
 module WorldRenameProof {
+  import Result = Results
   import opened BenchWorld
   import Lookup = WorldLookupProof
   import Remove = WorldRemoveProof
@@ -17,13 +18,13 @@ module WorldRenameProof {
     requires InodeTreeWellFormed(tree, inodes)
     requires |segs| > 0
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(subtree)
+             Result.Ok(subtree)
     ensures InodeTreeWellFormed(
               InodeTreeRemoveSegments(tree, segs), inodes
             )
     ensures InodeFsLookupTreeSegments(
               inodes, InodeTreeRemoveSegments(tree, segs), segs
-            ) == Err(NoSuchFile)
+            ) == Result.Err(NoSuchFile)
     ensures forall id ::
               InodeNamespaceIdPaths(
                 InodeTreeRemoveSegments(tree, segs), id
@@ -254,7 +255,7 @@ module WorldRenameProof {
               inodes,
               InodeTreeSetSubtreeSegments(tree, segs, subtree),
               segs
-            ) == Ok(subtree)
+            ) == Result.Ok(subtree)
     ensures forall id ::
               InodeNamespaceIdPaths(
                 InodeTreeSetSubtreeSegments(tree, segs, subtree), id
@@ -300,14 +301,14 @@ module WorldRenameProof {
   )
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeFsLookupTreeSegments(inodes, tree, source) ==
-             Ok(subtree)
+             Result.Ok(subtree)
     requires InodeTreeCanInsert(inodes, tree, target)
     requires InodeSegmentsDisjoint(source, target)
     requires InodeFsLookupTreeSegments(
                inodes,
                InodeTreeSetSubtreeSegments(tree, target, subtree),
                source
-             ) == Ok(subtree)
+             ) == Result.Ok(subtree)
     ensures InodeTreeWellFormed(
               InodeTreeRemoveSegments(
                 InodeTreeSetSubtreeSegments(tree, target, subtree),
@@ -424,13 +425,13 @@ module WorldRenameProof {
           withoutTarget.inodes,
           withoutTarget.namespace,
           sourceSegs
-        ) == Ok(sourceTree);
+        ) == Result.Ok(sourceTree);
       var attached := InodeTreeSetSubtreeSegments(
         withoutTarget.namespace, targetSegs, sourceTree
       );
       assert InodeFsLookupTreeSegments(
           withoutTarget.inodes, attached, sourceSegs
-        ) == Ok(sourceTree);
+        ) == Result.Ok(sourceTree);
       if sourceSegs == targetSegs {
         assert InodeFsContainsPath(fs, target);
         assert InodeFsLookupId(fs, source) ==

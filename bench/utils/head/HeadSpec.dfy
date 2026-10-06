@@ -6,6 +6,7 @@ include "HeadSchema.dfy"
 include "HeadRecordSpec.dfy"
 
 module HeadSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -62,11 +63,16 @@ module HeadSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    if err == BenchWorld.IsDirectory then
+    if IOContract.IOErrorIsReadFailure(err) then
       Utf8.Encode("head: error reading " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + ": " + ErrnoText(err) + "\n")
     else
       Utf8.Encode("head: cannot open " + SE.SpecQuoteAfBytes(Utf8.Encode(path)) + " for reading: " + ErrnoText(err) + "\n")
@@ -146,13 +152,13 @@ module HeadSpec {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin(_) =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if exists j: nat :: j < i && IsStdinInput(cmd.inputs[j])
         then []
         else preStdin
@@ -217,7 +223,7 @@ module HeadSpec {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               printedHeaders: nat,
                               output: BenchWorld.Bytes,
                               errorOutput: BenchWorld.Bytes,
@@ -278,7 +284,7 @@ module HeadSpec {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputFragments: seq<BenchWorld.Bytes>,
     errorFragments: seq<BenchWorld.Bytes>,
     successful: seq<bool>,
@@ -317,7 +323,7 @@ module HeadSpec {
     hadError: bool
   )
   {
-    exists results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    exists results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputFragments: seq<BenchWorld.Bytes>,
       errorFragments: seq<BenchWorld.Bytes>,
       successful: seq<bool>,

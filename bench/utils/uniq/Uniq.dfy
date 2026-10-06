@@ -7,6 +7,7 @@ include "UniqSpec.dfy"
 include "UniqProof.dfy"
 
 module Uniq {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import CliTypes
@@ -57,7 +58,7 @@ module Uniq {
       ensures US.Spec(raw, io, exit)
       decreases *
     {
-      ghost var witnessResult: BenchWorld.Result<BenchWorld.Bytes>;
+      ghost var witnessResult: BenchWorld.IOResult<BenchWorld.Bytes>;
       ghost var stdoutPart: BenchWorld.Bytes;
       ghost var stderrPart: BenchWorld.Bytes;
       ghost var hadError: bool;

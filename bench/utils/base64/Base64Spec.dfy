@@ -81,12 +81,17 @@ module Base64Spec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    if err.IsDirectory? then
-      "base64: read error: Is a directory\n"
+    if IOContract.IOErrorIsReadFailure(err) then
+      "base64: read error: " + Utf8.Encode(ErrnoText(err)) + "\n"
     else
       "base64: " + SE.SpecQuoteFBytes(Utf8.Encode(path)) +
       ": " + Utf8.Encode(ErrnoText(err)) + "\n"

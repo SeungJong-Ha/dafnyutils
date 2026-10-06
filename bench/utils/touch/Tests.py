@@ -673,6 +673,7 @@ def test_tab_path_failure_diagnostic_matches_coreutils() -> None:
         assert ref[1] == (b"touch: cannot touch 'pm:r/'$'\\t''2jk': No such file or directory\n")
 
 
+# Creating a file updates both its timestamp and its parent's timestamp during the invocation.
 def test_create_missing_file_matches_coreutils() -> None:
     # From fuzzing: minimal reproducer `touch new.txt`.
     # upstream: coreutils/tests/touch/no-create-missing.sh
@@ -708,8 +709,17 @@ def test_create_missing_file_matches_coreutils() -> None:
             <= bench_file_stat.st_mtime_ns
             <= bench_finished_ns + FILESYSTEM_CURRENT_TIME_TOLERANCE_NS
         )
-        assert ref_file_stat.st_mtime_ns == ref_cwd.stat().st_mtime_ns
-        assert bench_file_stat.st_mtime_ns == bench_cwd.stat().st_mtime_ns
+        # GNU creates the entry before setting file times; the two timestamps need not coincide.
+        assert (
+            ref_started_ns - FILESYSTEM_CURRENT_TIME_TOLERANCE_NS
+            <= ref_cwd.stat().st_mtime_ns
+            <= ref_finished_ns + FILESYSTEM_CURRENT_TIME_TOLERANCE_NS
+        )
+        assert (
+            bench_started_ns - FILESYSTEM_CURRENT_TIME_TOLERANCE_NS
+            <= bench_cwd.stat().st_mtime_ns
+            <= bench_finished_ns + FILESYSTEM_CURRENT_TIME_TOLERANCE_NS
+        )
 
         assert (ref_cwd / "new.txt").read_bytes() == b""
         assert (bench_cwd / "new.txt").read_bytes() == b""

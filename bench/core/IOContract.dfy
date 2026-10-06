@@ -1,8 +1,11 @@
+include "Errno.dfy"
 include "World.dfy"
 include "WorldLookupProof.dfy"
 include "WorldRenameProof.dfy"
 
 module IOContract {
+  import Errno = Errnos
+  import Result = Results
   import opened BenchWorld
   import LookupProof = WorldLookupProof
   import RenameProof = WorldRenameProof
@@ -11,10 +14,10 @@ module IOContract {
 
   function GetUmaskResultFields(props: map<string, string>): bv32 { ParsedUmaskFromProps(props) }
 
-  predicate GetEnvContractFields(env: map<string, string>, key: string, r: Result<string>)
+  predicate GetEnvContractFields(env: map<string, string>, key: string, r: IOResult<string>)
   {
     if key in env then
-      r == Ok(env[key])
+      r == Result.Ok(env[key])
     else
       match r
       case Err(_) => true
@@ -58,10 +61,10 @@ module IOContract {
     EnvEntriesRepresentEnv(env, entries)
   }
 
-  predicate GetLoginNameContractFields(props: map<string, string>, r: Result<string>)
+  predicate GetLoginNameContractFields(props: map<string, string>, r: IOResult<string>)
   {
     if "loginName" in props then
-      r == Ok(props["loginName"])
+      r == Result.Ok(props["loginName"])
     else
       match r
       case Err(_) => true
@@ -106,7 +109,7 @@ module IOContract {
     fs: FileSystem,
     path: Path,
     followTerminalSymlink: bool
-  ): Result<Path>
+  ): IOResult<Path>
   {
     ResolvePathThroughSymlinkComponentsWithVisitedFields(
       fs,
@@ -128,11 +131,11 @@ module IOContract {
     seen: set<Path>,
     fuel: nat,
     followTerminalSymlink: bool
-  ): Result<Path>
+  ): IOResult<Path>
     decreases fuel
   {
     if fuel == 0 then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else
       ResolveRawSymlinkSegmentsFields(
         fs,
@@ -182,20 +185,20 @@ module IOContract {
     seen: set<Path>,
     fuel: nat,
     followTerminalSymlink: bool
-  ): Result<Path>
+  ): IOResult<Path>
     decreases fuel
   {
     if fuel == 0 then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else if path in seen then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else if !FsContainsPath(fs, path) then
-      Err(NoSuchFile)
+      Result.Err(NoSuchFile)
     else
       match FsNodeAt(fs, path)
-      case Regular(_, _, _, _) => Ok(path)
-      case Directory(_, _, _) => Ok(path)
-      case Inaccessible(_) => Err(PermissionDenied)
+      case Regular(_, _, _, _) => Result.Ok(path)
+      case Directory(_, _, _) => Result.Ok(path)
+      case Inaccessible(_) => Result.Err(PermissionDenied)
       case Symlink(target, _, _, _) =>
         if followTerminalSymlink then
           var next := ResolveSymlinkTarget(path, target);
@@ -207,39 +210,39 @@ module IOContract {
             followTerminalSymlink
           )
         else
-          Ok(path)
+          Result.Ok(path)
   }
 
   function DirectNoFollowResultFields(
     fs: FileSystem,
     path: Path
-  ): Result<Path>
+  ): IOResult<Path>
   {
     if path == "" then
-      Err(NoSuchFile)
+      Result.Err(NoSuchFile)
     else
       match FsLookupNode(fs, path)
-      case Err(error) => Err(error)
+      case Err(error) => Result.Err(error)
       case Ok(node) =>
         match node
-        case Inaccessible(_) => Err(PermissionDenied)
-        case _ => Ok(path)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
+        case _ => Result.Ok(path)
   }
 
   function TerminalNoFollowResultFields(
     fs: FileSystem,
     path: Path
-  ): Result<Path>
+  ): IOResult<Path>
   {
     if path != "" then
       DirectNoFollowResultFields(fs, path)
     else
       match FsLookupNode(fs, path)
-      case Err(error) => Err(error)
+      case Err(error) => Result.Err(error)
       case Ok(node) =>
         match node
-        case Inaccessible(_) => Err(PermissionDenied)
-        case _ => Ok(path)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
+        case _ => Result.Ok(path)
   }
 
   lemma InodeTopologyLookupTreeFields(
@@ -380,7 +383,7 @@ module IOContract {
     followTerminalSymlink: bool,
     allowMissingTerminal: bool,
     requireDirectory: bool
-  ): (result: Result<Path>)
+  ): (result: IOResult<Path>)
     requires i <= |segs|
     ensures !allowMissingTerminal && result.Ok? ==>
               FsContainsPath(fs, result.v) && !FsNodeAt(fs, result.v).Inaccessible?
@@ -388,20 +391,20 @@ module IOContract {
   {
     if i == |segs| then
       match TerminalNoFollowResultFields(fs, current)
-      case Err(error) => Err(error)
+      case Err(error) => Result.Err(error)
       case Ok(_) =>
         match FsNodeAt(fs, current)
         case Regular(_, _, _, _) =>
-          if requireDirectory then Err(NotDirectory) else Ok(current)
-        case Directory(_, _, _) => Ok(current)
-        case Inaccessible(_) => Err(PermissionDenied)
+          if requireDirectory then Result.Err(NotDirectory) else Result.Ok(current)
+        case Directory(_, _, _) => Result.Ok(current)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
         case Symlink(target, _, _, _) =>
           if !followTerminalSymlink && !requireDirectory then
-            Ok(current)
+            Result.Ok(current)
           else if target == "" then
-            Err(NoSuchFile)
+            Result.Err(NoSuchFile)
           else if fuel == 0 then
-            Err(InvalidPath)
+            Result.Err(InvalidPath)
           else
             ResolveRawSymlinkSegmentsFields(
               fs,
@@ -417,13 +420,13 @@ module IOContract {
     else if FsContainsPath(fs, current) &&
             FsNodeAt(fs, current).Directory? &&
             !FixtureOwnerCanSearch(FsNodeAt(fs, current)) then
-      Err(PermissionDenied)
+      Result.Err(PermissionDenied)
     else if segs[i] == "." || segs[i] == ".." then
       match TerminalNoFollowResultFields(fs, current)
-      case Err(error) => Err(error)
+      case Err(error) => Result.Err(error)
       case Ok(_) =>
         match FsNodeAt(fs, current)
-        case Regular(_, _, _, _) => Err(NotDirectory)
+        case Regular(_, _, _, _) => Result.Err(NotDirectory)
         case Directory(_, _, _) =>
           ResolveRawSymlinkSegmentsFields(
             fs,
@@ -436,12 +439,12 @@ module IOContract {
             allowMissingTerminal,
             requireDirectory
           )
-        case Inaccessible(_) => Err(PermissionDenied)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
         case Symlink(target, _, _, _) =>
           if target == "" then
-            Err(NoSuchFile)
+            Result.Err(NoSuchFile)
           else if fuel == 0 then
-            Err(InvalidPath)
+            Result.Err(InvalidPath)
           else
             ResolveRawSymlinkSegmentsFields(
               fs,
@@ -462,17 +465,17 @@ module IOContract {
            i + 1 == |segs| &&
            !requireDirectory
         then
-          Ok(next)
+          Result.Ok(next)
         else
-          Err(NoSuchFile)
-      case Err(error) => Err(error)
+          Result.Err(NoSuchFile)
+      case Err(error) => Result.Err(error)
       case Ok(_) =>
         match FsNodeAt(fs, next)
         case Regular(_, _, _, _) =>
           if i + 1 == |segs| && !requireDirectory then
-            Ok(next)
+            Result.Ok(next)
           else
-            Err(NotDirectory)
+            Result.Err(NotDirectory)
         case Directory(_, _, _) =>
           ResolveRawSymlinkSegmentsFields(
             fs,
@@ -485,15 +488,15 @@ module IOContract {
             allowMissingTerminal,
             requireDirectory
           )
-        case Inaccessible(_) => Err(PermissionDenied)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
         case Symlink(target, _, _, _) =>
           if i + 1 == |segs| &&
              !followTerminalSymlink && !requireDirectory then
-            Ok(next)
+            Result.Ok(next)
           else if target == "" then
-            Err(NoSuchFile)
+            Result.Err(NoSuchFile)
           else if fuel == 0 then
-            Err(InvalidPath)
+            Result.Err(InvalidPath)
           else
             var remaining := segs[i + 1..];
             ResolveRawSymlinkSegmentsFields(
@@ -528,11 +531,11 @@ module IOContract {
     requires ResolveRawSymlinkSegmentsFields(
                before, segs, i, current, seen, fuel,
                followTerminalSymlink, false, requireDirectory
-             ) == Ok(beforeTarget)
+             ) == Result.Ok(beforeTarget)
     requires ResolveRawSymlinkSegmentsFields(
                after, segs, i, current, seen, fuel,
                followTerminalSymlink, false, requireDirectory
-             ) == Ok(afterTarget)
+             ) == Result.Ok(afterTarget)
     ensures beforeTarget == afterTarget
     decreases fuel, |segs| - i
   {
@@ -683,7 +686,7 @@ module IOContract {
     seen: set<Path>,
     fuel: nat,
     followTerminalSymlink: bool
-  ): Result<Path>
+  ): IOResult<Path>
     requires 0 <= i <= |segs|
   {
     ResolvePathThroughSymlinkSegmentsWithTrailingFields(
@@ -707,29 +710,29 @@ module IOContract {
     fuel: nat,
     followTerminalSymlink: bool,
     requireDirectory: bool
-  ): Result<Path>
+  ): IOResult<Path>
     requires 0 <= i <= |segs|
     decreases fuel, |segs| - i
   {
     if fuel == 0 then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else if i >= |segs| then
       if current in seen then
-        Err(InvalidPath)
+        Result.Err(InvalidPath)
       else if current == "" then
-        Err(NoSuchFile)
+        Result.Err(NoSuchFile)
       else
         match DirectNoFollowResultFields(fs, current)
-        case Err(error) => Err(error)
+        case Err(error) => Result.Err(error)
         case Ok(_) =>
           match FsNodeAt(fs, current)
           case Regular(_, _, _, _) =>
-            if requireDirectory then Err(NotDirectory) else Ok(current)
-          case Directory(_, _, _) => Ok(current)
-          case Inaccessible(_) => Err(PermissionDenied)
+            if requireDirectory then Result.Err(NotDirectory) else Result.Ok(current)
+          case Directory(_, _, _) => Result.Ok(current)
+          case Inaccessible(_) => Result.Err(PermissionDenied)
           case Symlink(target, _, _, _) =>
             if !followTerminalSymlink && !requireDirectory then
-              Ok(current)
+              Result.Ok(current)
             else
               var resolvedTarget := ResolveSymlinkTarget(current, target);
               ResolvePathThroughSymlinkSegmentsWithTrailingFields(
@@ -745,17 +748,17 @@ module IOContract {
     else
       var next := AppendPath(current, segs[i]);
       if next in seen then
-        Err(InvalidPath)
+        Result.Err(InvalidPath)
       else
         match DirectNoFollowResultFields(fs, next)
-        case Err(error) => Err(error)
+        case Err(error) => Result.Err(error)
         case Ok(_) =>
           match FsNodeAt(fs, next)
           case Regular(_, _, _, _) =>
             if i + 1 == |segs| && !requireDirectory then
-              Ok(next)
+              Result.Ok(next)
             else
-              Err(NotDirectory)
+              Result.Err(NotDirectory)
           case Directory(_, _, _) =>
             ResolvePathThroughSymlinkSegmentsWithTrailingFields(
               fs,
@@ -767,10 +770,10 @@ module IOContract {
               followTerminalSymlink,
               requireDirectory
             )
-          case Inaccessible(_) => Err(PermissionDenied)
+          case Inaccessible(_) => Result.Err(PermissionDenied)
           case Symlink(target, _, _, _) =>
             if i + 1 == |segs| && !followTerminalSymlink && !requireDirectory then
-              Ok(next)
+              Result.Ok(next)
             else
               var resolvedTarget := ResolveSymlinkTarget(next, target);
               var remaining := segs[i + 1..];
@@ -787,27 +790,27 @@ module IOContract {
               )
   }
 
-  function ResolvePathForMetadataFields(fs: FileSystem, path: Path, followSymlink: bool): (result: Result<Path>)
+  function ResolvePathForMetadataFields(fs: FileSystem, path: Path, followSymlink: bool): (result: IOResult<Path>)
     ensures result.Ok? ==>
               FsContainsPath(fs, result.v) && !FsNodeAt(fs, result.v).Inaccessible?
   {
     if path == "" then
-      Err(NoSuchFile)
+      Result.Err(NoSuchFile)
     else
       var result := ResolvePathThroughSymlinkComponentsFields(fs, path, followSymlink);
       if path[|path| - 1] != '/' then
         result
       else
         match result
-        case Err(e) => Err(e)
+        case Err(e) => Result.Err(e)
         case Ok(resolved) =>
           if !FsContainsPath(fs, resolved) then
-            Err(NoSuchFile)
+            Result.Err(NoSuchFile)
           else
             match FsNodeAt(fs, resolved)
-            case Directory(_, _, _) => Ok(resolved)
-            case Regular(_, _, _, _) | Symlink(_, _, _, _) => Err(NotDirectory)
-            case Inaccessible(_) => Err(PermissionDenied)
+            case Directory(_, _, _) => Result.Ok(resolved)
+            case Regular(_, _, _, _) | Symlink(_, _, _, _) => Result.Err(NotDirectory)
+            case Inaccessible(_) => Result.Err(PermissionDenied)
   }
 
   lemma ResolvePathForMetadataSuccessfulTargetsEqualExceptModeFields(
@@ -820,20 +823,20 @@ module IOContract {
   )
     requires FileSystemTopologyUnchangedExceptMode(before, after)
     requires ResolvePathForMetadataFields(before, path, follow) ==
-             Ok(beforeTarget)
+             Result.Ok(beforeTarget)
     requires ResolvePathForMetadataFields(after, path, follow) ==
-             Ok(afterTarget)
+             Result.Ok(afterTarget)
     ensures beforeTarget == afterTarget
   {
     assert path != "";
     assert ResolvePathThroughSymlinkComponentsFields(
         before, path, follow
-      ) == Ok(beforeTarget) by {
+      ) == Result.Ok(beforeTarget) by {
       reveal ResolvePathForMetadataFields();
     }
     assert ResolvePathThroughSymlinkComponentsFields(
         after, path, follow
-      ) == Ok(afterTarget) by {
+      ) == Result.Ok(afterTarget) by {
       reveal ResolvePathForMetadataFields();
     }
     assert SYMLINK_MAX_DEPTH > 0 by {
@@ -849,7 +852,7 @@ module IOContract {
         follow,
         false,
         HasTrailingSlash(path)
-      ) == Ok(beforeTarget) by {
+      ) == Result.Ok(beforeTarget) by {
       reveal ResolvePathThroughSymlinkComponentsFields();
       reveal ResolvePathThroughSymlinkComponentsWithVisitedFields();
     }
@@ -863,7 +866,7 @@ module IOContract {
         follow,
         false,
         HasTrailingSlash(path)
-      ) == Ok(afterTarget) by {
+      ) == Result.Ok(afterTarget) by {
       reveal ResolvePathThroughSymlinkComponentsFields();
       reveal ResolvePathThroughSymlinkComponentsWithVisitedFields();
     }
@@ -882,19 +885,19 @@ module IOContract {
     );
   }
 
-  function ModeledReadFileResultFields(fs: FileSystem, path: Path): Result<Bytes>
+  function ModeledReadFileResultFields(fs: FileSystem, path: Path): IOResult<Bytes>
   {
     match ResolvePathThroughSymlinkComponentsFields(fs, path, true)
     case Ok(resolved) =>
       if FsContainsPath(fs, resolved) then
         match FsNodeAt(fs, resolved)
-        case Regular(data, _, _, _) => Ok(data)
-        case Directory(_, _, _) => Err(IsDirectory)
-        case Symlink(_, _, _, _) => Err(InvalidPath)
-        case Inaccessible(_) => Err(PermissionDenied)
+        case Regular(data, _, _, _) => Result.Ok(data)
+        case Directory(_, _, _) => Result.Err(IsDirectory)
+        case Symlink(_, _, _, _) => Result.Err(InvalidPath)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
       else
-        Err(NoSuchFile)
-    case Err(e) => Err(e)
+        Result.Err(NoSuchFile)
+    case Err(e) => Result.Err(e)
   }
 
   predicate BytesPrefix(prefix: Bytes, whole: Bytes)
@@ -902,50 +905,109 @@ module IOContract {
     |prefix| <= |whole| && prefix == whole[..|prefix|]
   }
 
-  function FileReadResultFromOutcome(data: Bytes, err: int): Result<Bytes>
+  function FileReadResultFromOutcome(
+    data: Bytes, err: int, stage: FileReadStage, message: string
+  ): IOResult<Bytes>
   {
-    if err == 0 then Ok(data)
-    else if err == 21 then Err(IsDirectory)
-    else if err == 13 then Err(PermissionDenied)
-    else Err(NoSuchFile)
+    if err == 0 then Result.Ok(data)
+    else Result.Err(ReadFailure(err, message, data, stage))
+  }
+
+  function ResultErrno<T>(result: IOResult<T>): int
+  {
+    match result
+    case Ok(_) => 0
+    case Err(error) => IOErrorErrno(error)
+  }
+
+  function ResultValue<T>(result: IOResult<T>, fallback: T): T
+  {
+    match result
+    case Ok(value) => value
+    case Err(_) => fallback
+  }
+
+  function ReadResultData(result: IOResult<Bytes>): Bytes
+  {
+    match result
+    case Ok(data) => data
+    case Err(error) => if error.ReadFailure? || error.StreamFailure? then error.partial else []
+  }
+
+  function ReadResultStage(result: IOResult<Bytes>): FileReadStage
+  {
+    if result.Err? && result.e.ReadFailure? then result.e.readStage else ReadSucceeded
+  }
+
+  function WriteResultCommitted(result: IOResult<WriteReceipt>): nat
+  {
+    match result
+    case Ok(receipt) => receipt.committed
+    case Err(error) => if error.WriteFailure? || error.StreamFailure? then error.committed else 0
+  }
+
+  function WriteResultStage(result: IOResult<WriteReceipt>): FileWriteStage
+  {
+    if result.Err? && result.e.WriteFailure? then result.e.writeStage else WriteSucceeded
+  }
+
+  function ParsedResultValue(result: IOResult<ParsedInstant>): ParsedInstant
+  {
+    match result
+    case Ok(value) => value
+    case Err(error) => if error.TimeParseFailure? then ParsedInstant(error.sec, error.nsec)
+    else ParsedInstant(0, 0)
+  }
+
+  function IOErrorIsDirectory(error: IOError): bool
+  {
+    error.IsDirectory? || (error.ReadFailure? && error.errno == Errno.EISDIR)
+  }
+
+  function IOErrorIsReadFailure(error: IOError): bool
+  {
+    error.IsDirectory? ||
+    (error.ReadFailure? && error.readStage != OpenFailed)
+  }
+
+  function ReadFailureData(error: IOError): Bytes
+  {
+    if error.ReadFailure? then error.partial else []
   }
 
   ghost function ObservedReadFileResultFields(
     fs: FileSystem,
     observations: (TrustedStreamRequest) -> TrustedStreamResult,
     path: Path
-  ): Result<Bytes>
+  ): IOResult<Bytes>
   {
-    match observations(StreamReadFile(fs, path, FromStart))
-    case StreamReadFileResult(data, err, _) => FileReadResultFromOutcome(data, err)
-    case _ => Err(NoSuchFile)
+    match observations(StreamReadFile(fs, path))
+    case StreamReadFileResult(data, err, stage) =>
+      FileReadResultFromOutcome(data, err, stage, CLocaleErrnoTextResult(err))
+    case _ => Result.Err(NoSuchFile)
   }
 
   ghost predicate TrustedReadFileContractFields(
     observations: (TrustedStreamRequest) -> TrustedStreamResult,
     fs: FileSystem,
     path: Path,
-    mode: FileReadMode,
     data: Bytes,
     err: int,
     stage: FileReadStage
   )
   {
-    match observations(StreamReadFile(fs, path, mode))
+    match observations(StreamReadFile(fs, path))
     case StreamReadFileResult(observedData, observedErr, observedStage) =>
       data == observedData && err == observedErr && stage == observedStage &&
       0 <= err && (err == 0 <==> stage == ReadSucceeded) &&
       (stage == OpenFailed ==> data == []) &&
-      (if mode == AfterSeekEnd then
-         data == [] && err > 0
-       else
-         // The Linux read-only stream reports EISDIR only for a directory.
-         (err == 21 ==>
-           ModeledReadFileResultFields(fs, path) == Err(IsDirectory)) &&
-         match ModeledReadFileResultFields(fs, path)
-         case Ok(contents) =>
-           BytesPrefix(data, contents) && (err == 0 ==> data == contents)
-         case Err(_) => data == [] && err != 0)
+      // The Linux read-only stream reports EISDIR only for a directory.
+      (err == Errno.EISDIR ==>
+         ModeledReadFileResultFields(fs, path) == Result.Err(IsDirectory)) &&
+      (match ModeledReadFileResultFields(fs, path)
+       case Ok(contents) =>
+         BytesPrefix(data, contents) && (err == 0 ==> data == contents)
+       case Err(_) => data == [] && err != 0)
     case _ => false
   }
 
@@ -1015,17 +1077,17 @@ module IOContract {
     )
   }
 
-  function ReadLinkResultFields(fs: FileSystem, path: Path): Result<Path>
+  function ReadLinkResultFields(fs: FileSystem, path: Path): IOResult<Path>
   {
     match ResolvePathForMetadataFields(fs, path, false)
     case Ok(resolved) =>
       if FsContainsPath(fs, resolved) then
         match FsNodeAt(fs, resolved)
-        case Symlink(target, _, _, _) => Ok(target)
-        case _ => Err(InvalidPath)
+        case Symlink(target, _, _, _) => Result.Ok(target)
+        case _ => Result.Err(InvalidPath)
       else
-        Err(NoSuchFile)
-    case Err(e) => Err(e)
+        Result.Err(NoSuchFile)
+    case Err(e) => Result.Err(e)
   }
 
   function AfterReadStdinFields(beforeStdin: Bytes): Bytes { [] }
@@ -1043,19 +1105,24 @@ module IOContract {
   function IOErrorErrno(err: IOError): int
   {
     match err
-    case NoSuchFile => 2
-    case PermissionDenied => 13
-    case NotDirectory => 20
-    case IsDirectory => 21
-    case InvalidPath => 40
-    case Other(_) => 5
+    case NoSuchFile => Errno.ENOENT
+    case PermissionDenied => Errno.EACCES
+    case NotDirectory => Errno.ENOTDIR
+    case IsDirectory => Errno.EISDIR
+    case InvalidPath => Errno.ELOOP
+    case Other(_) => Errno.EIO
+    case ReadFailure(errno, _, _, _) => errno
+    case NativeFailure(errno, _) => errno
+    case WriteFailure(errno, _, _, _) => errno
+    case StreamFailure(errno, _, _, _) => errno
+    case TimeParseFailure(_, _, _) => Errno.EINVAL
   }
 
   function MetadataFailureErrFields(fs: FileSystem, path: Path, followSymlink: bool): int
   {
     match ResolvePathForMetadataFields(fs, path, followSymlink)
     case Err(e) => IOErrorErrno(e)
-    case Ok(resolved) => if FsContainsPath(fs, resolved) then 0 else 2
+    case Ok(resolved) => if FsContainsPath(fs, resolved) then 0 else Errno.ENOENT
   }
 
   function OpenDirFailureErrFields(fs: FileSystem, path: Path): int
@@ -1064,11 +1131,11 @@ module IOContract {
     case Err(e) => IOErrorErrno(e)
     case Ok(resolved) =>
       if !FsContainsPath(fs, resolved) then
-        2
+        Errno.ENOENT
       else
         match FsNodeAt(fs, resolved)
         case Directory(_, _, _) => 0
-        case _ => 20
+        case _ => Errno.ENOTDIR
   }
 
   predicate PathExistsContractFields(fs: FileSystem, path: Path, followSymlink: bool, found: bool, err: int)
@@ -1099,18 +1166,19 @@ module IOContract {
   )
   {
     var observed := observations(FilesystemQuery(fs, path, followSymlink));
+    ValidFilesystemObservation(FilesystemQuery(fs, path, followSymlink), observed) &&
     observed.postFs == fs &&
     ok == observed.ok &&
     err == observed.err &&
-    atimeSec == observed.atimeSec &&
-    atimeNsec == observed.atimeNsec &&
-    mtimeSec == observed.mtimeSec &&
-    mtimeNsec == observed.mtimeNsec &&
-    isDir == observed.isDir &&
-    isSymlink == observed.isSymlink &&
-    device == observed.device &&
-    inode == observed.inode &&
-    linkCount == observed.linkCount
+    (ok ==> (atimeSec == observed.atimeSec &&
+             atimeNsec == observed.atimeNsec &&
+             mtimeSec == observed.mtimeSec &&
+             mtimeNsec == observed.mtimeNsec &&
+             isDir == observed.isDir &&
+             isSymlink == observed.isSymlink &&
+             device == observed.device &&
+             inode == observed.inode &&
+             linkCount == observed.linkCount))
   }
 
   ghost predicate TrustedPathExistsContractFields(
@@ -1123,6 +1191,7 @@ module IOContract {
   )
   {
     var observed := observations(FilesystemQuery(fs, path, followSymlink));
+    ValidFilesystemObservation(FilesystemQuery(fs, path, followSymlink), observed) &&
     observed.postFs == fs && found == observed.ok && err == observed.err
   }
 
@@ -1137,6 +1206,7 @@ module IOContract {
   )
   {
     var observed := observations(FilesystemCreate(fs, path, now));
+    ValidFilesystemObservation(FilesystemCreate(fs, path, now), observed) &&
     ok == observed.ok && err == observed.err && fs2 == observed.postFs
   }
 
@@ -1149,6 +1219,7 @@ module IOContract {
   )
   {
     var observed := observations(request);
+    ValidFilesystemObservation(request, observed) &&
     ok == observed.ok && err == observed.err && fs2 == observed.postFs &&
     0 <= err && (ok <==> err == 0)
   }
@@ -1186,21 +1257,21 @@ module IOContract {
     fs: FileSystem,
     path: Path,
     followSymlink: bool
-  ): Result<FileStatus>
+  ): IOResult<FileStatus>
   {
     match ResolvePathForMetadataFields(fs, path, followSymlink)
-    case Err(error) => Err(error)
+    case Err(error) => Result.Err(error)
     case Ok(resolved) =>
       if !FsContainsPath(fs, resolved) then
-        Err(NoSuchFile)
+        Result.Err(NoSuchFile)
       else
         var record := fs.inodes[FsIdAt(fs, resolved)];
         match record.node
-        case Inaccessible(_) => Err(PermissionDenied)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
         case _ =>
           match record.links
-          case LinkCountUnknown => Err(Other("unknown link count"))
-          case LinkCountKnown(_) => Ok(FileStatusForRecord(record))
+          case LinkCountUnknown => Result.Err(Other("unknown link count"))
+          case LinkCountKnown(_) => Result.Ok(FileStatusForRecord(record))
   }
 
   predicate FileStatusObservationFields(expected: FileStatus, observed: FileStatus)
@@ -1214,12 +1285,12 @@ module IOContract {
     fs: FileSystem,
     path: Path,
     followSymlink: bool
-  ): Result<FileStatus>
+  ): IOResult<FileStatus>
   {
     match GetFileStatusResultFields(fs, path, followSymlink)
-    case Err(error) => Err(error)
+    case Err(error) => Result.Err(error)
     case Ok(status) =>
-      Ok(status.(times := observations(ordinal, fs, path, followSymlink)))
+      Result.Ok(status.(times := observations(ordinal, fs, path, followSymlink)))
   }
 
   predicate ObservedFileStatusContractFields(
@@ -1262,7 +1333,7 @@ module IOContract {
     err: int
   )
     requires ObservedFileStatusContractFields(
-      observations, ordinal, fs, path, followSymlink, ok, status, err)
+               observations, ordinal, fs, path, followSymlink, ok, status, err)
     ensures FileStatusStructureContractFields(fs, path, followSymlink, ok, status, err)
   {
   }
@@ -1287,8 +1358,8 @@ module IOContract {
     ok: bool, status: FileStatus, err: int
   )
     requires FileStatusStructureContractFields(
-      fs, path, followSymlink, ok, status, err
-    )
+               fs, path, followSymlink, ok, status, err
+             )
     ensures GetFileModeContractFields(fs, path, followSymlink, ok, status.mode, err)
   {
     var resolved := ResolvePathForMetadataFields(fs, path, followSymlink);
@@ -1306,8 +1377,8 @@ module IOContract {
     ok: bool, status: FileStatus, err: int
   )
     requires FileStatusStructureContractFields(
-      fs, path, followSymlink, ok, status, err
-    )
+               fs, path, followSymlink, ok, status, err
+             )
     ensures PathExistsContractFields(fs, path, followSymlink, ok, err)
     ensures IsDirectoryStrictContractFields(
               fs, path, followSymlink, ok, status.kind == DirectoryKind, err)
@@ -1394,10 +1465,10 @@ module IOContract {
      case Ok(resolved) => FsContainsPath(fs, resolved) ==> ok)
   }
 
-  function ResolvePathForCreateNoFollowTerminalFields(fs: FileSystem, path: Path): Result<Path>
+  function ResolvePathForCreateNoFollowTerminalFields(fs: FileSystem, path: Path): IOResult<Path>
   {
     if path == "" then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else if HasTrailingSlash(path) ||
             HasRawTerminalSpecialFields(path)
     then
@@ -1405,13 +1476,13 @@ module IOContract {
     else
       var segments := RawPathSegmentsFields(path);
       if |segments| == 0 then
-        Err(InvalidPath)
+        Result.Err(InvalidPath)
       else
         var child := segments[|segments| - 1];
         var parentSegments := segments[..|segments| - 1];
         var root := if IsAbsolutePath(path) then "/" else "";
         if |parentSegments| == 0 then
-          Ok(AppendPath(root, child))
+          Result.Ok(AppendPath(root, child))
         else
           match ResolveRawSymlinkSegmentsFields(
               fs,
@@ -1427,17 +1498,17 @@ module IOContract {
           case Ok(resolvedParent) =>
             if FsContainsPath(fs, resolvedParent) then
               match FsNodeAt(fs, resolvedParent)
-              case Directory(_, _, _) => Ok(AppendPath(resolvedParent, child))
-              case _ => Err(NotDirectory)
+              case Directory(_, _, _) => Result.Ok(AppendPath(resolvedParent, child))
+              case _ => Result.Err(NotDirectory)
             else
-              Err(NoSuchFile)
-          case Err(e) => Err(e)
+              Result.Err(NoSuchFile)
+          case Err(e) => Result.Err(e)
   }
 
-  function ResolvePathForCreateFields(fs: FileSystem, path: Path): Result<Path>
+  function ResolvePathForCreateFields(fs: FileSystem, path: Path): IOResult<Path>
   {
     if path == "" then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else
       ResolveRawSymlinkSegmentsFields(
         fs,
@@ -1454,15 +1525,17 @@ module IOContract {
 
   function CreateFileFailureErrFields(fs: FileSystem, path: Path): int
   {
-    if path == "" then
-      22
+    if (0 as char) in path then
+      Errno.EINVAL
+    else if path == "" then
+      Errno.ENOENT
     else
       match ResolvePathForCreateFields(fs, path)
       case Err(e) => IOErrorErrno(e)
       case Ok(target) =>
         if FsContainsPath(fs, target) then
           match FsNodeAt(fs, target)
-          case Directory(_, _, _) => 21
+          case Directory(_, _, _) => Errno.EISDIR
           case _ => 0
         else
           0
@@ -1741,8 +1814,10 @@ module IOContract {
 
   function WriteFileFailureErrFields(fs: FileSystem, path: Path): int
   {
-    if path == "" then
-      22
+    if (0 as char) in path then
+      Errno.EINVAL
+    else if path == "" then
+      Errno.ENOENT
     else
       match ResolvePathForCreateFields(fs, path)
       case Err(e) => IOErrorErrno(e)
@@ -1750,76 +1825,93 @@ module IOContract {
         if FsContainsPath(fs, target) then
           match FsNodeAt(fs, target)
           case Regular(_, _, _, _) => 0
-          case Directory(_, _, _) => 21
-          case Inaccessible(_) => 13
-          case Symlink(_, _, _, _) => 40
+          case Directory(_, _, _) => Errno.EISDIR
+          case Inaccessible(_) => Errno.EACCES
+          case Symlink(_, _, _, _) => Errno.ELOOP
         else
           0
   }
 
-  ghost predicate WriteFileContractFields(
-    fs: FileSystem,
-    now: int,
-    path: Path,
-    data: Bytes,
-    ok: bool,
-    err: int,
-    fs2: FileSystem
+  ghost predicate CompletedWriteFileEffectFields(
+    fs: FileSystem, now: int, path: Path, data: Bytes, fs2: FileSystem
   )
   {
-    // Host/device write failures after a modeled path has been accepted are
-    // outside the modeled state; invalid modeled paths and node kinds are the failure cases.
-    (!ok ==> fs2 == fs && err == WriteFileFailureErrFields(fs, path)) &&
-    (ok ==>
-       !HasTrailingSlash(path) &&
-       !HasRawTerminalSpecialFields(path) &&
-       err == 0 &&
-       match ResolvePathForCreateFields(fs, path)
-       case Ok(target) =>
-         if FsContainsPath(fs, target) then
-           match FsNodeAt(fs, target)
-           case Regular(_, _, _, _) =>
-             exists allocatedBlocks: nat, ioBlockBytes: nat ::
-               0 < ioBlockBytes &&
-               fs2 == InodeFsUpdateNodeAndStorage(
-                 fs,
-                 target,
-                 WithNodeModificationAndChangeTime(
-                   ToRegularNode(FsNodeAt(fs, target), data),
-                   now,
-                   0
-                 ),
-                 StorageInfo(
-                   |data|, allocatedBlocks, ioBlockBytes
-                 )
-               )
-           case _ => false
-         else
-           exists id: InodeId, key: HostInodeKey, createMode: bv32 ::
-             FreshInsertionFields(
-               fs,
-               now,
-               target,
-               id,
-               key,
-               Regular(
-                 data,
-                 createMode,
-                 FileTimes(now, 0, now, 0, now, 0),
-                 map[]
-               ),
-               fs2
-             )
-       case Err(_) => false) &&
-    (match ResolvePathForCreateFields(fs, path)
-     case Err(_) => !ok
-     case Ok(target) =>
-       if FsContainsPath(fs, target) then
-         match FsNodeAt(fs, target)
-         case Regular(_, _, _, _) => ok
-         case _ => !ok
-       else
-         ok)
+    (0 as char) !in path && !HasTrailingSlash(path) &&
+    !HasRawTerminalSpecialFields(path) &&
+    match ResolvePathForCreateFields(fs, path)
+    case Ok(target) =>
+      if FsContainsPath(fs, target) then
+        match FsNodeAt(fs, target)
+        case Regular(_, _, _, _) =>
+          exists allocatedBlocks: nat, ioBlockBytes: nat ::
+            0 < ioBlockBytes &&
+            fs2 == InodeFsUpdateNodeAndStorage(
+              fs,
+              target,
+              WithNodeModificationAndChangeTime(
+                ToRegularNode(FsNodeAt(fs, target), data),
+                now,
+                0
+              ),
+              StorageInfo(
+                |data|, allocatedBlocks, ioBlockBytes
+              )
+            )
+        case _ => false
+      else
+        exists id: InodeId, key: HostInodeKey, createMode: bv32 ::
+          FreshInsertionFields(
+            fs,
+            now,
+            target,
+            id,
+            key,
+            Regular(
+              data,
+              createMode,
+              FileTimes(now, 0, now, 0, now, 0),
+              map[]
+            ),
+            fs2
+          )
+    case Err(_) => false
+  }
+
+  function WriteOpenFailureErrnosFields(fs: FileSystem, path: Path): set<int>
+  {
+    if (0 as char) in path then {Errno.EINVAL} else
+    NativeLookupFaultErrnos + NativeMutationFaultErrnos + {Errno.ENFILE, Errno.EMFILE} +
+    (if WriteFileFailureErrFields(fs, path) == 0 then {}
+     else {WriteFileFailureErrFields(fs, path)})
+  }
+
+  ghost predicate WriteFileOutcomeFields(
+    fs: FileSystem, now: int, path: Path, data: Bytes, append: bool,
+    ok: bool, err: int, committed: nat, stage: FileWriteStage, fs2: FileSystem
+  )
+  {
+    0 <= err && (ok <==> err == 0) && (ok <==> stage == WriteSucceeded) &&
+    committed <= |data| &&
+    (if stage == WriteOpenFailed then
+       !ok && committed == 0 && err in WriteOpenFailureErrnosFields(fs, path) &&
+       FailedFilesystemEffectFields(fs, fs2)
+     else
+       (stage == WriteFailed ==> (committed < |data| &&
+                                  err in {Errno.EIO, Errno.EBADF, Errno.EFBIG, Errno.ENOSPC, Errno.EROFS, Errno.EPIPE, Errno.EDQUOT})) &&
+       (stage == WriteCloseFailed ==> (committed == |data| &&
+                                       err in {Errno.EINTR, Errno.EIO, Errno.EBADF, Errno.ENOSPC, Errno.EDQUOT})) &&
+       (stage == WriteSucceeded ==> committed == |data|) &&
+       (if append then CompletedAppendEffectFields(fs, now, path, data[..committed], fs2)
+        else CompletedWriteFileEffectFields(fs, now, path, data[..committed], fs2)))
+  }
+
+  ghost predicate WriteFileContractFields(
+    fs: FileSystem, now: int, path: Path, data: Bytes,
+    ok: bool, err: int, fs2: FileSystem
+  )
+  {
+    exists committed: nat, stage: FileWriteStage ::
+      WriteFileOutcomeFields(fs, now, path, data, false, ok, err, committed, stage, fs2)
   }
 
   ghost predicate WriteFileWithCredentialsContractFields(
@@ -1859,7 +1951,7 @@ module IOContract {
       fs2.namespace == fs.namespace &&
       fs2.inodes.Keys == fs.inodes.Keys &&
       (forall other :: other in fs.inodes && other != id ==>
-         fs2.inodes[other] == fs.inodes[other]) &&
+                         fs2.inodes[other] == fs.inodes[other]) &&
       fs2.inodes[id].hostKey == fs.inodes[id].hostKey &&
       fs2.inodes[id].links == fs.inodes[id].links &&
       fs2.inodes[id].ownership == fs.inodes[id].ownership &&
@@ -1871,34 +1963,26 @@ module IOContract {
        case _ => false)
   }
 
-  ghost predicate AppendFileContractFields(
-    fs: FileSystem,
-    now: int,
-    path: Path,
-    data: Bytes,
-    ok: bool,
-    err: int,
-    fs2: FileSystem
+  ghost predicate CompletedAppendEffectFields(
+    fs: FileSystem, now: int, path: Path, data: Bytes, fs2: FileSystem
   )
   {
-    (if ok then
-       err == 0 && !HasTrailingSlash(path) && !HasRawTerminalSpecialFields(path) &&
-       match ResolvePathForCreateFields(fs, path)
-       case Err(_) => false
-       case Ok(target) =>
-         if FsContainsPath(fs, target) then
-           FsNodeAt(fs, target).Regular? &&
-           ExistingAppendEffectFields(fs, target, data, fs2)
-         else
-           WriteFileContractFields(fs, now, path, data, ok, err, fs2)
-     else
-       fs2 == fs && err > 0 &&
-       (match ResolvePathForCreateFields(fs, path)
-        case Err(_) => err == WriteFileFailureErrFields(fs, path)
-        case Ok(target) =>
-          if FsContainsPath(fs, target) && !FsNodeAt(fs, target).Regular? then
-            err == WriteFileFailureErrFields(fs, path)
-          else true))
+    (0 as char) !in path && !HasTrailingSlash(path) && !HasRawTerminalSpecialFields(path) &&
+    match ResolvePathForCreateFields(fs, path)
+    case Err(_) => false
+    case Ok(target) =>
+      if FsContainsPath(fs, target) then
+        FsNodeAt(fs, target).Regular? && ExistingAppendEffectFields(fs, target, data, fs2)
+      else CompletedWriteFileEffectFields(fs, now, path, data, fs2)
+  }
+
+  ghost predicate AppendFileContractFields(
+    fs: FileSystem, now: int, path: Path, data: Bytes,
+    ok: bool, err: int, fs2: FileSystem
+  )
+  {
+    exists committed: nat, stage: FileWriteStage ::
+      WriteFileOutcomeFields(fs, now, path, data, true, ok, err, committed, stage, fs2)
   }
 
   lemma WriteFileWithCredentialsImpliesLegacy(
@@ -1926,13 +2010,13 @@ module IOContract {
   ): int
   {
     if path == "" then
-      2
+      Errno.ENOENT
     else if target == "" then
-      2
+      Errno.ENOENT
     else
       match ResolvePathForCreateNoFollowTerminalFields(fs, path)
       case Err(e) => IOErrorErrno(e)
-      case Ok(linkPath) => if FsContainsPath(fs, linkPath) then 17 else 0
+      case Ok(linkPath) => if FsContainsPath(fs, linkPath) then Errno.EEXIST else 0
   }
 
   ghost predicate CreateSymlinkContractFields(
@@ -2030,10 +2114,10 @@ module IOContract {
     case Ok(target) =>
       if FsContainsPath(fs, target) then
         match FsNodeAt(fs, target)
-        case Directory(_, _, _) => 21
+        case Directory(_, _, _) => Errno.EISDIR
         case _ => 0
       else
-        2
+        Errno.ENOENT
   }
 
   ghost predicate DeletePathContractFields(fs: FileSystem, path: Path, ok: bool, err: int, fs2: FileSystem)
@@ -2337,6 +2421,8 @@ module IOContract {
     var observed := observations(
                       FilesystemSetTimes(fs, path, followSymlink, now, atime, mtime)
                     );
+    ValidFilesystemObservation(
+      FilesystemSetTimes(fs, path, followSymlink, now, atime, mtime), observed) &&
     ok == observed.ok && err == observed.err && fs2 == observed.postFs
   }
 
@@ -2446,7 +2532,7 @@ module IOContract {
     requires FsContainsPath(fs, path)
   {
     DirectoryEntriesForPathFields(fs, path) +
-      {DirEntry(".", true, false), DirEntry("..", true, false)}
+    {DirEntry(".", true, false), DirEntry("..", true, false)}
   }
 
   ghost predicate OpenDirContractFields(
@@ -2471,10 +2557,10 @@ module IOContract {
          (match FsNodeAt(fs, resolved)
           case Directory(_, _, _) =>
             dirHandles2 == dirHandles[handle :=
-              if includeDots then
-                DotDirHandleState(resolved, DirectoryEntriesIncludingDotsForPathFields(fs, resolved))
-              else
-                DirHandleState(resolved, DirectoryEntriesForPathFields(fs, resolved))]
+            if includeDots then
+              DotDirHandleState(resolved, DirectoryEntriesIncludingDotsForPathFields(fs, resolved))
+            else
+              DirHandleState(resolved, DirectoryEntriesForPathFields(fs, resolved))]
           case _ => false)
        case Err(_) => false) &&
     (match ResolvePathForMetadataFields(fs, path, true)
@@ -2593,10 +2679,10 @@ module IOContract {
              DirectoryEntryKindMatchesFilesystemFields(
                fs, state.path, name, kind)) &&
           dirHandles2 == dirHandles[handle :=
-            if state.DotDirHandleState? then
-              DotDirHandleState(state.path, state.remaining - {entry})
-            else
-              DirHandleState(state.path, state.remaining - {entry})]
+          if state.DotDirHandleState? then
+            DotDirHandleState(state.path, state.remaining - {entry})
+          else
+            DirHandleState(state.path, state.remaining - {entry})]
   }
 
   // Inspect the opened directory descriptor, which remains available to the
@@ -2615,7 +2701,7 @@ module IOContract {
   )
   {
     if !(handle in dirHandles) then
-      !ok && err == 22 &&
+      !ok && err == Errno.EINVAL &&
       afterCursor == beforeCursor
     else if ok then
       err == 0 && afterCursor == beforeCursor + 1 &&
@@ -2636,35 +2722,35 @@ module IOContract {
   function ResolvePathForRenameNoFollowTerminalFields(
     fs: FileSystem,
     path: Path
-  ): Result<Path>
+  ): IOResult<Path>
   {
     var entryPath := BuildPath(
                        IsAbsolutePath(path),
                        RawPathSegmentsFields(path)
                      );
     match ResolvePathThroughSymlinkComponentsFields(fs, entryPath, false)
-    case Err(error) => Err(error)
+    case Err(error) => Result.Err(error)
     case Ok(resolved) =>
       if !HasTrailingSlash(path) then
-        Ok(resolved)
+        Result.Ok(resolved)
       else if !FsContainsPath(fs, resolved) then
-        Err(NoSuchFile)
+        Result.Err(NoSuchFile)
       else
         match FsNodeAt(fs, resolved)
-        case Directory(_, _, _) => Ok(resolved)
+        case Directory(_, _, _) => Result.Ok(resolved)
         case Regular(_, _, _, _) | Symlink(_, _, _, _) =>
-          Err(NotDirectory)
-        case Inaccessible(_) => Err(PermissionDenied)
+          Result.Err(NotDirectory)
+        case Inaccessible(_) => Result.Err(PermissionDenied)
   }
 
-  function ResolvePathForRenameDestinationFields(fs: FileSystem, path: Path): Result<Path>
+  function ResolvePathForRenameDestinationFields(fs: FileSystem, path: Path): IOResult<Path>
   {
     match ResolvePathForRenameNoFollowTerminalFields(fs, path)
     case Err(NoSuchFile) =>
       if HasTrailingSlash(path) ||
          HasRawTerminalSpecialFields(path)
       then
-        Err(NoSuchFile)
+        Result.Err(NoSuchFile)
       else
         ResolvePathForCreateFields(fs, path)
     case result => result
@@ -2831,71 +2917,96 @@ module IOContract {
     }
   }
 
+  ghost function RenameFailureErrnosFields(fs: FileSystem, source: Path, target: Path): set<int>
+  {
+    if (0 as char) in source || (0 as char) in target then {Errno.EINVAL}
+    else if source == "" || target == "" then NativeLookupFaultErrnos + {Errno.ENOENT}
+    else if !IsNonRootRawEntryPathFields(source) || !IsNonRootRawEntryPathFields(target) then
+      NativeMutationFaultErrnos + {Errno.EBUSY, Errno.EINVAL}
+    else
+      match ResolvePathForRenameNoFollowTerminalFields(fs, source)
+      case Err(error) => NativeLookupFaultErrnos + {IOErrorErrno(error)}
+      case Ok(resolvedSource) =>
+        match ResolvePathForRenameDestinationFields(fs, target)
+        case Err(error) => NativeLookupFaultErrnos + {IOErrorErrno(error)}
+        case Ok(resolvedTarget) =>
+          NativeMutationFaultErrnos + {Errno.EBUSY, Errno.EXDEV, Errno.EINVAL, Errno.EMLINK} +
+          (if !FsContainsPath(fs, resolvedTarget) then {}
+           else if FsNodeAt(fs, resolvedSource).Directory? && !FsNodeAt(fs, resolvedTarget).Directory? then {Errno.ENOTDIR}
+           else if !FsNodeAt(fs, resolvedSource).Directory? && FsNodeAt(fs, resolvedTarget).Directory? then {Errno.EISDIR}
+           else if FsNodeAt(fs, resolvedTarget).Directory? && !HasNoDescendants(fs, resolvedTarget) then {Errno.EEXIST, Errno.ENOTEMPTY}
+           else {})
+  }
+
   ghost predicate RenamePathContractFields(fs: FileSystem, source: Path, target: Path, ok: bool, err: int, fs2: FileSystem)
   {
-    if !IsNonRootRawEntryPathFields(source) ||
-       !IsNonRootRawEntryPathFields(target)
-    then
-      !ok && err != 0 && fs2 == fs
-    else
-      var sourceResult :=
-        ResolvePathForRenameNoFollowTerminalFields(fs, source);
-      var targetNotDirectory :=
-        match sourceResult
-        case Ok(_) =>
-          ResolvePathForRenameDestinationFields(fs, target) ==
-          Err(NotDirectory)
-        case Err(_) => false;
-      if sourceResult == Err(NotDirectory) || targetNotDirectory then
-        !ok && err == 20 && fs2 == fs
-      else
-        (!ok ==> err != 0 && fs2 == fs) &&
-        (ok ==>
-           err == 0 &&
-           match sourceResult
-           case Ok(resolvedSource) =>
-             (match ResolvePathForRenameDestinationFields(fs, target)
-              case Ok(resolvedTarget) =>
-                FsContainsPath(fs, resolvedSource) &&
-                if InodeSameObject(fs, resolvedSource, resolvedTarget) then
-                  fs2 == fs
-                else
-                  resolvedSource != resolvedTarget &&
-                  !HasPathPrefix(resolvedSource, resolvedTarget) &&
-                  RenameKindCompatible(fs, resolvedSource, resolvedTarget) &&
-                  exists transitionNow: int,
-                    sourceParentStorage: StorageInfo,
-                    targetParentStorage: StorageInfo ::
-                    DirectoryStorageObservationFields(sourceParentStorage) &&
-                    DirectoryStorageObservationFields(targetParentStorage) &&
-                    fs2 == RenameFsWithMetadataFields(
-                      fs,
-                      resolvedSource,
-                      resolvedTarget,
-                      transitionNow,
-                      sourceParentStorage,
-                      targetParentStorage
-                    )
-              case Err(_) => false)
-           case Err(_) => false) &&
-        (match sourceResult
-         case Ok(resolvedSource) =>
-           (match ResolvePathForRenameDestinationFields(fs, target)
-            case Ok(resolvedTarget) =>
-              if FsContainsPath(fs, resolvedSource) &&
-                 InodeSameObject(fs, resolvedSource, resolvedTarget)
-              then
-                ok && err == 0 && fs2 == fs
-              else if FsContainsPath(fs, resolvedSource) &&
-                      FsNodeAt(fs, resolvedSource).Directory? &&
-                      resolvedSource != resolvedTarget &&
-                      HasPathPrefix(resolvedSource, resolvedTarget)
-                then
-                  !ok && err == 22
-                else
-                  true
-            case Err(_) => true)
-         case Err(_) => true)
+    0 <= err && (ok <==> err == 0) &&
+    (!ok ==> err in RenameFailureErrnosFields(fs, source, target)) &&
+    (if (0 as char) in source || (0 as char) in target then
+       !ok && err == Errno.EINVAL && fs2 == fs
+     else if !IsNonRootRawEntryPathFields(source) ||
+             !IsNonRootRawEntryPathFields(target)
+     then
+       !ok && err != 0 && fs2 == fs
+     else
+       var sourceResult :=
+         ResolvePathForRenameNoFollowTerminalFields(fs, source);
+       var targetNotDirectory :=
+         match sourceResult
+         case Ok(_) =>
+           ResolvePathForRenameDestinationFields(fs, target) ==
+           Result.Err(NotDirectory)
+         case Err(_) => false;
+       if sourceResult == Result.Err(NotDirectory) || targetNotDirectory then
+         !ok && err == Errno.ENOTDIR && fs2 == fs
+       else
+         (!ok ==> err != 0 && fs2 == fs) &&
+         (ok ==>
+            err == 0 &&
+            match sourceResult
+            case Ok(resolvedSource) =>
+              (match ResolvePathForRenameDestinationFields(fs, target)
+               case Ok(resolvedTarget) =>
+                 FsContainsPath(fs, resolvedSource) &&
+                 if InodeSameObject(fs, resolvedSource, resolvedTarget) then
+                   fs2 == fs
+                 else
+                   resolvedSource != resolvedTarget &&
+                   !HasPathPrefix(resolvedSource, resolvedTarget) &&
+                   RenameKindCompatible(fs, resolvedSource, resolvedTarget) &&
+                   exists transitionNow: int,
+                     sourceParentStorage: StorageInfo,
+                     targetParentStorage: StorageInfo ::
+                     DirectoryStorageObservationFields(sourceParentStorage) &&
+                     DirectoryStorageObservationFields(targetParentStorage) &&
+                     fs2 == RenameFsWithMetadataFields(
+                       fs,
+                       resolvedSource,
+                       resolvedTarget,
+                       transitionNow,
+                       sourceParentStorage,
+                       targetParentStorage
+                     )
+               case Err(_) => false)
+            case Err(_) => false) &&
+         (match sourceResult
+          case Ok(resolvedSource) =>
+            (match ResolvePathForRenameDestinationFields(fs, target)
+             case Ok(resolvedTarget) =>
+               if FsContainsPath(fs, resolvedSource) &&
+                  InodeSameObject(fs, resolvedSource, resolvedTarget)
+               then
+                 ok && err == 0 && fs2 == fs
+               else if FsContainsPath(fs, resolvedSource) &&
+                       FsNodeAt(fs, resolvedSource).Directory? &&
+                       resolvedSource != resolvedTarget &&
+                       HasPathPrefix(resolvedSource, resolvedTarget)
+                 then
+                   !ok && err == Errno.EINVAL
+                 else
+                   true
+             case Err(_) => true)
+          case Err(_) => true))
   }
 
   ghost predicate RenamePathWithChangeTimeContractFields(
@@ -2963,18 +3074,17 @@ module IOContract {
     beforeFs: FileSystem,
     beforeTrustedStreams: (TrustedStreamRequest) -> TrustedStreamResult,
     path: Path,
-    mode: FileReadMode,
     data: Bytes,
     err: int,
     stage: FileReadStage
   )
   {
     TrustedReadFileContractFields(
-      beforeTrustedStreams, beforeFs, path, mode, data, err, stage
+      beforeTrustedStreams, beforeFs, path, data, err, stage
     )
   }
 
-  ghost predicate ReadLinkSpec(beforeFs: FileSystem, path: Path, r: Result<Path>)
+  ghost predicate ReadLinkSpec(beforeFs: FileSystem, path: Path, r: IOResult<Path>)
   {
     r == ReadLinkResultFields(beforeFs, path)
   }
@@ -2997,7 +3107,7 @@ module IOContract {
       beforeTrustedStreams, beforeStdin, afterStdin, data, err
     ) &&
     (policy == ThrowOnError ==>
-      err == 0 && ReadStdinAllFields(beforeStdin, afterStdin, data))
+       err == 0 && ReadStdinAllFields(beforeStdin, afterStdin, data))
   }
 
   ghost predicate AppendStdoutSpec(beforeStdout: Bytes, afterStdout: Bytes, b: Bytes)
@@ -3024,7 +3134,7 @@ module IOContract {
       beforeTrustedStreams, beforeStdout, afterStdout, b, committed, err
     ) &&
     (policy == ThrowOnError ==>
-      err == 0 && AppendStdoutFields(beforeStdout, afterStdout, b))
+       err == 0 && AppendStdoutFields(beforeStdout, afterStdout, b))
   }
 
   ghost predicate WriteStderrSpec(
@@ -3041,7 +3151,7 @@ module IOContract {
       beforeTrustedStreams, beforeStderr, afterStderr, b, committed, err
     ) &&
     (policy == ThrowOnError ==>
-      err == 0 && AppendStderrFields(beforeStderr, afterStderr, b))
+       err == 0 && AppendStderrFields(beforeStderr, afterStderr, b))
   }
 
   ghost predicate GetCLocaleErrnoTextSpec(err: int, text: string)
@@ -3064,7 +3174,7 @@ module IOContract {
     cwd == GetCwdResultFields(beforeCwd)
   }
 
-  ghost predicate GetEnvSpec(beforeEnv: Environment, key: string, r: Result<string>)
+  ghost predicate GetEnvSpec(beforeEnv: Environment, key: string, r: IOResult<string>)
   {
     GetEnvContractFields(beforeEnv, key, r)
   }
@@ -3075,7 +3185,7 @@ module IOContract {
     GetEnvironmentContractFields(beforeEnv, entries)
   }
 
-  ghost predicate GetLoginNameSpec(beforeProps: map<string, string>, r: Result<string>)
+  ghost predicate GetLoginNameSpec(beforeProps: map<string, string>, r: IOResult<string>)
   {
     GetLoginNameContractFields(beforeProps, r)
   }
@@ -3141,46 +3251,39 @@ module IOContract {
   }
 
   ghost predicate WriteFileSpec(
-    beforeFs: FileSystem,
-    beforeProps: map<string, string>,
-    beforeNow: int,
+    beforeFs: FileSystem, beforeProps: map<string, string>, beforeNow: int,
     beforeCredentials: ProcessCredentials,
-    afterFs: FileSystem,
-    path: Path,
-    data: Bytes,
-    ok: bool,
-    err: int
+    beforeTrustedFilesystem: (TrustedFilesystemRequest) -> TrustedFilesystemResult,
+    afterFs: FileSystem, path: Path, data: Bytes, ok: bool, err: int,
+    committed: nat, stage: FileWriteStage
   )
   {
-    WriteFileWithCredentialsContractFields(
-      beforeFs, beforeNow, beforeProps, beforeCredentials,
-      path, data, ok, err, afterFs
-    ) &&
-    WriteFileContractFields(beforeFs, beforeNow, path, data, ok, err, afterFs)
+    var request := FilesystemWrite(beforeFs, path, data, beforeNow, beforeProps, beforeCredentials);
+    var observed := beforeTrustedFilesystem(request);
+    ValidFilesystemObservation(request, observed) &&
+    ok == observed.ok && err == observed.err && afterFs == observed.postFs &&
+    committed == observed.writeCommitted && stage == observed.writeStage &&
+    WriteFileOutcomeFields(beforeFs, beforeNow, path, data, false, ok, err, committed, stage, afterFs) &&
+    CreatedRegularOwnershipFields(beforeFs, beforeCredentials, path, stage != WriteOpenFailed, afterFs) &&
+    CreatedRegularModeFields(beforeFs, beforeProps, path, stage != WriteOpenFailed, afterFs)
   }
 
   ghost predicate AppendFileSpec(
-    beforeFs: FileSystem,
-    beforeProps: map<string, string>,
-    beforeNow: int,
+    beforeFs: FileSystem, beforeProps: map<string, string>, beforeNow: int,
     beforeCredentials: ProcessCredentials,
     beforeTrustedFilesystem: (TrustedFilesystemRequest) -> TrustedFilesystemResult,
-    afterFs: FileSystem,
-    path: Path,
-    data: Bytes,
-    ok: bool,
-    err: int
+    afterFs: FileSystem, path: Path, data: Bytes, ok: bool, err: int,
+    committed: nat, stage: FileWriteStage
   )
   {
-    var observed := beforeTrustedFilesystem(
-      FilesystemAppend(beforeFs, path, data, beforeNow)
-    );
+    var request := FilesystemAppend(beforeFs, path, data, beforeNow, beforeProps, beforeCredentials);
+    var observed := beforeTrustedFilesystem(request);
+    ValidFilesystemObservation(request, observed) &&
     ok == observed.ok && err == observed.err && afterFs == observed.postFs &&
-    AppendFileContractFields(
-      beforeFs, beforeNow, path, data, ok, err, afterFs
-    ) &&
-    CreatedRegularOwnershipFields(beforeFs, beforeCredentials, path, ok, afterFs) &&
-    CreatedRegularModeFields(beforeFs, beforeProps, path, ok, afterFs)
+    committed == observed.writeCommitted && stage == observed.writeStage &&
+    WriteFileOutcomeFields(beforeFs, beforeNow, path, data, true, ok, err, committed, stage, afterFs) &&
+    CreatedRegularOwnershipFields(beforeFs, beforeCredentials, path, stage != WriteOpenFailed, afterFs) &&
+    CreatedRegularModeFields(beforeFs, beforeProps, path, stage != WriteOpenFailed, afterFs)
   }
 
   ghost predicate CreateSymlinkSpec(
@@ -3217,10 +3320,10 @@ module IOContract {
 
   // mkdir accepts trailing slashes, but does not follow a terminal symlink.
   // Preserve raw dot components until the existing resolver processes them.
-  function ResolveDirectoryCreationPathFields(fs: FileSystem, path: Path): Result<Path>
+  function ResolveDirectoryCreationPathFields(fs: FileSystem, path: Path): IOResult<Path>
   {
     if path == "" || (0 as char) in path then
-      Err(InvalidPath)
+      Result.Err(InvalidPath)
     else
       ResolvePathForCreateNoFollowTerminalFields(
         fs, BuildPath(IsAbsolutePath(path), RawPathSegmentsFields(path)))
@@ -3267,27 +3370,224 @@ module IOContract {
            after.inodes[oldId].node.ext == before.inodes[oldId].node.ext)
   }
 
-  ghost predicate ValidDirectoryObservation(
+  // Lookup may fail because of storage, allocation, access-control or name-limit
+  // conditions absent from the inode model. These are Linux lookup errors, not
+  // an arbitrary substitute for a modeled ENOENT/ENOTDIR/ELOOP cause.
+  const NativeLookupFaultErrnos: set<int> := {Errno.EIO, Errno.ENOMEM, Errno.EACCES, Errno.ENAMETOOLONG}
+  const NativeMutationFaultErrnos: set<int> := {Errno.EPERM, Errno.EIO, Errno.ENOMEM, Errno.EACCES, Errno.ENOSPC, Errno.EROFS, Errno.EDQUOT}
+
+  function LookupFailureErrnosFields(fs: FileSystem, path: Path, follow: bool): set<int>
+  {
+    NativeLookupFaultErrnos +
+    (match ResolvePathForMetadataFields(fs, path, follow)
+     case Err(error) => {IOErrorErrno(error)}
+     case Ok(_) => {})
+  }
+
+  function HardLinkFailureErrnosFields(fs: FileSystem, source: Path, target: Path): set<int>
+  {
+    if (0 as char) in source || (0 as char) in target then {Errno.EINVAL}
+    else
+      match ResolvePathForMetadataFields(fs, source, false)
+      case Err(error) => NativeLookupFaultErrnos + {IOErrorErrno(error)}
+      case Ok(resolvedSource) =>
+        if target == "" then NativeLookupFaultErrnos + {Errno.ENOENT}
+        else
+          match ResolvePathForCreateNoFollowTerminalFields(fs, target)
+          case Err(error) => NativeLookupFaultErrnos + {IOErrorErrno(error)}
+          case Ok(resolvedTarget) =>
+            if FsContainsPath(fs, resolvedTarget) then NativeLookupFaultErrnos + {Errno.EEXIST}
+            else if FsNodeAt(fs, resolvedSource).Directory? then NativeLookupFaultErrnos + {Errno.EPERM}
+            else NativeMutationFaultErrnos + {Errno.EXDEV, Errno.EMLINK}
+  }
+
+  function EntryRemovalFailureErrnosFields(fs: FileSystem, path: Path, directory: bool): set<int>
+  {
+    if path == "" then NativeLookupFaultErrnos + {Errno.ENOENT}
+    else if (0 as char) in path then {Errno.EINVAL}
+    else
+      var entry := BuildPath(IsAbsolutePath(path), RawPathSegmentsFields(path));
+      match ResolvePathForMetadataFields(fs, entry, false)
+      case Err(error) => NativeLookupFaultErrnos + {IOErrorErrno(error)}
+      case Ok(target) =>
+        if directory then
+          if !FsNodeAt(fs, target).Directory? then NativeLookupFaultErrnos + {Errno.ENOTDIR}
+          else NativeMutationFaultErrnos + {Errno.EBUSY, Errno.EINVAL, Errno.ENOTEMPTY}
+        else if HasTrailingSlash(path) && FsNodeAt(fs, target).Symlink? then
+          NativeLookupFaultErrnos + {Errno.ENOTDIR}
+        else if HasTrailingSlash(path) && !FsNodeAt(fs, target).Directory? then
+          NativeLookupFaultErrnos + {Errno.ENOTDIR}
+        else if FsNodeAt(fs, target).Directory? then NativeLookupFaultErrnos + {Errno.EISDIR}
+        else NativeMutationFaultErrnos + {Errno.EBUSY}
+  }
+
+  function FilesystemRequestHasInvalidAbiPath(request: TrustedFilesystemRequest): bool
+  {
+    if request.FilesystemQuery? || request.FilesystemSetTimes? then false
+    else if request.FilesystemCreateHardLink? then
+      (0 as char) in request.source || (0 as char) in request.hardLinkTarget
+    else if request.FilesystemSync? then
+      request.syncTarget.PathSyncTarget? && (0 as char) in request.syncTarget.path
+    else (0 as char) in request.path
+  }
+
+  function FilesystemFailureErrnosFields(request: TrustedFilesystemRequest): set<int>
+  {
+    if FilesystemRequestHasInvalidAbiPath(request) then {Errno.EINVAL} else
+    match request
+    case FilesystemQuery(fs, path, follow) => LookupFailureErrnosFields(fs, path, follow)
+    case FilesystemCreate(fs, path, _) =>
+      NativeMutationFaultErrnos + NativeLookupFaultErrnos + {Errno.EINTR, Errno.EBADF, Errno.ENFILE, Errno.EMFILE} +
+      (if CreateFileFailureErrFields(fs, path) == 0 then {}
+       else {CreateFileFailureErrFields(fs, path)})
+    case FilesystemSetTimes(fs, path, follow, _, atime, mtime) =>
+      LookupFailureErrnosFields(fs, path, follow) + NativeMutationFaultErrnos +
+      (if !TimestampUpdateValidFields(atime) || !TimestampUpdateValidFields(mtime) then {Errno.EINVAL} else {})
+    case FilesystemCreateHardLink(fs, source, target, _) =>
+      HardLinkFailureErrnosFields(fs, source, target)
+    case FilesystemUnlink(fs, path, _) => EntryRemovalFailureErrnosFields(fs, path, false)
+    case FilesystemRemoveDirectory(fs, path, _) => EntryRemovalFailureErrnosFields(fs, path, true)
+    case FilesystemCreateDirectory(fs, path, _, _, _) =>
+      NativeMutationFaultErrnos + NativeLookupFaultErrnos +
+      (if path == "" then {Errno.ENOENT}
+       else match ResolveDirectoryCreationPathFields(fs, path)
+            case Err(error) => {IOErrorErrno(error)}
+            case Ok(target) => if FsContainsPath(fs, target) then {Errno.EEXIST} else {})
+    case FilesystemTruncate(fs, path, _, _) =>
+      LookupFailureErrnosFields(fs, path, true) + NativeMutationFaultErrnos + {Errno.EINVAL, Errno.EFBIG} +
+      (match ResolvePathForMetadataFields(fs, path, true)
+       case Err(_) => {}
+       case Ok(target) => if FsNodeAt(fs, target).Directory? then {Errno.EISDIR} else {})
+    case FilesystemCreateSpecialNode(fs, path, _, _, _, _, _, _) =>
+      NativeMutationFaultErrnos + NativeLookupFaultErrnos + {Errno.EINVAL} +
+      (if path == "" then {Errno.ENOENT}
+       else match ResolveDirectoryCreationPathFields(fs, path)
+            case Err(error) => {IOErrorErrno(error)}
+            case Ok(target) => if FsContainsPath(fs, target) then {Errno.EEXIST} else {})
+    case FilesystemWrite(fs, path, _, _, _, _) =>
+      WriteOpenFailureErrnosFields(fs, path) + {Errno.EINTR, Errno.EIO, Errno.EBADF, Errno.EFBIG, Errno.ENOSPC, Errno.EROFS, Errno.EPIPE, Errno.EDQUOT}
+    case FilesystemAppend(fs, path, _, _, _, _) =>
+      WriteOpenFailureErrnosFields(fs, path) + {Errno.EINTR, Errno.EIO, Errno.EBADF, Errno.EFBIG, Errno.ENOSPC, Errno.EROFS, Errno.EPIPE, Errno.EDQUOT}
+    case FilesystemSync(fs, target, _) =>
+      {Errno.EINTR, Errno.EIO, Errno.EBADF, Errno.EINVAL, Errno.ENFILE, Errno.EMFILE, Errno.ENOSPC, Errno.EROFS} +
+      (if target.PathSyncTarget? then LookupFailureErrnosFields(fs, target.path, true) else {})
+  }
+
+  // Failed atomic mutations preserve entries and inode records. Path traversal
+  // can refresh symlink access times even when the terminal mutation fails.
+  ghost predicate FailedFilesystemEffectFields(before: FileSystem, after: FileSystem)
+  {
+    before.namespace == after.namespace && before.inodes.Keys == after.inodes.Keys &&
+    (forall id | id in before.inodes ::
+       if before.inodes[id].node.Symlink? then
+         var times := NodeTimes(before.inodes[id].node);
+         var observedTimes := NodeTimes(after.inodes[id].node);
+         after.inodes[id] == before.inodes[id].(
+         node := WithNodeTimes(before.inodes[id].node,
+                               times.(atimeSec := observedTimes.atimeSec, atimeNsec := observedTimes.atimeNsec)))
+       else after.inodes[id] == before.inodes[id])
+  }
+
+  ghost predicate FilesystemRequestCanSucceedFields(request: TrustedFilesystemRequest)
+  {
+    !FilesystemRequestHasInvalidAbiPath(request) &&
+    match request
+    case FilesystemQuery(fs, path, follow) =>
+      ResolvePathForMetadataFields(fs, path, follow).Ok?
+    case FilesystemCreate(fs, path, _) => CreateFileFailureErrFields(fs, path) == 0
+    case FilesystemSetTimes(fs, path, follow, _, atime, mtime) =>
+      ResolvePathForMetadataFields(fs, path, follow).Ok? &&
+      TimestampUpdateValidFields(atime) && TimestampUpdateValidFields(mtime)
+    case FilesystemCreateHardLink(fs, source, target, _) =>
+      target != "" && (0 as char) !in source && (0 as char) !in target &&
+      (match ResolvePathForMetadataFields(fs, source, false)
+       case Err(_) => false
+       case Ok(resolvedSource) =>
+         !FsNodeAt(fs, resolvedSource).Directory? &&
+         (match ResolvePathForCreateNoFollowTerminalFields(fs, target)
+          case Err(_) => false
+          case Ok(resolvedTarget) => !FsContainsPath(fs, resolvedTarget)))
+    case FilesystemUnlink(fs, path, _) =>
+      path != "" && !HasTrailingSlash(path) &&
+      (match ResolvePathForMetadataFields(fs, path, false)
+       case Err(_) => false
+       case Ok(target) => !FsNodeAt(fs, target).Directory?)
+    case FilesystemRemoveDirectory(fs, path, _) =>
+      path != "" && !HasRawTerminalSpecialFields(path) &&
+      (match ResolveDirectoryCreationPathFields(fs, path)
+       case Err(_) => false
+       case Ok(target) =>
+         FsContainsPath(fs, target) && FsNodeAt(fs, target).Directory? &&
+         HasNoDescendants(fs, target))
+    case FilesystemCreateDirectory(fs, path, _, _, _) =>
+      path != "" &&
+      (match ResolveDirectoryCreationPathFields(fs, path)
+       case Err(_) => false
+       case Ok(target) => !FsContainsPath(fs, target))
+    case FilesystemCreateSpecialNode(fs, path, _, _, _, _, _, _) =>
+      path != "" &&
+      (match ResolveDirectoryCreationPathFields(fs, path)
+       case Err(_) => false
+       case Ok(target) => !FsContainsPath(fs, target))
+    case FilesystemTruncate(fs, path, _, _) =>
+      (match ResolvePathForMetadataFields(fs, path, true)
+       case Err(_) => false
+       case Ok(target) => FsNodeAt(fs, target).Regular?)
+    case FilesystemWrite(fs, path, _, _, _, _) => WriteFileFailureErrFields(fs, path) == 0
+    case FilesystemAppend(fs, path, _, _, _, _) => WriteFileFailureErrFields(fs, path) == 0
+    case FilesystemSync(fs, target, mode) =>
+      if target.AllSyncTargets? then mode == SyncAllFilesystems
+      else mode != SyncAllFilesystems && ResolvePathForMetadataFields(fs, target.path, true).Ok?
+  }
+
+  ghost predicate ValidFilesystemObservation(
     request: TrustedFilesystemRequest, result: TrustedFilesystemResult
   )
   {
-    request.FilesystemCreateDirectory? ==>
-      0 <= result.err && (result.ok <==> result.err == 0) &&
-      (result.ok ==> DirectoryCreationEffectFields(request.preFs, request.path, result.postFs))
+    0 <= result.err && (result.ok <==> result.err == 0) &&
+    (result.ok ==> FilesystemRequestCanSucceedFields(request)) &&
+    (!result.ok ==> result.err in FilesystemFailureErrnosFields(request)) &&
+    (request.FilesystemQuery? || request.FilesystemSync? ==> result.postFs == request.preFs) &&
+    (request.FilesystemCreate? ==>
+       if result.ok then
+         CreateFileContractFields(request.preFs, request.now, request.path, true, 0, result.postFs)
+       else
+         FailedFilesystemEffectFields(request.preFs, result.postFs) ||
+         (result.err in {Errno.EINTR, Errno.EIO, Errno.EBADF, Errno.ENOSPC, Errno.EDQUOT} &&
+          CreateFileContractFields(request.preFs, request.now, request.path, true, 0, result.postFs))) &&
+    ((!result.ok && !request.FilesystemAppend? && !request.FilesystemWrite? && !request.FilesystemCreate?) ==>
+       FailedFilesystemEffectFields(request.preFs, result.postFs)) &&
+    (request.FilesystemCreateDirectory? && result.ok ==>
+       DirectoryCreationEffectFields(request.preFs, request.path, result.postFs)) &&
+    (request.FilesystemWrite? || request.FilesystemAppend? ==>
+       WriteFileOutcomeFields(request.preFs, request.now, request.path, request.data,
+                              request.FilesystemAppend?, result.ok, result.err, result.writeCommitted, result.writeStage, result.postFs) &&
+       CreatedRegularOwnershipFields(request.preFs, request.credentials, request.path,
+                                     result.writeStage != WriteOpenFailed, result.postFs) &&
+       CreatedRegularModeFields(request.preFs, request.props, request.path,
+                                result.writeStage != WriteOpenFailed, result.postFs))
   }
 
-  // A subset, rather than an extra extern postcondition on arbitrary observations,
-  // keeps every admitted mkdir request/result binding consistent with its effects.
-  type DirectoryValidFilesystemObservations =
+  // Construct an admissible failure for the subtype witness. This ghost choice
+  // never replaces the native errno returned by an executable operation.
+  ghost function FilesystemFailureWitness(request: TrustedFilesystemRequest): TrustedFilesystemResult
+  {
+    TrustedFilesystemResult(false,
+                            if Errno.EIO in FilesystemFailureErrnosFields(request) then Errno.EIO else Errno.EINVAL,
+                            request.preFs, 0, 0, 0, 0, false, false, 0, 0, 0, 0, WriteOpenFailed)
+  }
+
+  // Validate the provider itself so stronger extern contracts do not silently
+  // contradict arbitrary observations. EIO represents an actual native I/O fault.
+  type ValidFilesystemObservations =
     observations: ((TrustedFilesystemRequest) -> TrustedFilesystemResult) |
-      (forall request :: ValidDirectoryObservation(request, observations(request)))
-    ghost witness (request: TrustedFilesystemRequest) =>
-        TrustedFilesystemResult(false, 5, request.preFs, 0, 0, 0, 0, false, false, 0, 0, 0)
+      (forall request :: ValidFilesystemObservation(request, observations(request)))
+    ghost witness (request: TrustedFilesystemRequest) => FilesystemFailureWitness(request)
 
   ghost predicate CreateDirectorySpec(
     beforeFs: FileSystem,
     beforeNow: int,
-    beforeTrustedFilesystem: DirectoryValidFilesystemObservations,
+    beforeTrustedFilesystem: ValidFilesystemObservations,
     beforeUmask: bv32,
     afterFs: FileSystem,
     path: Path,

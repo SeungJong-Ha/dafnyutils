@@ -6,6 +6,7 @@ include "../../core/StringEscaping.dfy"
 include "UniqSchema.dfy"
 
 module UniqSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -238,6 +239,11 @@ module UniqSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function QuoteIfNeeded(path: string): BenchWorld.Bytes
@@ -252,7 +258,7 @@ module UniqSpec {
 
   function ReadErrorMessageSpec(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
   {
-    if err == BenchWorld.IsDirectory then
+    if IOContract.IOErrorIsDirectory(err) then
       "uniq: error reading " + SpecQuoteAfBytes(Utf8.Encode(path)) +
         ": " + Utf8.Encode(ErrnoText(err)) + "\n"
     else
@@ -574,7 +580,7 @@ module UniqSpec {
   twostate predicate InputTraceRelation(
     command: UniqSchema.UniqCmd,
     io: BenchIO.IO,
-    new readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    new readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     new stdoutPart: BenchWorld.Bytes,
     new stderrPart: BenchWorld.Bytes,
     hadError: bool
@@ -584,7 +590,7 @@ module UniqSpec {
     |readResults| == 1 &&
     match command.input
     case Stdin =>
-      readResults[0] == BenchWorld.Ok(old(io.stdin())) &&
+      readResults[0] == Result.Ok(old(io.stdin())) &&
       OutputRelation(command, old(io.stdin()), stdoutPart) &&
       stderrPart == [] &&
       !hadError
@@ -634,7 +640,7 @@ module UniqSpec {
       io.stderr() == old(io.stderr()) + ExtraOperandMessageSpec(operand) &&
       exit == 1
     case ModeRun =>
-      exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      exists readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
         stdoutPart: BenchWorld.Bytes,
         stderrPart: BenchWorld.Bytes,
         hadError: bool ::

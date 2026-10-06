@@ -1,5 +1,6 @@
 include "ChmodRecursiveCore.dfy"
 include "ChmodRecursiveLeafRuntime.dfy"
+include "../../core/LookupFailureProof.dfy"
 
 module ChmodRecursiveRuntime {
   import BenchWorld
@@ -9,8 +10,9 @@ module ChmodRecursiveRuntime {
   import Base = ChmodCore
   import opened ChmodRecursiveCore
   import Leaf = ChmodRecursiveLeafRuntime
+  import LookupProof = LookupFailureProof
 
-  lemma RuntimeVisitOutcomeIdentitySubstitution(
+  lemma {:induction false} RuntimeVisitOutcomeIdentitySubstitution(
     cmd: Schema.ChmodCmd,
     plan: Base.CoreModePlan,
     identity: RecursiveIdentity,
@@ -62,10 +64,10 @@ module ChmodRecursiveRuntime {
                          )
   {
     if !cmd.silent {
-      var _, _ := io.WriteStderr(ReadDirectoryMessageCore(displayPath, err), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(ReadDirectoryMessageCore(displayPath, err), BenchWorld.ThrowOnError);
     }
     if cmd.verbose {
-      var _, _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
     }
   }
 
@@ -642,8 +644,11 @@ module ChmodRecursiveRuntime {
     ghost var initialStderr := io.stderr();
     ghost var initialHandles := io.dirHandles();
     ghost var initialRemaining := io.dirHandles()[handle].remaining;
-    var hasMore, name, kind, readErr :=
-      io.ReadDir(handle);
+    var readDirResult := io.ReadDir(handle);
+    var hasMore := (readDirResult.Ok? && readDirResult.v.DirectoryItem?);
+    var name := (if readDirResult.Ok? && readDirResult.v.DirectoryItem? then readDirResult.v.name else "");
+    var kind := (if readDirResult.Ok? && readDirResult.v.DirectoryItem? then readDirResult.v.kind else BenchWorld.UnknownDirentKind);
+    var readErr := IOContract.ResultErrno(readDirResult);
     if readErr != 0 {
       terminal := RecursiveReadError(readErr);
       AppendRuntimeReadFailure(cmd, parent.displayPath, readErr, io);
@@ -770,7 +775,11 @@ module ChmodRecursiveRuntime {
     ghost var now0 := io.now();
     ghost var startStdout := io.stdout();
     ghost var startStderr := io.stderr();
-    var openOk, handle, openErr := io.OpenDir(identity.accessPath, false);
+    var openDirResult := io.OpenDir(identity.accessPath, false);
+    var openOk := openDirResult.Ok?;
+    var handle := IOContract.ResultValue(openDirResult, 0);
+    var openErr := IOContract.ResultErrno(openDirResult);
+    LookupProof.OpenDirFailureClassification(startFs, identity.accessPath);
     if !openOk {
       assert openErr ==
              IOContract.OpenDirFailureErrFields(
@@ -778,11 +787,7 @@ module ChmodRecursiveRuntime {
              );
       assert IOContract.OpenDirFailureErrFields(
           startFs, identity.accessPath
-        ) != 0 by {
-        reveal IOContract.OpenDirContractFields;
-        reveal IOContract.OpenDirFailureErrFields;
-        reveal IOContract.IOErrorErrno;
-      }
+        ) != 0;
       assert openErr != 0;
       AppendRuntimeReadFailure(cmd, identity.displayPath, openErr, io);
       allOk := false;
@@ -1126,7 +1131,10 @@ module ChmodRecursiveRuntime {
     ghost var now0 := io.now();
     ghost var stdout0 := io.stdout();
     ghost var stderr0 := io.stderr();
-    var rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2 := io.GetFileStatus(accessPath, false);
+    var getFileStatusResult := io.GetFileStatus(accessPath, false);
+    var rawMetadataOk2 := getFileStatusResult.Ok?;
+    var rawMetadataStatus2 := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr2 := IOContract.ResultErrno(getFileStatusResult);
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), accessPath, false, rawMetadataOk2, rawMetadataStatus2, rawMetadataErr2);
     var linkOk := rawMetadataOk2;
     var isSymlink := rawMetadataStatus2.kind == BenchWorld.SymlinkKind;
@@ -1158,7 +1166,7 @@ module ChmodRecursiveRuntime {
     var followChmod := ChmodFollowCore(cmd, isTopLevel);
     if isSymlink && !followTraversal && !followChmod {
       if cmd.verbose {
-        var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
       }
       ok := true;
       visit := RecursiveSkip(
@@ -1175,14 +1183,16 @@ module ChmodRecursiveRuntime {
       return;
     }
 
-    var identityOk, resolvedPath, identityErr :=
-      io.ResolvePathIdentity(accessPath);
+    var resolvePathIdentityResult := io.ResolvePathIdentity(accessPath);
+    var identityOk := resolvePathIdentityResult.Ok?;
+    var resolvedPath := IOContract.ResultValue(resolvePathIdentityResult, "");
+    var identityErr := IOContract.ResultErrno(resolvePathIdentityResult);
     if !identityOk {
       if isSymlink && !followChmod &&
          (!followTraversal ||
           Base.CoreIsDanglingSymlinkFailure(isSymlink, identityErr)) {
         if cmd.verbose {
-          var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
+          var _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
         }
         ok := true;
         visit := RecursiveSkip(
@@ -1224,7 +1234,10 @@ module ChmodRecursiveRuntime {
     LookupSegmentsInSegmentPaths(io.fs(), resolvedSegments);
     assert resolvedSegments in universe;
 
-    var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(accessPath, true);
+    var getFileStatusResult2 := io.GetFileStatus(accessPath, true);
+    var rawMetadataOk1 := getFileStatusResult2.Ok?;
+    var rawMetadataStatus1 := IOContract.ResultValue(getFileStatusResult2, BenchWorld.DEFAULT_FILE_STATUS);
+    var rawMetadataErr1 := IOContract.ResultErrno(getFileStatusResult2);
     IOContract.FileStatusStructureImpliesMetadata(io.fs(), accessPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
     var dirOk := rawMetadataOk1;
     var isDirectory := rawMetadataStatus1.kind == BenchWorld.DirectoryKind;
@@ -1301,7 +1314,7 @@ module ChmodRecursiveRuntime {
     }
 
     if cmd.preserveRoot && resolvedPath == "/" {
-      var _, _ := io.WriteStderr(
+      var _ := io.WriteStderr(
         RootPreserveMessageCore(displayPath, accessPath != "/")
       , BenchWorld.ThrowOnError);
       ok := false;
@@ -1365,11 +1378,16 @@ module ChmodRecursiveRuntime {
         );
       return;
     }
+    hide RuntimeVisitOutcomeCore();
     RemainingUniverseDecreases(
       universe,
       activeSegments,
       resolvedSegments
     );
+    assert io.fs() == fs0;
+    assert io.stdout() == stdout0;
+    assert io.stderr() == stderr0;
+    assert io.now() == now0;
     ok, visit := ProcessDirectoryNodeRuntime(
       cmd,
       plan,
@@ -1377,6 +1395,11 @@ module ChmodRecursiveRuntime {
       universe,
       activeSegments,
       io
+    );
+    assert RuntimeVisitOutcomeCore(
+      cmd, plan, identity.displayPath, identity.accessPath, identity.isTopLevel,
+      activeSegments, fs0, stdout0, stderr0,
+      io.fs(), io.stdout(), io.stderr(), ok, visit, now0
     );
     RuntimeVisitOutcomeIdentitySubstitution(
       cmd, plan, identity, displayPath, accessPath, isTopLevel,
@@ -1515,7 +1538,7 @@ module ChmodRecursiveRuntime {
       return;
     }
     if cmd.dereferenceMode == 1 && cmd.traversalMode == 0 {
-      var _, _ := io.WriteStderr(RecursiveDereferenceRequirementMessageCore(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(RecursiveDereferenceRequirementMessageCore(), BenchWorld.ThrowOnError);
       exit := 1;
       return;
     }
@@ -1529,11 +1552,14 @@ module ChmodRecursiveRuntime {
     var plan := Base.CoreGeneralModePlan(cmd.modeExpr, 0 as bv32);
     if cmd.seenReference {
       var referencePath := Base.MakeAbsoluteCore(cwd, cmd.referenceFile);
-      var refOk, rawReferenceStatus, refErr := io.GetFileStatus(referencePath, true);
+      var getFileStatusResult3 := io.GetFileStatus(referencePath, true);
+      var refOk := getFileStatusResult3.Ok?;
+      var rawReferenceStatus := IOContract.ResultValue(getFileStatusResult3, BenchWorld.DEFAULT_FILE_STATUS);
+      var refErr := IOContract.ResultErrno(getFileStatusResult3);
       IOContract.FileStatusImpliesMode(io.fs(), referencePath, true, refOk, rawReferenceStatus, refErr);
       var refMode := rawReferenceStatus.mode;
       if !refOk {
-        var _, _ := io.WriteStderr(
+        var _ := io.WriteStderr(
           Base.ReferenceErrorMessageCore(
             cmd.referenceFile,
             Base.ErrnoTextCore(refErr)

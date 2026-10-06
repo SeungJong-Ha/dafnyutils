@@ -2,6 +2,7 @@ include "World.dfy"
 
 // Structural lookup, path-set and inode-record facts.
 module WorldLookupProof {
+  import Result = Results
   import opened BenchWorld
 
   lemma InodeLookupTreePathWitness(
@@ -10,7 +11,7 @@ module WorldLookupProof {
     segs: seq<string>,
     found: InodeTree
   )
-    requires InodeFsLookupTreeSegments(inodes, tree, segs) == Ok(found)
+    requires InodeFsLookupTreeSegments(inodes, tree, segs) == Result.Ok(found)
     ensures segs in InodeNamespaceIdPaths(tree, found.id)
     decreases |segs|
   {
@@ -146,7 +147,7 @@ module WorldLookupProof {
   )
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(subtree)
+             Result.Ok(subtree)
     ensures InodeTreeWellFormed(subtree, inodes)
     decreases |segs|
   {
@@ -165,7 +166,7 @@ module WorldLookupProof {
     id: InodeId
   )
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(subtree)
+             Result.Ok(subtree)
     ensures InodePrefixPaths(
               segs, InodeNamespaceIdPaths(subtree, id)
             ) <= InodeNamespaceIdPaths(tree, id)
@@ -174,7 +175,7 @@ module WorldLookupProof {
     if |segs| == 0 {
       assert tree.id in inodes;
       assert InodeFsLookupTreeSegments(inodes, tree, []) ==
-             Ok(tree);
+             Result.Ok(tree);
       assert tree == subtree;
       assert InodeNamespaceIdPaths(tree, id) ==
              InodeNamespaceIdPaths(subtree, id);
@@ -360,14 +361,14 @@ module WorldLookupProof {
   )
     requires InodeFsLookupTreeSegments(
                inodes, tree, source
-             ) == Ok(found)
+             ) == Result.Ok(found)
     requires InodeTreeCanInsert(inodes, tree, target)
     requires InodeSegmentsDisjoint(source, target)
     ensures InodeFsLookupTreeSegments(
               inodes,
               InodeTreeSetSubtreeSegments(tree, target, subtree),
               source
-            ) == Ok(found)
+            ) == Result.Ok(found)
     decreases |source| + |target|
   {
     if source[0] == target[0] {
@@ -393,16 +394,16 @@ module WorldLookupProof {
   )
     requires InodeFsLookupTreeSegments(
                inodes, tree, removed
-             ) == Ok(removedTree)
+             ) == Result.Ok(removedTree)
     requires InodeFsLookupTreeSegments(
                inodes, tree, retained
-             ) == Ok(retainedTree)
+             ) == Result.Ok(retainedTree)
     requires InodeSegmentsDisjoint(removed, retained)
     ensures InodeFsLookupTreeSegments(
               inodes,
               InodeTreeRemoveSegments(tree, removed),
               retained
-            ) == Ok(retainedTree)
+            ) == Result.Ok(retainedTree)
     decreases |removed| + |retained|
   {
     if removed[0] == retained[0] {

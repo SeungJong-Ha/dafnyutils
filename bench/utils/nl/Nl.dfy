@@ -7,6 +7,7 @@ include "NlSpec.dfy"
 include "NlProof.dfy"
 
 module Nl {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import CliTypes
@@ -57,7 +58,7 @@ module Nl {
       ensures NS.Spec(raw, io, exit)
       decreases *
     {
-      ghost var readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>;
+      ghost var readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>;
       ghost var inputFragments: seq<BenchWorld.Bytes>;
       ghost var combined: BenchWorld.Bytes;
       ghost var inputCuts: seq<nat>;

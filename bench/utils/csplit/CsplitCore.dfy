@@ -5,6 +5,7 @@ include "CsplitSchema.dfy"
 include "CsplitSpec.dfy"
 
 module CsplitCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -191,7 +192,7 @@ module CsplitCore {
             stderr == tailErr &&
             exit == tailExit
         else
-          fs2 == afterWriteFs &&
+          Spec.FailedWriteCleanupRelation(preFs, preNow, OutputName(index), pieces[0], err, afterWriteFs, fs2) &&
           stdout == [] &&
           stderr == Spec.WriteErrorMessage(OutputName(index), err) &&
           exit == 1
@@ -532,7 +533,10 @@ module CsplitCore {
               exit == tailExit &&
               lifetimeEvents == writeEvents + tailEvents + cleanupEvents
         else
-          fs2 == afterWriteFs && exit == 1 && lifetimeEvents == []
+          Spec.FailedWriteCleanupRelation(preFs, preNow, OutputName(index), pieces[0], err, afterWriteFs, fs2) &&
+          exit == 1 &&
+          lifetimeEvents == FreshWriteEventList(preFs, afterWriteFs, OutputName(index)) +
+                            LastRemovalEventList(afterWriteFs, fs2, OutputName(index))
   }
 
   ghost predicate WritePiecesLifetimeEvidence(
@@ -635,7 +639,9 @@ module CsplitCore {
     ghost var beforeWriteFs := io.fs();
     ghost var beforeWriteNow := io.now();
     var path := OutputName(index);
-    var ok, err := io.WriteFile(path, pieces[0]);
+    var writeFileResult := io.WriteFile(path, pieces[0]);
+    var ok := writeFileResult.Ok?;
+    var err := IOContract.ResultErrno(writeFileResult);
     ghost var afterWriteFs := io.fs();
     assert path == OutputName(index);
     assert IOContract.WriteFileContractFields(beforeWriteFs, beforeWriteNow, OutputName(index), pieces[0], ok, err, afterWriteFs);
@@ -667,7 +673,9 @@ module CsplitCore {
       var count := CountLine(|pieces[0]|);
       ghost var cleanupEvents: seq<LifetimeMutation> := [];
       if tailExit != 0 {
-        var deleteOk, deleteErr := io.DeletePath(path);
+        var deletePathResult := io.DeletePath(path);
+        var deleteOk := deletePathResult.Ok?;
+        var deleteErr := IOContract.ResultErrno(deletePathResult);
         assert IOContract.DeletePathContractFields(tailFs, OutputName(index), deleteOk, deleteErr, io.fs());
         cleanupEvents := LastRemovalEventList(tailFs, io.fs(), path);
         assert LastRemovalEvents(
@@ -709,10 +717,15 @@ module CsplitCore {
           false
         );
     } else {
+      if IOContract.WriteResultStage(writeFileResult) != BenchWorld.WriteOpenFailed {
+        var _ := io.DeletePath(path);
+      }
+      assert Spec.FailedWriteCleanupRelation(beforeWriteFs, beforeWriteNow, path, pieces[0], err, afterWriteFs, io.fs());
       stdout := [];
       stderr := Spec.WriteErrorMessage(path, err);
       exit := 1;
-      lifetimeEvents := [];
+      lifetimeEvents := FreshWriteEventList(beforeWriteFs, afterWriteFs, path) +
+                        LastRemovalEventList(afterWriteFs, io.fs(), path);
       assert stderr == Spec.WriteErrorMessage(OutputName(index), err);
       assert WritePiecesSummaryFields(pieces, index, beforeWriteFs, beforeWriteNow, io.fs(), stdout, stderr, exit);
     }
@@ -758,7 +771,9 @@ module CsplitCore {
     ghost var beforeWriteFs := io.fs();
     ghost var beforeWriteNow := io.now();
     var path := OutputName(index);
-    var ok, err := io.WriteFile(path, pieces[0]);
+    var writeFileResult2 := io.WriteFile(path, pieces[0]);
+    var ok := writeFileResult2.Ok?;
+    var err := IOContract.ResultErrno(writeFileResult2);
     ghost var afterWriteFs := io.fs();
     assert path == OutputName(index);
     assert IOContract.WriteFileContractFields(beforeWriteFs, beforeWriteNow, OutputName(index), pieces[0], ok, err, afterWriteFs);
@@ -787,7 +802,9 @@ module CsplitCore {
           tailEvents,
           true
         );
-      var deleteOk, deleteErr := io.DeletePath(path);
+      var deletePathResult2 := io.DeletePath(path);
+      var deleteOk := deletePathResult2.Ok?;
+      var deleteErr := IOContract.ResultErrno(deletePathResult2);
       assert IOContract.DeletePathContractFields(tailFs, OutputName(index), deleteOk, deleteErr, io.fs());
       ghost var cleanupEvents :=
         LastRemovalEventList(tailFs, io.fs(), path);
@@ -823,10 +840,15 @@ module CsplitCore {
           true
         );
     } else {
+      if IOContract.WriteResultStage(writeFileResult2) != BenchWorld.WriteOpenFailed {
+        var _ := io.DeletePath(path);
+      }
+      assert Spec.FailedWriteCleanupRelation(beforeWriteFs, beforeWriteNow, path, pieces[0], err, afterWriteFs, io.fs());
       stdout := [];
       stderr := Spec.WriteErrorMessage(path, err);
       exit := 1;
-      lifetimeEvents := [];
+      lifetimeEvents := FreshWriteEventList(beforeWriteFs, afterWriteFs, path) +
+                        LastRemovalEventList(afterWriteFs, io.fs(), path);
       assert stderr == Spec.WriteErrorMessage(OutputName(index), err);
       assert WritePiecesThenErrorSummaryFields(pieces, index, line, beforeWriteFs, beforeWriteNow, io.fs(), stdout, stderr, exit);
     }
@@ -843,7 +865,7 @@ module CsplitCore {
     ghost var preNow := io.now();
     if raw.mode == Schema.ModeHelp {
       var help := Spec.HelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -851,7 +873,7 @@ module CsplitCore {
 
     if raw.mode == Schema.ModeVersion {
       var version := Spec.VersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -861,22 +883,21 @@ module CsplitCore {
     match raw.input {
       case Stdin =>
         assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
-               BenchWorld.Ok(preStdin);
+               Result.Ok(preStdin);
       case File(path) =>
-        var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-        var readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+        var readResult := io.ReadFile(path);
         assert readResult == Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin);
         match readResult
         case Err(err) =>
           var msg := Spec.ReadErrorMessage(raw.input, err);
-          var _, _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
+          var _ := io.WriteStderr(msg, BenchWorld.ThrowOnError);
           exit := 1;
           assert CoreSummary(raw, io, exit);
           return;
         case Ok(fileData) =>
           data := fileData;
           assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
-                 BenchWorld.Ok(data);
+                 Result.Ok(data);
     }
 
     var numberAnalysis := AnalyzeNumbers(raw.lineNumbers);
@@ -886,7 +907,7 @@ module CsplitCore {
     case NumberZero =>
       assert AnalyzeNumbers(raw.lineNumbers).status == NumberZero;
       var msg := Spec.ZeroLineMessage(0);
-      var _, _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -894,7 +915,7 @@ module CsplitCore {
       assert AnalyzeNumbers(raw.lineNumbers).status ==
              NumberBackwards(current, previous);
       var msg := Spec.BackwardLineMessage(current, previous);
-      var _, _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(warnings + msg, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -902,13 +923,13 @@ module CsplitCore {
 
       match raw.input {
         case Stdin =>
-          var stdinData, _ := io.ReadStdin(BenchWorld.ThrowOnError);
+          var stdinData :- assert io.ReadStdin(BenchWorld.ThrowOnError);
           data := stdinData;
           assert data == preStdin;
         case File(path) =>
       }
       assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
-             BenchWorld.Ok(data);
+             Result.Ok(data);
       assert io.stdin() == Spec.ReadStdinAfterFields(raw.input, preStdin);
 
       var splitPlan := SplitPlanFor(data, raw.lineNumbers);
@@ -920,8 +941,8 @@ module CsplitCore {
         ghost var lifetimeEvents;
         out, errOut, writeExit, lifetimeEvents :=
           WritePiecesThenError(pieces, 0, line, io);
-        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-        var _, _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
         assert warnings == AnalyzeNumbers(raw.lineNumbers).warnings;
         assert io.stderr() == old(io.stderr()) + (warnings + errOut);
         exit := writeExit;
@@ -930,7 +951,7 @@ module CsplitCore {
         assert CoreSummary(raw, io, exit) by {
           assert AnalyzeNumbers(raw.lineNumbers).status == NumbersOk;
           assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
-                 BenchWorld.Ok(data);
+                 Result.Ok(data);
           assert WritePiecesThenErrorSummaryFields(
               pieces,
               0,
@@ -979,8 +1000,8 @@ module CsplitCore {
         ghost var lifetimeEvents;
         out, errOut, writeExit, lifetimeEvents :=
           WritePieces(pieces, 0, io);
-        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
-        var _, _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(warnings + errOut, BenchWorld.ThrowOnError);
         assert warnings == AnalyzeNumbers(raw.lineNumbers).warnings;
         assert io.stderr() == old(io.stderr()) + (warnings + errOut);
         exit := writeExit;
@@ -989,7 +1010,7 @@ module CsplitCore {
         assert CoreSummary(raw, io, exit) by {
           assert AnalyzeNumbers(raw.lineNumbers).status == NumbersOk;
           assert Spec.ReadResultFields(raw.input, preFs, preStreams, preStdin) ==
-                 BenchWorld.Ok(data);
+                 Result.Ok(data);
           assert WritePiecesSummaryFields(
               pieces,
               0,

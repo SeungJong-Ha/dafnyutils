@@ -1,9 +1,11 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "ChmodSchema.dfy"
 include "ChmodCore.dfy"
 include "ChmodSpec.dfy"
 
 module ChmodProof {
+  import Errno = Errnos
   import BW = BenchWorld
   import BenchIO
   import IOC = IOContract
@@ -1047,7 +1049,7 @@ module ChmodProof {
               case Err(_) => false
               case Ok(followedTarget) => BW.FsContainsPath(fs, followedTarget);
             var err := IOC.MetadataFailureErrFields(fs, actual, true);
-            if !followedOk && err != 2 {
+            if !followedOk && err != Errno.ENOENT {
               BridgePathAccessFailureResult(cmd, fs, path, actual, true, err);
             } else {
               BridgeNeitherChangedMessage(path);

@@ -123,27 +123,27 @@ module DirnameCore {
     var cmd := Command(raw);
     if cmd.mode == ModeHelp {
       var out := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
 
     if cmd.mode == ModeVersion {
       var out := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
 
     if |cmd.operands| == 0 {
       var err := Spec.MissingOperandMessageSpec();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       return;
     }
 
     var out := BuildRunOutput(cmd);
-    var _, _ := io.WriteStdout(Utf8.Encode(out), BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(Utf8.Encode(out), BenchWorld.ThrowOnError);
     exit := 0;
   }
 

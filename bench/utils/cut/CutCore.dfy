@@ -5,6 +5,7 @@ include "CutSchema.dfy"
 include "CutSpec.dfy"
 
 module CutCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -227,7 +228,7 @@ module CutCore {
     return selected + [delimiter] + tail;
   }
 
-  function OutputPiece(cmd: CutSchema.CutCmdRaw, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function OutputPiece(cmd: CutSchema.CutCmdRaw, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match result
     case Ok(data) => CutData(cmd.selection, cmd.outputDelimiter, cmd.zeroTerminated, data)
@@ -240,7 +241,7 @@ module CutCore {
       return [];
   }
 
-  function ErrorPiece(input: CutSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: CutSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin => []
@@ -260,7 +261,7 @@ module CutCore {
         return Spec.ErrorMessage(path, err);
   }
 
-  function HadErrorPiece(input: CutSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: CutSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin => false
@@ -1247,14 +1248,14 @@ module CutCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
   {
     match command.inputs[index]
     case Stdin =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if exists j :: 0 <= j < index && command.inputs[j].Stdin?
         then []
         else preStdin
@@ -1268,7 +1269,7 @@ module CutCore {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     count: nat,
-    readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
@@ -1302,7 +1303,7 @@ module CutCore {
       io.stderr() == old(io.stderr()) &&
       exit == 0
     else
-      exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      exists readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
         stdoutFragments: seq<BenchWorld.Bytes>,
         stderrFragments: seq<BenchWorld.Bytes> ::
         InputTraceCore(
@@ -1336,7 +1337,7 @@ module CutCore {
 
     if raw.mode == CutSchema.ModeHelp {
       var help := Spec.HelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1348,7 +1349,7 @@ module CutCore {
 
     if raw.mode == CutSchema.ModeVersion {
       var version := Spec.VersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -1363,7 +1364,7 @@ module CutCore {
     var err: BenchWorld.Bytes := [];
     var hadError := false;
     ghost var readResults:
-      seq<BenchWorld.Result<BenchWorld.Bytes>> := [];
+      seq<BenchWorld.IOResult<BenchWorld.Bytes>> := [];
     ghost var stdoutFragments: seq<BenchWorld.Bytes> := [];
     ghost var stderrFragments: seq<BenchWorld.Bytes> := [];
 
@@ -1392,18 +1393,17 @@ module CutCore {
       decreases |raw.inputs| - i
     {
       var input := raw.inputs[i];
-      var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+      var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
 
       match input {
         case Stdin =>
           ghost var beforeStdin := io.stdin();
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-          readResult := BenchWorld.Ok(data);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+          readResult := Result.Ok(data);
           assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
           reveal InputReadCore();
         case File(path) =>
-          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+          readResult := io.ReadFile(path);
           assert readResult == IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
           reveal InputReadCore();
       }
@@ -1462,16 +1462,16 @@ module CutCore {
       i := i + 1;
     }
 
-    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + out;
-    var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     assert io.stderr() == preStderr + err;
     exit := if hadError then 1 else 0;
     assert CoreSummary(raw, io, exit) by {
       reveal CoreSummary();
       assert preFs == old(io.fs());
       assert preStdin == old(io.stdin());
-      assert exists witnessReads: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      assert exists witnessReads: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
           outFragments: seq<BenchWorld.Bytes>,
           errFragments: seq<BenchWorld.Bytes> ::
           InputTraceCore(

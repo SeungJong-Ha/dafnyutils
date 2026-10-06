@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -5,6 +6,8 @@ include "../../core/StringEscaping.dfy"
 include "StatSchema.dfy"
 
 module StatSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchWorld
   import BenchIO
   import Utf8 = Utf8Semantics
@@ -149,10 +152,10 @@ module StatSpec {
 
   function ErrnoTextSpec(errno: int): string
   {
-    if errno == 2 then "No such file or directory"
-    else if errno == 13 then "Permission denied"
-    else if errno == 20 then "Not a directory"
-    else if errno == 40 then "Too many levels of symbolic links"
+    if errno == Errno.ENOENT then "No such file or directory"
+    else if errno == Errno.EACCES then "Permission denied"
+    else if errno == Errno.ENOTDIR then "Not a directory"
+    else if errno == Errno.ELOOP then "Too many levels of symbolic links"
     else "unknown error"
   }
 
@@ -313,7 +316,7 @@ module StatSpec {
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
     followSymlink: bool,
-    result: BenchWorld.Result<BenchWorld.FileStatus>
+    result: BenchWorld.IOResult<BenchWorld.FileStatus>
   )
   {
     result == IOContract.GetFileStatusResultFields(fs, path, followSymlink)
@@ -322,7 +325,7 @@ module StatSpec {
   ghost predicate FileFragmentRelation(
     format: string,
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.FileStatus>,
+    result: BenchWorld.IOResult<BenchWorld.FileStatus>,
                               stdoutFragment: BenchWorld.Bytes,
                               stderrFragment: BenchWorld.Bytes
   )
@@ -351,7 +354,7 @@ module StatSpec {
   ghost function StatusResultSpec(
     cmd: Schema.StatCmd, fs: BenchWorld.FileSystem, index: nat,
     path: BenchWorld.Path
-  ): BenchWorld.Result<BenchWorld.FileStatus>
+  ): BenchWorld.IOResult<BenchWorld.FileStatus>
   {
     match cmd.statusContext
     case UnboundStatusObservations => IOContract.GetFileStatusResultFields(fs, path, cmd.followSymlink)

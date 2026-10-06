@@ -5,6 +5,7 @@ include "PasteSchema.dfy"
 include "PasteSpec.dfy"
 
 module PasteCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -14,7 +15,7 @@ module PasteCore {
 
   datatype LineRead = NoLine | SomeLine(line: BenchWorld.Bytes, rest: BenchWorld.Bytes)
   datatype Entry = Entry(lines: seq<BenchWorld.Bytes>, readOk: bool)
-  datatype DelimPlan = DelimsOk(delims: seq<BenchWorld.Bytes>) | DelimsErr(stderr: BenchWorld.Bytes)
+  type DelimPlan = Result.Result<seq<BenchWorld.Bytes>, BenchWorld.Bytes>
 
   function Command(raw: PasteSchema.PasteCmdRaw): PasteSchema.PasteCmd
   {
@@ -47,11 +48,11 @@ module PasteCore {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     i: nat
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
-    case Stdin => BenchWorld.Ok(PrefixStdinCore(cmd, preStdin, i))
+    case Stdin => Result.Ok(PrefixStdinCore(cmd, preStdin, i))
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -97,23 +98,18 @@ module PasteCore {
       return [line] + tail;
   }
 
-  function EntryForRead(result: BenchWorld.Result<BenchWorld.Bytes>, recordDelimiter: BenchWorld.RawByte): Entry
+  function EntryForRead(result: BenchWorld.IOResult<BenchWorld.Bytes>, recordDelimiter: BenchWorld.RawByte): Entry
   {
     match result
     case Ok(data) => Entry(Lines(data, recordDelimiter), true)
     case Err(err) =>
-      match err
-      case IsDirectory => Entry([], true)
-      case _ => Entry([], false)
+      Entry([], IOContract.IOErrorIsDirectory(err))
   } by method {
     match result
     case Ok(data) =>
       return Entry(Lines(data, recordDelimiter), true);
     case Err(err) =>
-      return
-        match err
-        case IsDirectory => Entry([], true)
-        case _ => Entry([], false);
+      return Entry([], IOContract.IOErrorIsDirectory(err));
   }
 
   function IsStdinInput(input: PasteSchema.Input): bool
@@ -248,7 +244,7 @@ module PasteCore {
     if PrefixHadStdinCore(cmd.inputs, |cmd.inputs|) then preStdin else []
   }
 
-  function ErrorPiece(input: PasteSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: PasteSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin => []
@@ -266,7 +262,7 @@ module PasteCore {
         case Err(err) => Spec.ErrorMessage(path, err);
   }
 
-  function HadErrorPiece(input: PasteSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: PasteSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin => false
@@ -284,7 +280,7 @@ module PasteCore {
         case Err(_) => true;
   }
 
-  function HadBlockingErrorPiece(input: PasteSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadBlockingErrorPiece(input: PasteSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin => false
@@ -292,9 +288,7 @@ module PasteCore {
       match result
       case Ok(_) => false
       case Err(err) =>
-        match err
-        case IsDirectory => false
-        case _ => true
+        !IOContract.IOErrorIsDirectory(err)
   } by method {
     return
       match input
@@ -303,9 +297,7 @@ module PasteCore {
         match result
         case Ok(_) => false
         case Err(err) =>
-          match err
-          case IsDirectory => false
-          case _ => true;
+          !IOContract.IOErrorIsDirectory(err);
   }
 
   ghost function PrefixEntriesCore(
@@ -427,49 +419,49 @@ module PasteCore {
     decreases |text| - i
   {
     if i >= |text| then
-      DelimsOk([])
+      Result.Ok([])
     else if text[i] == '\\' then
       if i + 1 >= |text| then
-        DelimsErr(Spec.DelimiterBackslashError(text))
+        Result.Err(Spec.DelimiterBackslashError(text))
       else
         match CollapseDelimitersFrom(text, i + 2)
-        case DelimsErr(stderr) => DelimsErr(stderr)
-        case DelimsOk(rest) => DelimsOk([EscapeDelimiter(text[i + 1])] + rest)
+        case Err(stderr) => Result.Err(stderr)
+        case Ok(rest) => Result.Ok([EscapeDelimiter(text[i + 1])] + rest)
     else
       match CollapseDelimitersFrom(text, i + 1)
-      case DelimsErr(stderr) => DelimsErr(stderr)
-      case DelimsOk(rest) => DelimsOk([[text[i]]] + rest)
+      case Err(stderr) => Result.Err(stderr)
+      case Ok(rest) => Result.Ok([[text[i]]] + rest)
   } by method {
     if i >= |text| {
-      return DelimsOk([]);
+      return Result.Ok([]);
     } else if text[i] == '\\' {
       if i + 1 >= |text| {
-        return DelimsErr(Spec.DelimiterBackslashError(text));
+        return Result.Err(Spec.DelimiterBackslashError(text));
       } else {
         match CollapseDelimitersFrom(text, i + 2)
-        case DelimsErr(stderr) =>
-          return DelimsErr(stderr);
-        case DelimsOk(delims) =>
-          return DelimsOk([EscapeDelimiter(text[i + 1])] + delims);
+        case Err(stderr) =>
+          return Result.Err(stderr);
+        case Ok(delims) =>
+          return Result.Ok([EscapeDelimiter(text[i + 1])] + delims);
       }
     } else {
       match CollapseDelimitersFrom(text, i + 1)
-      case DelimsErr(stderr) =>
-        return DelimsErr(stderr);
-      case DelimsOk(delims) =>
-        return DelimsOk([[text[i]]] + delims);
+      case Err(stderr) =>
+        return Result.Err(stderr);
+      case Ok(delims) =>
+        return Result.Ok([[text[i]]] + delims);
     }
   }
 
   function CollapseDelimiters(text: string): DelimPlan
   {
     if |text| == 0 then
-      DelimsOk([[]])
+      Result.Ok([[]])
     else
       CollapseDelimitersFrom(Utf8.Encode(text), 0)
   } by method {
     return
-      if |text| == 0 then DelimsOk([[]])
+      if |text| == 0 then Result.Ok([[]])
       else CollapseDelimitersFrom(Utf8.Encode(text), 0);
   }
 
@@ -649,12 +641,12 @@ module PasteCore {
       exit == 0
     else
       match CollapseDelimiters(cmd.delimiterText)
-      case DelimsErr(stderr) =>
+      case Err(stderr) =>
         io.stdin() == old(io.stdin()) &&
         io.stdout() == old(io.stdout()) &&
         io.stderr() == old(io.stderr()) + stderr &&
         exit == 1
-      case DelimsOk(delims) =>
+      case Ok(delims) =>
         io.stdin() == PrefixStdinCore(cmd, old(io.stdin()), |cmd.inputs|) &&
         io.stdout() == old(io.stdout()) +
         (if PrefixHadBlockingErrorCore(cmd, old(io.fs()), old(io.trustedStreams()), old(io.stdin()), |cmd.inputs|) && !cmd.serial then
@@ -778,7 +770,7 @@ module PasteCore {
 
     if cmd.mode == PasteSchema.ModeHelp {
       var help := Spec.HelpText();
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -788,7 +780,7 @@ module PasteCore {
 
     if cmd.mode == PasteSchema.ModeVersion {
       var version := Spec.VersionText();
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stderr() == preStderr;
@@ -798,14 +790,14 @@ module PasteCore {
 
     var delimPlan := CollapseDelimiters(cmd.delimiterText);
     match delimPlan
-    case DelimsErr(stderr) =>
-      var _, _ := io.WriteStderr(stderr, BenchWorld.ThrowOnError);
+    case Err(stderr) =>
+      var _ := io.WriteStderr(stderr, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
       assert io.stderr() == preStderr + stderr;
       return;
-    case DelimsOk(delims) =>
+    case Ok(delims) =>
       var entries: seq<Entry> := [];
       var err: BenchWorld.Bytes := [];
       var hadError := false;
@@ -829,7 +821,7 @@ module PasteCore {
         decreases |cmd.inputs| - i
       {
         var input := cmd.inputs[i];
-        var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+        var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
         match input {
           case Stdin =>
             var wasStdinRead := stdinRead;
@@ -838,8 +830,8 @@ module PasteCore {
               assert io.stdin() == preStdin;
             }
             ghost var beforeStdin := io.stdin();
-            var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
-            readResult := BenchWorld.Ok(data);
+            var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
+            readResult := Result.Ok(data);
             PrefixStdinCoreStep(cmd, preStdin, i);
             assert beforeStdin == PrefixStdinCore(cmd, preStdin, i);
             assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), data);
@@ -849,8 +841,7 @@ module PasteCore {
               stdinData := data;
             }
           case File(path) =>
-            var readData, readErr, readStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(readData, readErr);
+            readResult := io.ReadFile(path);
             assert readResult == IOContract.ObservedReadFileResultFields(preFs, preStreams, path);
             assert readResult == ReadResultCore(cmd, preFs, preStreams, preStdin, i);
         }
@@ -883,7 +874,7 @@ module PasteCore {
 
       var out := RunOutputFromEntriesMethod(cmd, delims, entries, stdinData);
       if (cmd.serial || !hadBlockingError) && |out| > 0 {
-        var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       } else {
         if hadBlockingError && !cmd.serial {
           assert io.stdout() == preStdout;
@@ -897,7 +888,7 @@ module PasteCore {
         }
       }
       if |err| > 0 {
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       } else {
         assert err == [];
         assert io.stderr() == preStderr + err;

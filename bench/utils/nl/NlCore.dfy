@@ -5,6 +5,7 @@ include "NlSchema.dfy"
 include "NlSpec.dfy"
 
 module NlCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -16,7 +17,7 @@ module NlCore {
     raw: NlSchema.NlCmdRaw,
     io: BenchIO.IO,
     exit: int,
-    new readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    new readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     new inputFragments: seq<BenchWorld.Bytes>,
     new combined: BenchWorld.Bytes,
     new inputCuts: seq<nat>,
@@ -104,7 +105,7 @@ module NlCore {
     cmd: NlSchema.NlCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     inputFragments: seq<BenchWorld.Bytes>,
     combined: BenchWorld.Bytes,
     inputCuts: seq<nat>,
@@ -527,7 +528,7 @@ module NlCore {
     io: BenchIO.IO
   ) returns (
       exit: int,
-      ghost readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      ghost readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       ghost inputFragments: seq<BenchWorld.Bytes>,
       ghost combinedWitness: BenchWorld.Bytes,
       ghost inputCuts: seq<nat>,
@@ -565,8 +566,8 @@ module NlCore {
     if cmd.mode == NlSchema.ModeHelp {
       var help := Spec.HelpText();
       var diagnostics := NlSchema.OptionErrorsText(cmd.optionErrors);
-      var _, _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
-      var _, _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(help, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + help;
@@ -577,8 +578,8 @@ module NlCore {
     if cmd.mode == NlSchema.ModeVersion {
       var version := Spec.VersionText();
       var diagnostics := NlSchema.OptionErrorsText(cmd.optionErrors);
-      var _, _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
-      var _, _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(version, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(diagnostics, BenchWorld.ThrowOnError);
       exit := 0;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout + version;
@@ -588,7 +589,7 @@ module NlCore {
 
     if cmd.mode != NlSchema.ModeRun {
       var err := Spec.ModeErrorMessage(cmd);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdin() == preStdin;
       assert io.stdout() == preStdout;
@@ -636,24 +637,23 @@ module NlCore {
       decreases |cmd.inputs| - i
     {
       var input := cmd.inputs[i];
-      var readResult: BenchWorld.Result<BenchWorld.Bytes>;
+      var readResult: BenchWorld.IOResult<BenchWorld.Bytes>;
       var piece: BenchWorld.Bytes;
       var errorPiece: BenchWorld.Bytes;
       var pieceHadError: bool;
       match input {
         case Stdin =>
           ghost var beforeReadStdin := io.stdin();
-          var data, _ := io.ReadStdin(BenchWorld.ThrowOnError);
+          var data :- assert io.ReadStdin(BenchWorld.ThrowOnError);
           assert IOContract.ReadStdinAllFields(
               beforeReadStdin, io.stdin(), data
             );
-          readResult := BenchWorld.Ok(data);
+          readResult := Result.Ok(data);
           piece := NormalizeInputData(data);
           errorPiece := [];
           pieceHadError := false;
         case File(path) =>
-          var fileReadData, fileReadErr, fileReadStage := io.ReadFile(path, BenchWorld.FromStart);
-          readResult := IOContract.FileReadResultFromOutcome(fileReadData, fileReadErr);
+          readResult := io.ReadFile(path);
           assert readResult ==
                  IOContract.ObservedReadFileResultFields(preFs, old(io.trustedStreams()), path);
           if readResult.Ok? {
@@ -834,7 +834,7 @@ module NlCore {
       );
     if hasDelimiter {
       var delimiterErr := Spec.UnsupportedLogicalPageDelimiterMessage();
-      var _, _ := io.WriteStderr(err + delimiterErr, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err + delimiterErr, BenchWorld.ThrowOnError);
       exit := 1;
       assert io.stdout() == preStdout;
       assert io.stderr() == preStderr + err + delimiterErr;
@@ -868,10 +868,10 @@ module NlCore {
     assert OutputSummary(cmd, combined, rendered);
     outputPart := rendered;
     if |rendered| > 0 {
-      var _, _ := io.WriteStdout(rendered, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(rendered, BenchWorld.ThrowOnError);
     }
     if |err| > 0 {
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
     }
     exit := if hadError then 1 else 0;
     assert io.stdout() == preStdout + rendered;

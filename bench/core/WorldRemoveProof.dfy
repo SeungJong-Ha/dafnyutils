@@ -3,6 +3,7 @@ include "WorldLookupProof.dfy"
 
 // Leaf removal and the remaining inode namespace.
 module WorldRemoveProof {
+  import Result = Results
   import opened BenchWorld
   import Lookup = WorldLookupProof
 
@@ -14,7 +15,7 @@ module WorldRemoveProof {
     requires InodeTreeCanRemove(inodes, tree, segs)
     ensures exists id ::
               InodeFsLookupTreeSegments(inodes, tree, segs) ==
-              Ok(InodeTreeNode(id, map[]))
+              Result.Ok(InodeTreeNode(id, map[]))
     decreases |segs|
   {
     reveal InodeTreeCanRemove();
@@ -23,7 +24,7 @@ module WorldRemoveProof {
       assert child.children == map[];
       assert InodeFsLookupTreeSegments(inodes, tree, segs).Ok?;
       assert InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(child);
+             Result.Ok(child);
       assert child == InodeTreeNode(child.id, map[]);
     } else {
       InodeTreeCanRemoveFindsLeaf(
@@ -32,9 +33,9 @@ module WorldRemoveProof {
       var id :|
         InodeFsLookupTreeSegments(
           inodes, tree.children[segs[0]], segs[1..]
-        ) == Ok(InodeTreeNode(id, map[]));
+        ) == Result.Ok(InodeTreeNode(id, map[]));
       assert InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(InodeTreeNode(id, map[]));
+             Result.Ok(InodeTreeNode(id, map[]));
     }
   }
 
@@ -88,7 +89,7 @@ module WorldRemoveProof {
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeTreeCanRemove(inodes, tree, segs)
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(InodeTreeNode(removedId, map[]))
+             Result.Ok(InodeTreeNode(removedId, map[]))
     ensures InodeNamespaceIdPaths(
               InodeTreeRemoveSegments(tree, segs), removedId
             ) == InodeNamespaceIdPaths(tree, removedId) - {segs}
@@ -227,7 +228,7 @@ module WorldRemoveProof {
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeTreeCanRemove(inodes, tree, segs)
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(InodeTreeNode(removedId, map[]))
+             Result.Ok(InodeTreeNode(removedId, map[]))
     ensures InodeNamespaceIds(
               InodeTreeRemoveSegments(tree, segs)
             ) <= (
@@ -280,7 +281,7 @@ module WorldRemoveProof {
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeTreeCanRemove(inodes, tree, segs)
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(InodeTreeNode(removedId, map[]))
+             Result.Ok(InodeTreeNode(removedId, map[]))
     ensures (
               if InodeNamespaceRefCount(tree, removedId) == 1 then
                 InodeNamespaceIds(tree) - {removedId}
@@ -334,7 +335,7 @@ module WorldRemoveProof {
     requires InodeTreeWellFormed(tree, inodes)
     requires InodeTreeCanRemove(inodes, tree, segs)
     requires InodeFsLookupTreeSegments(inodes, tree, segs) ==
-             Ok(InodeTreeNode(removedId, map[]))
+             Result.Ok(InodeTreeNode(removedId, map[]))
     ensures InodeNamespaceIds(
               InodeTreeRemoveSegments(tree, segs)
             ) == (
@@ -366,7 +367,7 @@ module WorldRemoveProof {
       var id :|
         InodeFsLookupTreeSegments(
           fs.inodes, fs.namespace, segs
-        ) == Ok(InodeTreeNode(id, map[]));
+        ) == Result.Ok(InodeTreeNode(id, map[]));
       var result := InodeFsRemovePath(fs, path);
       var oldRefs :=
         InodeNamespaceRefCount(fs.namespace, id);

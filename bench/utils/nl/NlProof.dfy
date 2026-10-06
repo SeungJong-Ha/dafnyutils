@@ -4,6 +4,7 @@ include "NlCore.dfy"
 include "NlSpec.dfy"
 
 module NlProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = NlSchema
@@ -217,7 +218,7 @@ module NlProof {
     cmd: Schema.NlCmd,
     preFs: BW.FileSystem,
     preStdin: BW.Bytes,
-    readResults: seq<BW.Result<BW.Bytes>>,
+    readResults: seq<BW.IOResult<BW.Bytes>>,
     inputFragments: seq<BW.Bytes>,
     combined: BW.Bytes,
     inputCuts: seq<nat>,
@@ -293,7 +294,7 @@ module NlProof {
     raw: Schema.NlCmdRaw,
     io: BenchIO.IO,
     exit: int,
-    new readResults: seq<BW.Result<BW.Bytes>>,
+    new readResults: seq<BW.IOResult<BW.Bytes>>,
     new inputFragments: seq<BW.Bytes>,
     new combined: BW.Bytes,
     new inputCuts: seq<nat>,

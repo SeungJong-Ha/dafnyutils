@@ -3,6 +3,7 @@ include "UnlinkSchema.dfy"
 include "UnlinkSpec.dfy"
 
 module UnlinkCore {
+  import IOContract
   import BenchIO
   import BenchWorld
   import Schema = UnlinkSchema
@@ -54,20 +55,22 @@ module UnlinkCore {
     ensures CoreSummary(raw, io, exit)
   {
     if raw.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode.ModeExtraOperand? {
       var quotedOperand := io.QuoteArgument(Utf8.Encode(raw.mode.operand));
-      var _, _ := io.WriteStderr(Spec.ExtraOperandText(quotedOperand), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.ExtraOperandText(quotedOperand), BenchWorld.ThrowOnError);
       exit := 1;
     } else if |raw.operands| == 0 {
-      var _, _ := io.WriteStderr(Spec.MissingOperandText(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.MissingOperandText(), BenchWorld.ThrowOnError);
       exit := 1;
     } else {
-      var ok, err := io.UnlinkPath(raw.operands[0]);
+      var unlinkPathResult := io.UnlinkPath(raw.operands[0]);
+      var ok := unlinkPathResult.Ok?;
+      var err := IOContract.ResultErrno(unlinkPathResult);
       assert Spec.UnlinkResult(io, raw.operands[0], ok, err);
 
       if ok {
@@ -75,7 +78,7 @@ module UnlinkCore {
       } else {
         var reason := io.GetCLocaleErrnoText(err);
         var quotedPath := io.QuoteafPath(raw.operands[0]);
-        var _, _ := io.WriteStderr(Spec.CannotUnlinkText(quotedPath, reason), BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(Spec.CannotUnlinkText(quotedPath, reason), BenchWorld.ThrowOnError);
         exit := 1;
 
         assert C.GetCLocaleErrnoTextSpec(err, reason);

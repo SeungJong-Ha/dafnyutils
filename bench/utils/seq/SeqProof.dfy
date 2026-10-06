@@ -4,6 +4,7 @@ include "SeqCore.dfy"
 include "SeqSpec.dfy"
 
 module SeqProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = SeqSchema
@@ -17,9 +18,7 @@ module SeqProof {
 
   function ToSpecParse(parsed: Core.DecimalParse): Spec.DecimalParse
   {
-    match parsed
-    case DecimalOk(number) => Spec.DecimalOk(ToSpecDecimal(number))
-    case DecimalErr(token) => Spec.DecimalErr(token)
+    parsed.Map(ToSpecDecimal)
   }
 
   function ToSpecPlan(plan: Core.NumberPlan): Spec.NumberPlan
@@ -498,10 +497,10 @@ module SeqProof {
   }
 
   lemma {:isolate_assertions} ParseDecimalSound(token: string)
-    requires Core.ParseDecimal(token).DecimalOk?
+    requires Core.ParseDecimal(token).Ok?
     ensures Spec.DecimalValueRelation(
               token,
-              ToSpecDecimal(Core.ParseDecimal(token).number)
+              ToSpecDecimal(Core.ParseDecimal(token).v)
             )
   {
     var start := if token[0] == '-' || token[0] == '+' then 1 else 0;
@@ -607,7 +606,7 @@ module SeqProof {
         }
       }
       assert Spec.ExponentMarkerRelation(token, start, exponentIndex);
-      assert ToSpecDecimal(Core.ParseDecimal(token).number) ==
+      assert ToSpecDecimal(Core.ParseDecimal(token).v) ==
              Spec.ApplyExponent(
                token,
                if token[0] == '-' then -scan.mantissa else scan.mantissa,
@@ -619,7 +618,7 @@ module SeqProof {
         exponentIndex, dot, scan.mantissa, exponent
       );
       assert Spec.DecimalValueWitnessRelation(
-          token, ToSpecDecimal(Core.ParseDecimal(token).number), evidence
+          token, ToSpecDecimal(Core.ParseDecimal(token).v), evidence
         );
       assert start < index < |token| &&
              (token[index] == 'e' || token[index] == 'E') &&
@@ -636,7 +635,7 @@ module SeqProof {
                |token| - index - 1,
                exponent
              ) &&
-             ToSpecDecimal(Core.ParseDecimal(token).number) ==
+             ToSpecDecimal(Core.ParseDecimal(token).v) ==
              Spec.ApplyExponent(
                token,
                if token[0] == '-' then -scan.mantissa else scan.mantissa,
@@ -648,7 +647,7 @@ module SeqProof {
       assert mantissaText == token;
       assert Spec.ExponentMarkerRelation(token, start, -1);
       assert Spec.MantissaRelation(token, start, |token|, scan.mantissa, scan.scale);
-      assert ToSpecDecimal(Core.ParseDecimal(token).number) ==
+      assert ToSpecDecimal(Core.ParseDecimal(token).v) ==
              Spec.Decimal(
                token,
                if token[0] == '-' then -scan.mantissa else scan.mantissa,
@@ -657,12 +656,12 @@ module SeqProof {
              );
       var evidence := Spec.DecimalValueWitness(-1, dot, scan.mantissa, 0);
       assert Spec.DecimalValueWitnessRelation(
-          token, ToSpecDecimal(Core.ParseDecimal(token).number), evidence
+          token, ToSpecDecimal(Core.ParseDecimal(token).v), evidence
         );
     }
     assert Spec.DecimalValueRelation(
         token,
-        ToSpecDecimal(Core.ParseDecimal(token).number)
+        ToSpecDecimal(Core.ParseDecimal(token).v)
       );
   }
 
@@ -773,7 +772,7 @@ module SeqProof {
     number: Spec.Decimal
   )
     requires Spec.DecimalValueRelation(token, number)
-    ensures Core.ParseDecimal(token).DecimalOk?
+    ensures Core.ParseDecimal(token).Ok?
   {
     var evidence :| Spec.DecimalValueWitnessRelation(token, number, evidence);
     reveal Spec.DecimalValueWitnessRelation;
@@ -832,9 +831,9 @@ module SeqProof {
   {
     var parsed := Core.ParseDecimal(token);
     match parsed
-    case DecimalOk(_) =>
+    case Ok(_) =>
       ParseDecimalSound(token);
-    case DecimalErr(_) =>
+    case Err(_) =>
       assert forall number: Spec.Decimal ::
           !Spec.DecimalValueRelation(token, number) by {
         forall number: Spec.Decimal
@@ -855,10 +854,10 @@ module SeqProof {
       var stepText := if |args| == 3 then args[1] else "1";
       var lastText := if |args| == 1 then args[0] else if |args| == 2 then args[1] else args[2];
       DecimalParseRelation(firstText);
-      if Core.ParseDecimal(firstText).DecimalOk? {
+      if Core.ParseDecimal(firstText).Ok? {
         DecimalParseRelation(stepText);
-        if Core.ParseDecimal(stepText).DecimalOk? &&
-           Core.ParseDecimal(stepText).number.value != 0
+        if Core.ParseDecimal(stepText).Ok? &&
+           Core.ParseDecimal(stepText).v.value != 0
         {
           DecimalParseRelation(lastText);
         }

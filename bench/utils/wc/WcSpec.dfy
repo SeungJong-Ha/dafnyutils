@@ -5,6 +5,7 @@ include "../../core/StringEscaping.dfy"
 include "WcSchema.dfy"
 
 module WcSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -18,7 +19,7 @@ module WcSpec {
   datatype Counts = Counts(lines: int, words: int, chars: int, bytes: int, maxLine: int)
   datatype Entry = Entry(name: string, counts: Counts, wide: bool)
   datatype InputObservation = InputObservation(
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     entries: seq<Entry>,
     errorOutput: BenchWorld.Bytes,
     failed: bool
@@ -67,6 +68,11 @@ module WcSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -195,7 +201,7 @@ module WcSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
@@ -204,7 +210,7 @@ module WcSpec {
     case File(path) =>
       result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
     case Stdin(_) =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if exists j: nat :: j < i && IsStdinInput(cmd.inputs[j])
         then []
         else preStdin
@@ -213,7 +219,7 @@ module WcSpec {
 
   ghost predicate InputStepRelation(
     input: WcSchema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               entries: seq<Entry>,
                               errorOutput: BenchWorld.Bytes,
                               hadError: bool
@@ -239,7 +245,7 @@ module WcSpec {
            !hadError
        case Err(err) =>
          entries ==
-         (if err == BenchWorld.IsDirectory
+         (if IOContract.IOErrorIsDirectory(err)
           then [Entry(path, ZeroCounts(), true)]
           else []) &&
          errorOutput == ErrorMessage(path, err) &&

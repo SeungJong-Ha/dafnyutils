@@ -208,9 +208,9 @@ module PrintfCore {
     ghost var preStdout := io.stdout();
     ghost var preStderr := io.stderr();
     var result := Evaluate(raw);
-    var _, _ := io.WriteStdout(result.0, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(result.0, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + result.0;
-    var _, _ := io.WriteStderr(result.1, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(result.1, BenchWorld.ThrowOnError);
     assert io.stderr() == preStderr + result.1;
     exit := result.2;
     assert CoreSummary(raw, io, exit);

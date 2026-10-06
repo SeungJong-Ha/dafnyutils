@@ -4,6 +4,7 @@ include "DuCore.dfy"
 include "DuSpec.dfy"
 
 module DuProof {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import Schema = DuSchema
@@ -21,7 +22,7 @@ module DuProof {
 
   lemma OutputPieceRefines(
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
     ensures Core.OutputPiece(path, result) == Spec.OutputPieceSpec(path, result)
   {
@@ -33,7 +34,7 @@ module DuProof {
 
   lemma ErrorPieceRefines(
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
     ensures Core.ErrorPiece(path, result) == Spec.ErrorPieceSpec(path, result)
   {
@@ -119,21 +120,23 @@ module DuProof {
               cuts
             )
   {
+    ghost var combined := Core.PrefixOutputCore(cmd, preFs, preStreams, |cmd.operands|);
     assert |cuts| == |pieces| + 1;
     assert cuts[0] == 0;
-    assert cuts[|pieces|] ==
-           |Core.PrefixOutputCore(cmd, preFs, preStreams, |cmd.operands|)|;
+    assert cuts[|pieces|] == |combined|;
     forall i: nat {:trigger cuts[i + 1], pieces[i]} | i < |pieces|
       ensures
         cuts[i] <= cuts[i + 1] &&
-        cuts[i + 1] <= |Core.PrefixOutputCore(cmd, preFs, preStreams, |cmd.operands|)| &&
+        cuts[i + 1] <= |combined| &&
         cuts[i + 1] == cuts[i] + |pieces[i]| &&
-        Core.PrefixOutputCore(cmd, preFs, preStreams, |cmd.operands|)[
-        cuts[i]..cuts[i + 1]
-        ] == pieces[i]
+        combined[cuts[i]..cuts[i + 1]] == pieces[i]
     {
       OutputSegment(cmd, preFs, preStreams, |cmd.operands|, i);
+      assert cuts[i] == |Core.PrefixOutputCore(cmd, preFs, preStreams, i)|;
+      assert cuts[i + 1] == |Core.PrefixOutputCore(cmd, preFs, preStreams, i + 1)|;
+      assert pieces[i] == Spec.OutputPieceSpec(cmd.operands[i], Core.ReadResultCore(cmd, preFs, preStreams, i));
     }
+    assert Spec.FragmentsConcatenate(pieces, combined, cuts);
   }
 
   lemma ErrorEvidence(
@@ -172,11 +175,11 @@ module DuProof {
     }
     assert Spec.FragmentsConcatenate(pieces, combined, cuts);
   }
-  lemma BuildRunWitness(
+  lemma {:induction false} BuildRunWitness(
     cmd: Schema.DuCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   ) returns (
-      observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>,
+      observations: map<nat, BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputPieces: seq<BenchWorld.Bytes>,
       outputCuts: seq<nat>,
       errorPieces: seq<BenchWorld.Bytes>,
@@ -231,6 +234,17 @@ module DuProof {
       errorPieces := errorPieces + [errorPiece];
       outputCuts := outputCuts + [|Core.PrefixOutputCore(cmd, preFs, preStreams, i + 1)|];
       errorCuts := errorCuts + [|Core.PrefixErrorsCore(cmd, preFs, preStreams, i + 1)|];
+      forall j: nat | j <= i + 1
+        ensures outputCuts[j] == |Core.PrefixOutputCore(cmd, preFs, preStreams, j)|
+        ensures errorCuts[j] == |Core.PrefixErrorsCore(cmd, preFs, preStreams, j)|
+      {
+        if j <= i {
+          assert j < |outputCuts| - 1;
+          assert j < |errorCuts| - 1;
+        } else {
+          assert j == i + 1;
+        }
+      }
       i := i + 1;
     }
     OutputEvidence(cmd, preFs, preStreams, outputPieces, outputCuts);
@@ -256,7 +270,7 @@ module DuProof {
   lemma RunWitnessRefines(
     cmd: Schema.DuCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
-    observations: map<nat, BenchWorld.Result<BenchWorld.Bytes>>,
+    observations: map<nat, BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     outputCuts: seq<nat>,
     errorPieces: seq<BenchWorld.Bytes>,

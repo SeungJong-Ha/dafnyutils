@@ -196,7 +196,7 @@ module PrintenvCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -204,7 +204,7 @@ module PrintenvCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -214,7 +214,7 @@ module PrintenvCore {
     assert IOContract.GetEnvironmentContractFields(preEnv, entries);
     var out := Output(cmd, entries);
     var status := ExitStatus(cmd, entries);
-    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     exit := status;
     assert io.stdout() == preStdout + out;
     assert CoreSummary(raw, io, exit);

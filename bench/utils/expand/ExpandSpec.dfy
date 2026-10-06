@@ -5,6 +5,7 @@ include "../../core/StringEscaping.dfy"
 include "ExpandSchema.dfy"
 
 module ExpandSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -58,6 +59,11 @@ module ExpandSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -733,13 +739,13 @@ module ExpandSpec {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
     match input
     case Stdin =>
-      result == BenchWorld.Ok(stdinBefore) && stdinAfter == []
+      result == Result.Ok(stdinBefore) && stdinAfter == []
     case File(path) =>
       result == IOContract.ObservedReadFileResultFields(preFs, preStreams, path) &&
       stdinAfter == stdinBefore
@@ -747,7 +753,7 @@ module ExpandSpec {
 
   ghost predicate InputPieceRelation(
     cmd: Schema.ExpandCmd,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               column: nat,
                               leading: bool,
                               output: BenchWorld.Bytes,
@@ -767,7 +773,7 @@ module ExpandSpec {
 
   ghost predicate ErrorPieceRelation(
     input: Schema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               output: BenchWorld.Bytes,
                               hadError: bool
   )
@@ -790,7 +796,7 @@ module ExpandSpec {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>,
     errorFlags: seq<bool>,
@@ -838,7 +844,7 @@ module ExpandSpec {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>,
     errorFlags: seq<bool>,
@@ -868,7 +874,7 @@ module ExpandSpec {
   )
   {
     exists
-      results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputPieces: seq<BenchWorld.Bytes>,
       errorPieces: seq<BenchWorld.Bytes>,
       errorFlags: seq<bool>,

@@ -2,16 +2,18 @@ include "../../../bench/core/IO.dfy"
 
 module StreamCopy {
   import BenchIO
+  import C = IOContract
 
   method CopyInput(io: BenchIO.IO) returns (readErr: int, writeErr: int)
     modifies io.stdinRegion, io.stdoutRegion
     ensures readErr == 0 && writeErr == 0 ==>
       io.stdin() == [] && io.stdout() == old(io.stdout()) + old(io.stdin())
   {
-    var data;
-    data, readErr := io.ReadStdin(BenchIO.BenchWorld.ReturnError);
-    var committed;
-    committed, writeErr := io.WriteStdout(data, BenchIO.BenchWorld.ReturnError);
+    var read := io.ReadStdin(BenchIO.BenchWorld.ReturnError);
+    var data := C.ReadResultData(read);
+    readErr := C.ResultErrno(read);
+    var write := io.WriteStdout(data, BenchIO.BenchWorld.ReturnError);
+    writeErr := C.ResultErrno(write);
   }
 
   method {:main} Main()

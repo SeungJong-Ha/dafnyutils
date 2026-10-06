@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -6,6 +7,8 @@ include "LsSchema.dfy"
 include "LsTime.dfy"
 
 module LsSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -294,10 +297,10 @@ module LsSpec {
 
   function ErrnoTextSpec(err: int): string
   {
-    if err == 2 then "No such file or directory"
-    else if err == 13 then "Permission denied"
-    else if err == 20 then "Not a directory"
-    else if err == 40 then "Too many levels of symbolic links"
+    if err == Errno.ENOENT then "No such file or directory"
+    else if err == Errno.EACCES then "Permission denied"
+    else if err == Errno.ENOTDIR then "Not a directory"
+    else if err == Errno.ELOOP then "Too many levels of symbolic links"
     else "I/O error"
   }
 
@@ -753,7 +756,7 @@ module LsSpec {
     ordinal: nat,
     path: BenchWorld.Path,
     followSymlink: bool
-  ): BenchWorld.Result<BenchWorld.FileStatus>
+  ): BenchWorld.IOResult<BenchWorld.FileStatus>
   {
     match cmd.statusContext
     case UnboundStatusObservations =>
@@ -781,12 +784,12 @@ module LsSpec {
     fs: BenchWorld.FileSystem,
     path: BenchWorld.Path,
     firstStatus: nat
-  ): BenchWorld.Result<BenchWorld.FileStatus>
+  ): BenchWorld.IOResult<BenchWorld.FileStatus>
   {
     if ImplicitDirectoryFollowSpec(cmd) then
       match StatusResultSpec(cmd, fs, firstStatus, path, true)
       case Ok(status) =>
-        if status.kind == BenchWorld.DirectoryKind then BenchWorld.Ok(status)
+        if status.kind == BenchWorld.DirectoryKind then Result.Ok(status)
         else StatusResultSpec(cmd, fs, firstStatus + 1, path, false)
       case Err(_) => StatusResultSpec(cmd, fs, firstStatus + 1, path, false)
     else StatusResultSpec(cmd, fs, firstStatus, path,
@@ -926,7 +929,7 @@ module LsSpec {
         observation.entryKind == BenchWorld.DirectoryDirentKind) ||
        (observation.accessPath == BenchWorld.AppendPath(path, observation.displayName) &&
         exists resolved: BenchWorld.Path, entry: BenchWorld.DirEntry ::
-          IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved) &&
+          IOContract.ResolvePathForMetadataFields(fs, path, true) == Result.Ok(resolved) &&
           BenchWorld.FsContainsPath(fs, resolved) &&
           entry in IOContract.DirectoryEntriesForPathFields(fs, resolved) &&
           entry.name == observation.displayName &&
@@ -941,7 +944,7 @@ module LsSpec {
       observation.accessPath == BenchWorld.AppendPath(path, observation.displayName) &&
       entry.name == observation.displayName &&
       (exists resolved: BenchWorld.Path ::
-        IOContract.ResolvePathForMetadataFields(fs, path, true) == BenchWorld.Ok(resolved) &&
+        IOContract.ResolvePathForMetadataFields(fs, path, true) == Result.Ok(resolved) &&
         BenchWorld.FsContainsPath(fs, resolved) &&
         entry in IOContract.DirectoryEntriesForPathFields(fs, resolved) &&
         IOContract.DirectoryEntryKindMatchesFilesystemFields(
@@ -1164,7 +1167,7 @@ module LsSpec {
        tree.openErr == 0 && tree.statusErr == 0 &&
        tree.listingFirstStatus == tree.firstStatus + 1 &&
        (exists resolved: BenchWorld.Path ::
-         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == BenchWorld.Ok(resolved) &&
+         IOContract.ResolvePathForMetadataFields(fs, accessPath, true) == Result.Ok(resolved) &&
          IOContract.ObservedFileStatusContractFields(
            cmd.statusContext.observations, tree.firstStatus, fs, resolved,
            true, true, tree.openedStatus, 0)) &&

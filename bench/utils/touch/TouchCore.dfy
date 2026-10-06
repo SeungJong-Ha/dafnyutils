@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/Utf8.dfy"
@@ -5,6 +6,7 @@ include "TouchSchema.dfy"
 include "TouchSpec.dfy"
 
 module TouchCore {
+  import Errno = Errnos
   import BenchIO
   import IOContract
   import BenchWorld
@@ -12,7 +14,6 @@ module TouchCore {
   import Schema = TouchSchema
   import Spec = TouchSpec
 
-  const ENOENT: int := 2
 
   ghost predicate SetPathTimesSummaryFields(
     observations: (BenchWorld.TrustedFilesystemRequest) -> BenchWorld.TrustedFilesystemResult,
@@ -93,8 +94,8 @@ module TouchCore {
             errOut == (if okSet then [] else Spec.TouchErrorMessageSpec(path, setErr))
         else if noCreate then
           fs2 == preFs &&
-          hadError == (existsErr != ENOENT) &&
-          errOut == (if existsErr == ENOENT then [] else Spec.TouchErrorMessageSpec(path, existsErr))
+          hadError == (existsErr != Errno.ENOENT) &&
+          errOut == (if existsErr == Errno.ENOENT then [] else Spec.TouchErrorMessageSpec(path, existsErr))
         else if !followSymlink then
           fs2 == preFs &&
           hadError == true &&
@@ -452,9 +453,18 @@ module TouchCore {
     var accessReferenceSec := nowSec;
     var accessReferenceNsec := 0;
     if cmd.hasReference {
-      var refOk, refAtimeSec, refAtimeNsec, refMtimeSec, refMtimeNsec,
-        refIsDir, refIsSymlink, refDevice, refInode, refLinkCount, refErr :=
-        io.GetFileTimes(cmd.referenceArg, cmd.followSymlink);
+      var getFileTimesResult := io.GetFileTimes(cmd.referenceArg, cmd.followSymlink);
+      var refOk := getFileTimesResult.Ok?;
+      var refAtimeSec := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeSec;
+      var refAtimeNsec := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeNsec;
+      var refMtimeSec := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeSec;
+      var refMtimeNsec := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeNsec;
+      var refIsDir := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isDir;
+      var refIsSymlink := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isSymlink;
+      var refDevice := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).device;
+      var refInode := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).inode;
+      var refLinkCount := IOContract.ResultValue(getFileTimesResult, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).linkCount;
+      var refErr := IOContract.ResultErrno(getFileTimesResult);
       if !refOk {
         errOut := GetReferenceErrorMessage(cmd.referenceArg, refErr, io);
         return;
@@ -480,8 +490,10 @@ module TouchCore {
     var mtimeNsec := referenceNsec;
     if selection != Schema.TimeModify {
       var dateOk;
-      dateOk, atimeSec, atimeNsec :=
-        io.ParseDate(cmd.dateArg, accessReferenceSec, accessReferenceNsec);
+      var parseDateResult := io.ParseDate(cmd.dateArg, accessReferenceSec, accessReferenceNsec);
+      dateOk := parseDateResult.Ok?;
+      atimeSec := IOContract.ParsedResultValue(parseDateResult).sec;
+      atimeNsec := IOContract.ParsedResultValue(parseDateResult).nsec;
       if !dateOk {
         assert Spec.DateParseFailureFields(
           preFilesystemObservations, cmd, preFs, preNow, preParses
@@ -500,8 +512,10 @@ module TouchCore {
       mtimeNsec := atimeNsec;
     } else if selection != Schema.TimeAccess {
       var dateOk;
-      dateOk, mtimeSec, mtimeNsec :=
-        io.ParseDate(cmd.dateArg, referenceSec, referenceNsec);
+      var parseDateResult2 := io.ParseDate(cmd.dateArg, referenceSec, referenceNsec);
+      dateOk := parseDateResult2.Ok?;
+      mtimeSec := IOContract.ParsedResultValue(parseDateResult2).sec;
+      mtimeNsec := IOContract.ParsedResultValue(parseDateResult2).nsec;
       if !dateOk {
         assert Spec.DateParseFailureFields(
           preFilesystemObservations, cmd, preFs, preNow, preParses
@@ -541,7 +555,7 @@ module TouchCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeInvalidTime {
       var err := GetInvalidTimeMessage(cmd.timeArg);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -549,7 +563,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeAmbiguousTime {
       var err := GetAmbiguousTimeMessage(cmd.timeArg);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -557,7 +571,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -565,7 +579,7 @@ module TouchCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -576,13 +590,13 @@ module TouchCore {
       var timeWord := Schema.ClassifyTimeWord(cmd.timeArg);
       if timeWord == Schema.TimeWordAmbiguous {
         var err := GetAmbiguousTimeMessage(cmd.timeArg);
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       } else if timeWord == Schema.TimeWordInvalid {
         var err := GetInvalidTimeMessage(cmd.timeArg);
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
@@ -597,16 +611,19 @@ module TouchCore {
     var source := Schema.TimeSourceCurrent;
     if cmd.hasTimestamp {
       var nowSec := io.Now();
-      var timestampOk, timestampSec, timestampNsec := io.ParseTimestamp(cmd.timestampArg, nowSec, 0);
+      var parseTimestampResult := io.ParseTimestamp(cmd.timestampArg, nowSec, 0);
+      var timestampOk := parseTimestampResult.Ok?;
+      var timestampSec := IOContract.ParsedResultValue(parseTimestampResult).sec;
+      var timestampNsec := IOContract.ParsedResultValue(parseTimestampResult).nsec;
       if !timestampOk {
         var err := GetInvalidDateMessage(cmd.timestampArg);
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
         return;
       }
       if Spec.SourceConflict(cmd) {
-        var _, _ := io.WriteStderr(Spec.SourceConflictMessageSpec(), BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(Spec.SourceConflictMessageSpec(), BenchWorld.ThrowOnError);
         exit := 1;
         return;
       }
@@ -617,18 +634,27 @@ module TouchCore {
     } else if cmd.hasDate {
       var dateOk, dateSource, dateError := ResolveDateSource(cmd, selection, io);
       if !dateOk {
-        var _, _ := io.WriteStderr(dateError, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(dateError, BenchWorld.ThrowOnError);
         exit := 1;
         return;
       }
       source := dateSource;
     } else if cmd.hasReference {
-      var refOk, refAtimeSec, refAtimeNsec, refMtimeSec, refMtimeNsec,
-          refIsDir, refIsSymlink, refDevice, refInode, refLinkCount, refErr :=
-        io.GetFileTimes(cmd.referenceArg, cmd.followSymlink);
+      var getFileTimesResult2 := io.GetFileTimes(cmd.referenceArg, cmd.followSymlink);
+      var refOk := getFileTimesResult2.Ok?;
+      var refAtimeSec := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeSec;
+      var refAtimeNsec := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeNsec;
+      var refMtimeSec := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeSec;
+      var refMtimeNsec := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeNsec;
+      var refIsDir := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isDir;
+      var refIsSymlink := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isSymlink;
+      var refDevice := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).device;
+      var refInode := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).inode;
+      var refLinkCount := IOContract.ResultValue(getFileTimesResult2, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).linkCount;
+      var refErr := IOContract.ResultErrno(getFileTimesResult2);
       if !refOk {
         var err := GetReferenceErrorMessage(cmd.referenceArg, refErr, io);
-        var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
         exit := 1;
         assert IOContract.TrustedFilesystemQueryContractFields(
             preFilesystemObservations, preFs,
@@ -662,7 +688,7 @@ module TouchCore {
 
     if |cmd.files| == 0 {
       var err := GetMissingOperandMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert ResolvedRunSummaryFields(cmd, io, exit) by {
         assert Spec.RequestedSelection(cmd, selection);
@@ -675,7 +701,7 @@ module TouchCore {
     }
 
     var hadError, errOut := RunFiles(cmd.files, cmd.noCreate, cmd.followSymlink, selection, source, io);
-    var _, _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert io.stderr() == preStderr + errOut;
     assert RunFilesSummaryFields(
@@ -710,15 +736,21 @@ module TouchCore {
     ok := false;
     err := 0;
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeBoth {
-      ok, err := io.SetFileTimesNow(path, followSymlink);
+      var setFileTimesNowResult := io.SetFileTimesNow(path, followSymlink);
+      ok := setFileTimesNowResult.Ok?;
+      err := IOContract.ResultErrno(setFileTimesNowResult);
       return;
     }
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeAccess {
-      ok, err := io.SetFileAccessTimeNow(path, followSymlink);
+      var setFileAccessTimeNowResult := io.SetFileAccessTimeNow(path, followSymlink);
+      ok := setFileAccessTimeNowResult.Ok?;
+      err := IOContract.ResultErrno(setFileAccessTimeNowResult);
       return;
     }
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeModify {
-      ok, err := io.SetFileModificationTimeNow(path, followSymlink);
+      var setFileModificationTimeNowResult := io.SetFileModificationTimeNow(path, followSymlink);
+      ok := setFileModificationTimeNowResult.Ok?;
+      err := IOContract.ResultErrno(setFileModificationTimeNowResult);
       return;
     }
 
@@ -739,9 +771,18 @@ module TouchCore {
       mtimeNsec := sourceMtimeNsec;
 
       if selection != Schema.TimeBoth {
-        var getOk, oldAtimeSec, oldAtimeNsec, oldMtimeSec, oldMtimeNsec,
-            isDir, isSymlink, device, inode, linkCount, getErr :=
-          io.GetFileTimes(path, followSymlink);
+        var getFileTimesResult3 := io.GetFileTimes(path, followSymlink);
+        var getOk := getFileTimesResult3.Ok?;
+        var oldAtimeSec := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeSec;
+        var oldAtimeNsec := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).atimeNsec;
+        var oldMtimeSec := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeSec;
+        var oldMtimeNsec := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).mtimeNsec;
+        var isDir := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isDir;
+        var isSymlink := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).isSymlink;
+        var device := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).device;
+        var inode := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).inode;
+        var linkCount := IOContract.ResultValue(getFileTimesResult3, BenchWorld.FileTimeStatus(0, 0, 0, 0, false, false, 0, 0, 0)).linkCount;
+        var getErr := IOContract.ResultErrno(getFileTimesResult3);
         if !getOk {
           ok := false;
           err := getErr;
@@ -756,9 +797,11 @@ module TouchCore {
         }
       }
 
-      ok, err := io.SetFileTimes(
+      var setFileTimesResult := io.SetFileTimes(
         path, followSymlink, atimeSec, atimeNsec, mtimeSec, mtimeNsec
       );
+      ok := setFileTimesResult.Ok?;
+      err := IOContract.ResultErrno(setFileTimesResult);
   }
 
   method SetStdoutTimesSelected(
@@ -776,15 +819,21 @@ module TouchCore {
     ok := false;
     err := 0;
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeBoth {
-      ok, err := io.SetStdoutTimesNow();
+      var result := io.SetStdoutTimesNow();
+      ok := result.Ok?;
+      err := IOContract.ResultErrno(result);
       return;
     }
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeAccess {
-      ok, err := io.SetStdoutAccessTimeNow();
+      var result := io.SetStdoutAccessTimeNow();
+      ok := result.Ok?;
+      err := IOContract.ResultErrno(result);
       return;
     }
     if source == Schema.TimeSourceCurrent && selection == Schema.TimeModify {
-      ok, err := io.SetStdoutModificationTimeNow();
+      var result := io.SetStdoutModificationTimeNow();
+      ok := result.Ok?;
+      err := IOContract.ResultErrno(result);
       return;
     }
 
@@ -802,10 +851,78 @@ module TouchCore {
       atimeNsec := sourceAtimeNsec;
       mtimeSec := sourceMtimeSec;
       mtimeNsec := sourceMtimeNsec;
-      ok, err := io.SetStdoutTimes(
+      var setStdoutTimesResult := io.SetStdoutTimes(
         if selection == Schema.TimeModify then BenchWorld.Keep else BenchWorld.Exact(atimeSec, atimeNsec),
         if selection == Schema.TimeAccess then BenchWorld.Keep else BenchWorld.Exact(mtimeSec, mtimeNsec)
       );
+      ok := setStdoutTimesResult.Ok?;
+      err := IOContract.ResultErrno(setStdoutTimesResult);
+  }
+
+  method {:isolate_assertions} RunOne(
+    path: BenchWorld.Path,
+    noCreate: bool,
+    followSymlink: bool,
+    selection: Schema.TimeSelection,
+    source: Schema.TimeSource,
+    io: BenchIO.IO
+  ) returns (stepError: bool, stepOut: BenchWorld.Bytes)
+    modifies io.fsRegion, io.stdoutTimestampRegion
+    ensures RunStepSummaryFields(
+      old(io.trustedFilesystem()), path, noCreate, followSymlink, selection, source,
+      old(io.fs()), old(io.now()), old(io.stdout()), old(io.stdoutTimestamp()),
+      io.fs(), io.stdout(), io.stdoutTimestamp(), stepError, stepOut)
+    decreases *
+  {
+    stepError := false;
+    stepOut := [];
+
+    if path == "-" {
+      var okStdout, stdoutErr := SetStdoutTimesSelected(selection, source, io);
+      stepError := !okStdout;
+      if stepError {
+        stepOut := GetStdoutErrorMessage(stdoutErr, io);
+      }
+    } else {
+      var pathExistsResult := io.PathExists(path, followSymlink);
+      var found := pathExistsResult.Ok?;
+      var existsErr := IOContract.ResultErrno(pathExistsResult);
+      if found {
+        var okSet, setErr := SetPathTimes(path, followSymlink, selection, source, io);
+        stepError := !okSet;
+        if stepError {
+          stepOut := GetTouchErrorMessage(path, setErr, io);
+        }
+      } else if noCreate {
+        if existsErr == Errno.ENOENT {
+          stepError := false;
+        } else {
+          stepError := true;
+          stepOut := GetTouchErrorMessage(path, existsErr, io);
+        }
+      } else if !followSymlink {
+        stepError := true;
+        stepOut := GetSetTimesErrorMessage(path, existsErr, io);
+      } else {
+        var createFileResult := io.CreateFile(path);
+        var okCreate := createFileResult.Ok?;
+        var createErr := IOContract.ResultErrno(createFileResult);
+        if okCreate {
+          if source == Schema.TimeSourceCurrent && selection == Schema.TimeBoth {
+            stepError := false;
+          } else {
+            var okSet, setErr := SetPathTimes(path, followSymlink, selection, source, io);
+            stepError := !okSet;
+            if stepError {
+              stepOut := GetTouchErrorMessage(path, setErr, io);
+            }
+          }
+        } else {
+          stepError := true;
+          stepOut := GetTouchErrorMessage(path, createErr, io);
+        }
+      }
+    }
   }
 
   method {:isolate_assertions} RunFiles(
@@ -854,51 +971,7 @@ module TouchCore {
       ghost var stepStdout := io.stdout();
       ghost var stepStdoutTarget := io.stdoutTimestamp();
       var path := files[i];
-      var stepError := false;
-      var stepOut: BenchWorld.Bytes := [];
-
-      if path == "-" {
-        var okStdout, stdoutErr := SetStdoutTimesSelected(selection, source, io);
-        stepError := !okStdout;
-        if stepError {
-          stepOut := GetStdoutErrorMessage(stdoutErr, io);
-        }
-      } else {
-        var found, existsErr := io.PathExists(path, followSymlink);
-        if found {
-          var okSet, setErr := SetPathTimes(path, followSymlink, selection, source, io);
-          stepError := !okSet;
-          if stepError {
-            stepOut := GetTouchErrorMessage(path, setErr, io);
-          }
-        } else if noCreate {
-          if existsErr == ENOENT {
-            stepError := false;
-          } else {
-            stepError := true;
-            stepOut := GetTouchErrorMessage(path, existsErr, io);
-          }
-        } else if !followSymlink {
-          stepError := true;
-          stepOut := GetSetTimesErrorMessage(path, existsErr, io);
-        } else {
-          var okCreate, createErr := io.CreateFile(path);
-          if okCreate {
-            if source == Schema.TimeSourceCurrent && selection == Schema.TimeBoth {
-              stepError := false;
-            } else {
-              var okSet, setErr := SetPathTimes(path, followSymlink, selection, source, io);
-              stepError := !okSet;
-              if stepError {
-                stepOut := GetTouchErrorMessage(path, setErr, io);
-              }
-            }
-          } else {
-            stepError := true;
-            stepOut := GetTouchErrorMessage(path, createErr, io);
-          }
-        }
-      }
+      var stepError, stepOut := RunOne(path, noCreate, followSymlink, selection, source, io);
 
       hadError := prefixError || stepError;
       errOut := prefixOut + stepOut;

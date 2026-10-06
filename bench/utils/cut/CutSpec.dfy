@@ -5,6 +5,7 @@ include "../../core/StringEscaping.dfy"
 include "CutSchema.dfy"
 
 module CutSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -57,6 +58,11 @@ module CutSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -259,14 +265,14 @@ module CutSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
   {
     match command.inputs[index]
     case Stdin =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if CutSchema.Stdin in command.inputs[..index]
         then []
         else preStdin
@@ -278,7 +284,7 @@ module CutSpec {
   twostate predicate InputTraceRelation(
     command: CutSchema.CutCmdRaw,
     io: BenchIO.IO,
-    new readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    new readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     new stdoutPart: BenchWorld.Bytes,
     new stderrPart: BenchWorld.Bytes,
     hadError: bool
@@ -333,7 +339,7 @@ module CutSpec {
       io.stderr() == old(io.stderr()) &&
       exit == 0
     else
-      exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      exists readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
         stdoutPart: BenchWorld.Bytes,
         stderrPart: BenchWorld.Bytes,
         hadError: bool ::

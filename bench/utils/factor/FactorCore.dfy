@@ -515,7 +515,7 @@ module FactorCore {
     var help := HelpSelected(raw);
     if help {
       var out := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -523,7 +523,7 @@ module FactorCore {
     var version := VersionSelected(raw);
     if version {
       var out := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
@@ -533,7 +533,7 @@ module FactorCore {
       tokens := raw.operands;
     } else {
       ghost var beforeStdin := io.stdin();
-      var stdinBytes, _ := io.ReadStdin(BenchWorld.ThrowOnError);
+      var stdinBytes :- assert io.ReadStdin(BenchWorld.ThrowOnError);
       assert IOContract.ReadStdinAllFields(beforeStdin, io.stdin(), stdinBytes);
       assert beforeStdin == preStdin;
       assert stdinBytes == preStdin;
@@ -542,8 +542,8 @@ module FactorCore {
     }
 
     var run := RunTokens(tokens, raw.seenExponents, |raw.operands| > 0);
-    var _, _ := io.WriteStdout(run.stdout, BenchWorld.ThrowOnError);
-    var _, _ := io.WriteStderr(run.stderr, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(run.stdout, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(run.stderr, BenchWorld.ThrowOnError);
     exit := if run.hadError then 1 else 0;
     if |raw.operands| > 0 {
       assert io.stdin() == preStdin;

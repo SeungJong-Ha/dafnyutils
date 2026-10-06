@@ -6,6 +6,7 @@ include "CommSchema.dfy"
 include "CommRenderSpec.dfy"
 
 module CommSpec {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -55,6 +56,11 @@ module CommSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ContainsDiagnosticBlank(path: string): bool
@@ -164,10 +170,10 @@ module CommSpec {
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes,
     input: Schema.CommInput
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     match input
-    case Stdin => BenchWorld.Ok(preStdin)
+    case Stdin => Result.Ok(preStdin)
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
 
@@ -182,12 +188,12 @@ module CommSpec {
     cmd: Schema.CommCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
       InputResult(preFs, preStreams, preStdin, cmd.input1)
     else
-      BenchWorld.Ok([])
+      Result.Ok([])
   }
 
   function AfterFirstRead(cmd: Schema.CommCmd, preStdin: BenchWorld.Bytes): BenchWorld.Bytes
@@ -199,12 +205,12 @@ module CommSpec {
     cmd: Schema.CommCmd,
     preFs: BenchWorld.FileSystem, preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     if cmd.mode == Schema.ModeRun then
       InputResult(preFs, preStreams, AfterFirstRead(cmd, preStdin), cmd.input2)
     else
-      BenchWorld.Ok([])
+      Result.Ok([])
   }
 
   function AfterSecondRead(cmd: Schema.CommCmd, preStdin: BenchWorld.Bytes): BenchWorld.Bytes

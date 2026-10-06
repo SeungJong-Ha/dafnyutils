@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -5,6 +6,8 @@ include "../../core/StringEscaping.dfy"
 include "CsplitSchema.dfy"
 
 module CsplitSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import BenchWorld
@@ -63,16 +66,22 @@ module CsplitSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function WriteErrnoText(err: int): string
   {
-    if err == 2 then "No such file or directory"
-    else if err == 13 then "Permission denied"
-    else if err == 20 then "Not a directory"
-    else if err == 21 then "Is a directory"
-    else if err == 28 then "No space left on device"
-    else if err == 40 then "Too many levels of symbolic links"
+    if err == Errno.ENOENT then "No such file or directory"
+    else if err == Errno.EACCES then "Permission denied"
+    else if err == Errno.ENOTDIR then "Not a directory"
+    else if err == Errno.EISDIR then "Is a directory"
+    else if err == Errno.EFBIG then "File too large"
+    else if err == Errno.ENOSPC then "No space left on device"
+    else if err == Errno.ELOOP then "Too many levels of symbolic links"
     else "unknown error"
   }
 
@@ -273,11 +282,25 @@ module CsplitSpec {
     preFs: BenchWorld.FileSystem,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult,
     preStdin: BenchWorld.Bytes
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
   {
     match input
-    case Stdin => BenchWorld.Ok(preStdin)
+    case Stdin => Result.Ok(preStdin)
     case File(path) => IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
+  }
+
+  // A failed open preserves its entry; a failed write/close removes the opened output.
+  ghost predicate FailedWriteCleanupRelation(
+    preFs: BenchWorld.FileSystem, now: int, path: BenchWorld.Path, data: BenchWorld.Bytes,
+    err: int, afterWriteFs: BenchWorld.FileSystem, afterCleanupFs: BenchWorld.FileSystem
+  )
+  {
+    exists committed: nat, stage: BenchWorld.FileWriteStage ::
+      IOContract.WriteFileOutcomeFields(preFs, now, path, data, false,
+        false, err, committed, stage, afterWriteFs) &&
+      (if stage == BenchWorld.WriteOpenFailed then afterCleanupFs == afterWriteFs
+       else exists deleteOk: bool, deleteErr: int ::
+         IOContract.DeletePathContractFields(afterWriteFs, path, deleteOk, deleteErr, afterCleanupFs))
   }
 
   ghost predicate WriteAttemptsRelation(
@@ -386,9 +409,11 @@ module CsplitSpec {
     (forall i :: 0 <= i && i + 1 < attempted ==> writeOk[i]) &&
     if attempted > 0 && !writeOk[attempted - 1] then
       CountOutputRelation(pieces, attempted - 1, stdout) &&
-      CleanupRelation(
-        index, attempted - 1, writeStates[attempted], fs2, cleanupStates
-      ) &&
+      |cleanupStates| > 0 &&
+      FailedWriteCleanupRelation(writeStates[attempted - 1], preNow,
+        OutputName(index + attempted - 1), pieces[attempted - 1], writeErr[attempted - 1],
+        writeStates[attempted], cleanupStates[0]) &&
+      CleanupRelation(index, attempted - 1, cleanupStates[0], fs2, cleanupStates) &&
       stderr == WriteErrorMessage(
         OutputName(index + attempted - 1),
         writeErr[attempted - 1]

@@ -231,32 +231,39 @@ module LnCore {
       var piece: BenchWorld.Bytes := [];
       var stepOk := false;
       if symbolic {
-        var ok, err := io.CreateSymlink(destination, source);
+        var createSymlinkResult := io.CreateSymlink(destination, source);
+        var ok := createSymlinkResult.Ok?;
+        var err := IOContract.ResultErrno(createSymlinkResult);
         stepOk := ok;
         if !ok {
           piece := Spec.CreateSymlinkErrorMessageSpec(destination, source, err);
-          var _, _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
+          var _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
         }
         assert CoreStepSummary(
           beforeStepFs, io.fs(), preNow, preTrusted,
           source, destination, symbolic, piece, stepOk);
       } else {
-        var sourceOk, sourceStatus, sourceErr := io.GetFileStatus(source, false);
+        var getFileStatusResult := io.GetFileStatus(source, false);
+        var sourceOk := getFileStatusResult.Ok?;
+        var sourceStatus := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+        var sourceErr := IOContract.ResultErrno(getFileStatusResult);
         var sourceIsDir := sourceStatus.kind == BenchWorld.DirectoryKind;
         IOContract.FileStatusStructureImpliesMetadata(
           beforeStepFs, source, false, sourceOk, sourceStatus, sourceErr);
         if !sourceOk {
           piece := Spec.FailedAccessMessageSpec(source, sourceErr);
-          var _, _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
+          var _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
         } else if sourceIsDir {
           piece := Spec.HardDirectoryMessageSpec(source);
-          var _, _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
+          var _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
         } else {
-          var ok, err := io.CreateHardLink(source, destination);
+          var createHardLinkResult := io.CreateHardLink(source, destination);
+          var ok := createHardLinkResult.Ok?;
+          var err := IOContract.ResultErrno(createHardLinkResult);
           stepOk := ok;
           if !ok {
             piece := Spec.CreateHardLinkErrorMessageSpec(source, destination, err);
-            var _, _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
+            var _ := io.WriteStderr(piece, BenchWorld.ThrowOnError);
           }
           assert IOContract.CreateHardLinkSpec(
             beforeStepFs, preNow, preTrusted,
@@ -315,31 +322,34 @@ module LnCore {
     ghost var preStderr := io.stderr();
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if cmd.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if |cmd.operands| == 0 {
-      var _, _ := io.WriteStderr(Spec.MissingOperandMessageSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.MissingOperandMessageSpec(), BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
     }
     if |cmd.operands| > 2 {
       var target := cmd.operands[|cmd.operands| - 1];
-      var targetOk, targetStatus, targetErr := io.GetFileStatus(target, true);
+      var getFileStatusResult2 := io.GetFileStatus(target, true);
+      var targetOk := getFileStatusResult2.Ok?;
+      var targetStatus := IOContract.ResultValue(getFileStatusResult2, BenchWorld.DEFAULT_FILE_STATUS);
+      var targetErr := IOContract.ResultErrno(getFileStatusResult2);
       var targetIsDir := targetStatus.kind == BenchWorld.DirectoryKind;
       IOContract.FileStatusStructureImpliesMetadata(
         preFs, target, true, targetOk, targetStatus, targetErr);
       if !(targetOk && targetIsDir) {
-        var _, _ := io.WriteStderr(Spec.TargetDirectoryErrorMessageSpec(
+        var _ := io.WriteStderr(Spec.TargetDirectoryErrorMessageSpec(
           target, if targetOk then 20 else targetErr), BenchWorld.ThrowOnError);
         exit := 1;
         assert CoreSummary(raw, io, exit);
@@ -364,7 +374,10 @@ module LnCore {
       destination := cmd.operands[1];
     } else {
       var status: BenchWorld.FileStatus;
-      dirOk, status, dirErr := io.GetFileStatus(cmd.operands[1], true);
+      var getFileStatusResult3 := io.GetFileStatus(cmd.operands[1], true);
+      dirOk := getFileStatusResult3.Ok?;
+      status := IOContract.ResultValue(getFileStatusResult3, BenchWorld.DEFAULT_FILE_STATUS);
+      dirErr := IOContract.ResultErrno(getFileStatusResult3);
       dirIsDir := status.kind == BenchWorld.DirectoryKind;
       IOContract.FileStatusStructureImpliesMetadata(
         preFs, cmd.operands[1], true, dirOk, status, dirErr);
@@ -375,13 +388,15 @@ module LnCore {
     assert destination == CoreDestination(preFs, cmd.operands);
 
     if cmd.symbolic {
-      var ok, err := io.CreateSymlink(destination, source);
+      var createSymlinkResult2 := io.CreateSymlink(destination, source);
+      var ok := createSymlinkResult2.Ok?;
+      var err := IOContract.ResultErrno(createSymlinkResult2);
       var diagnostic: BenchWorld.Bytes := [];
       if ok {
         exit := 0;
       } else {
         diagnostic := Spec.CreateSymlinkErrorMessageSpec(destination, source, err);
-        var _, _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
         exit := 1;
       }
       assert IOContract.CreateSymlinkContractFields(
@@ -397,30 +412,36 @@ module LnCore {
 
     var diagnostic: BenchWorld.Bytes := [];
     var success := false;
-    var sourceOk, sourceStatus, sourceErr := io.GetFileStatus(source, false);
+    var getFileStatusResult4 := io.GetFileStatus(source, false);
+    var sourceOk := getFileStatusResult4.Ok?;
+    var sourceStatus := IOContract.ResultValue(getFileStatusResult4, BenchWorld.DEFAULT_FILE_STATUS);
+    var sourceErr := IOContract.ResultErrno(getFileStatusResult4);
     var sourceIsDir := sourceStatus.kind == BenchWorld.DirectoryKind;
     IOContract.FileStatusStructureImpliesMetadata(
       preFs, source, false, sourceOk, sourceStatus, sourceErr);
     if !sourceOk {
       diagnostic := Spec.FailedAccessMessageSpec(source, sourceErr);
-      var _, _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
       exit := 1;
     } else if sourceIsDir {
       diagnostic := Spec.HardDirectoryMessageSpec(source);
-      var _, _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
       exit := 1;
     } else {
-      var ok, err := io.CreateHardLink(source, destination);
+      var createHardLinkResult2 := io.CreateHardLink(source, destination);
+      var ok := createHardLinkResult2.Ok?;
+      var err := IOContract.ResultErrno(createHardLinkResult2);
+      assert IOContract.CreateHardLinkSpec(
+        preFs, preNow, preTrusted, io.fs(), source, destination, ok, err) by {
+      }
       success := ok;
       if ok {
         exit := 0;
       } else {
         diagnostic := Spec.CreateHardLinkErrorMessageSpec(source, destination, err);
-        var _, _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(diagnostic, BenchWorld.ThrowOnError);
         exit := 1;
       }
-      assert IOContract.CreateHardLinkSpec(
-        preFs, preNow, preTrusted, io.fs(), source, destination, ok, err);
     }
     assert IOContract.IsDirectoryStrictContractFields(
       preFs, source, false, sourceOk, sourceIsDir, sourceErr);

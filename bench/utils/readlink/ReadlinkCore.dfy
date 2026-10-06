@@ -1,9 +1,12 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "ReadlinkSchema.dfy"
 include "ReadlinkSpec.dfy"
 
 module ReadlinkCore {
+  import Errno = Errnos
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import IOContract
@@ -13,11 +16,11 @@ module ReadlinkCore {
 
   function IOErrorFromErrno(errno: int): BenchWorld.IOError
   {
-    if errno == 2 then
+    if errno == Errno.ENOENT then
       BenchWorld.NoSuchFile
-    else if errno == 13 then
+    else if errno == Errno.EACCES then
       BenchWorld.PermissionDenied
-    else if errno == 20 then
+    else if errno == Errno.ENOTDIR then
       BenchWorld.NotDirectory
     else
       BenchWorld.InvalidPath
@@ -27,22 +30,22 @@ module ReadlinkCore {
     ok: bool,
     isDir: bool,
     dirErr: int
-  ): BenchWorld.Result<BenchWorld.Path>
+  ): BenchWorld.IOResult<BenchWorld.Path>
   {
     if ok then
       if isDir then
-        BenchWorld.Err(BenchWorld.InvalidPath)
+        Result.Err(BenchWorld.InvalidPath)
       else
-        BenchWorld.Err(BenchWorld.NotDirectory)
+        Result.Err(BenchWorld.NotDirectory)
     else
-      BenchWorld.Err(IOErrorFromErrno(dirErr))
+      Result.Err(IOErrorFromErrno(dirErr))
   }
 
   ghost function ReadlinkResultFields(
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
     path: BenchWorld.Path
-  ): BenchWorld.Result<BenchWorld.Path>
+  ): BenchWorld.IOResult<BenchWorld.Path>
   {
     Spec.ReadlinkResultFieldsSpec(fs, cwd, path)
   }
@@ -308,7 +311,7 @@ module ReadlinkCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -316,7 +319,7 @@ module ReadlinkCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -324,7 +327,7 @@ module ReadlinkCore {
 
     if |cmd.operands| == 0 {
       var err := GetMissingOperandMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -332,7 +335,7 @@ module ReadlinkCore {
 
     if cmd.mode == Schema.ModeUnsupportedCanonicalize {
       var err := GetUnsupportedCanonicalizeMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -364,11 +367,14 @@ module ReadlinkCore {
       var stepErrOut: BenchWorld.Bytes := "";
       var actualPath := ComputeMakeAbsolute(cwd, path);
       var hasTrailingSlash := ComputeEndsInSlash(path);
-      var r: BenchWorld.Result<BenchWorld.Path>;
+      var r: BenchWorld.IOResult<BenchWorld.Path>;
       if path == "" {
-        r := BenchWorld.Err(BenchWorld.NoSuchFile);
+        r := Result.Err(BenchWorld.NoSuchFile);
       } else if hasTrailingSlash {
-        var rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1 := io.GetFileStatus(actualPath, true);
+        var getFileStatusResult := io.GetFileStatus(actualPath, true);
+        var rawMetadataOk1 := getFileStatusResult.Ok?;
+        var rawMetadataStatus1 := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+        var rawMetadataErr1 := IOContract.ResultErrno(getFileStatusResult);
         IOContract.FileStatusStructureImpliesMetadata(io.fs(), actualPath, true, rawMetadataOk1, rawMetadataStatus1, rawMetadataErr1);
         var ok := rawMetadataOk1;
         var isDir := rawMetadataStatus1.kind == BenchWorld.DirectoryKind;
@@ -418,9 +424,9 @@ module ReadlinkCore {
       assert RunFilesSummaryFields(cmd, cmd.operands[..i], preFs, preCwd, hadError, out, errOut);
     }
     assert cmd.operands[..i] == cmd.operands;
-    var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     var warning := GetInitialWarning(cmd);
-    var _, _ := io.WriteStderr(warning + errOut, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(warning + errOut, BenchWorld.ThrowOnError);
     exit := if hadError then 1 else 0;
     assert CoreSummary(raw, io, exit);
   }

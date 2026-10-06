@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -5,6 +6,8 @@ include "../../core/StringEscaping.dfy"
 include "ReadlinkSchema.dfy"
 
 module ReadlinkSpec {
+  import Errno = Errnos
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import IOContract
@@ -24,15 +27,20 @@ module ReadlinkSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Invalid argument"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function IOErrorFromErrnoSpec(errno: int): BenchWorld.IOError
   {
-    if errno == 2 then
+    if errno == Errno.ENOENT then
       BenchWorld.NoSuchFile
-    else if errno == 13 then
+    else if errno == Errno.EACCES then
       BenchWorld.PermissionDenied
-    else if errno == 20 then
+    else if errno == Errno.ENOTDIR then
       BenchWorld.NotDirectory
     else
       BenchWorld.InvalidPath
@@ -152,10 +160,10 @@ module ReadlinkSpec {
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
     path: BenchWorld.Path
-  ): BenchWorld.Result<BenchWorld.Path>
+  ): BenchWorld.IOResult<BenchWorld.Path>
   {
     if path == "" then
-      BenchWorld.Err(BenchWorld.NoSuchFile)
+      Result.Err(BenchWorld.NoSuchFile)
     else if EndsInSlashSpec(path) then
       ReadlinkTrailingSlashResultFieldsSpec(fs, MakeAbsoluteSpec(cwd, path))
     else
@@ -165,26 +173,26 @@ module ReadlinkSpec {
   function ReadlinkTrailingSlashResultFieldsSpec(
     fs: BenchWorld.FileSystem,
     actualPath: BenchWorld.Path
-  ): BenchWorld.Result<BenchWorld.Path>
+  ): BenchWorld.IOResult<BenchWorld.Path>
   {
     match IOContract.ResolvePathForMetadataFields(fs, actualPath, true)
     case Ok(resolved) =>
       if BenchWorld.FsContainsPath(fs, resolved) then
         match BenchWorld.FsNodeAt(fs, resolved)
-        case Regular(_, _, _, _) => BenchWorld.Err(BenchWorld.NotDirectory)
-        case Directory(_, _, _) => BenchWorld.Err(BenchWorld.InvalidPath)
-        case Symlink(_, _, _, _) => BenchWorld.Err(BenchWorld.NotDirectory)
-        case Inaccessible(_) => BenchWorld.Err(BenchWorld.NotDirectory)
+        case Regular(_, _, _, _) => Result.Err(BenchWorld.NotDirectory)
+        case Directory(_, _, _) => Result.Err(BenchWorld.InvalidPath)
+        case Symlink(_, _, _, _) => Result.Err(BenchWorld.NotDirectory)
+        case Inaccessible(_) => Result.Err(BenchWorld.NotDirectory)
       else
-        BenchWorld.Err(BenchWorld.NoSuchFile)
-    case Err(err) => BenchWorld.Err(IOErrorFromErrnoSpec(IOContract.IOErrorErrno(err)))
+        Result.Err(BenchWorld.NoSuchFile)
+    case Err(err) => Result.Err(IOErrorFromErrnoSpec(IOContract.IOErrorErrno(err)))
   }
 
   ghost predicate ReadObservationRelation(
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Path>
+    result: BenchWorld.IOResult<BenchWorld.Path>
   )
   {
     result == ReadlinkResultFieldsSpec(fs, cwd, path)
@@ -193,7 +201,7 @@ module ReadlinkSpec {
   ghost predicate ReadFragmentRelation(
     cmd: Schema.ReadlinkCmd,
     path: BenchWorld.Path,
-    result: BenchWorld.Result<BenchWorld.Path>,
+    result: BenchWorld.IOResult<BenchWorld.Path>,
                               stdoutFragment: BenchWorld.Bytes,
                               stderrFragment: BenchWorld.Bytes
   )
@@ -227,7 +235,7 @@ module ReadlinkSpec {
     files: seq<BenchWorld.Path>,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
-    observations: seq<BenchWorld.Result<BenchWorld.Path>>,
+    observations: seq<BenchWorld.IOResult<BenchWorld.Path>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>,
     stdoutCuts: seq<nat>,
@@ -264,7 +272,7 @@ module ReadlinkSpec {
     errOut: BenchWorld.Bytes
   )
   {
-    exists observations: seq<BenchWorld.Result<BenchWorld.Path>>,
+    exists observations: seq<BenchWorld.IOResult<BenchWorld.Path>>,
       stdoutFragments: seq<BenchWorld.Bytes>,
       stderrFragments: seq<BenchWorld.Bytes>,
       stdoutCuts: seq<nat>,

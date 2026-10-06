@@ -254,28 +254,28 @@ module BasenameCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := Spec.HelpTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
 
     if cmd.mode == Schema.ModeVersion {
       var out := Spec.VersionTextSpec();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       return;
     }
 
     if |cmd.operands| == 0 {
       var err := Spec.MissingOperandMessageSpec();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       return;
     }
 
     if !cmd.multiple && |cmd.operands| > 2 {
       var err := Spec.ExtraOperandMessageSpec(cmd.operands[2]);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       return;
     }
@@ -289,7 +289,7 @@ module BasenameCore {
     }
 
     var out := BuildRunOutput(cmd);
-    var _, _ := io.WriteStdout(Utf8.Encode(out), BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(Utf8.Encode(out), BenchWorld.ThrowOnError);
     exit := 0;
   }
 }

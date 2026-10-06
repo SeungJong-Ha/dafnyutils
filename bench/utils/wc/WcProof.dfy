@@ -5,6 +5,8 @@ include "WcCore.dfy"
 include "WcSpec.dfy"
 
 module WcProof {
+  import Result = Results
+  import IOContract
   import BenchIO
   import BW = BenchWorld
   import Schema = WcSchema
@@ -173,7 +175,7 @@ module WcProof {
 
   lemma InputStepWitnessRefines(
     input: Schema.Input,
-    result: BW.Result<BW.Bytes>,
+    result: BW.IOResult<BW.Bytes>,
                       entries: seq<Core.Entry>,
                       errorOutput: BW.Bytes,
                       failed: bool,
@@ -231,7 +233,7 @@ module WcProof {
                                                     )
                                                   ];
           case Err(err) =>
-            if err == BW.IsDirectory {
+            if IOContract.IOErrorIsDirectory(err) {
               ZeroCountsEq();
             }
         }

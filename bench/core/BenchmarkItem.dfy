@@ -58,8 +58,8 @@ module {:verify false} BenchItem {
       case CliRun(raw) =>
         exit := item.RunCore(raw, io);
       case CliEarlyExit(code, stdout, stderr) =>
-        var _, _ := io.WriteStdout(stdout, BenchWorld.ThrowOnError);
-        var _, _ := io.WriteStderr(stderr, BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(stdout, BenchWorld.ThrowOnError);
+        var _ := io.WriteStderr(stderr, BenchWorld.ThrowOnError);
         exit := code;
     }
   }

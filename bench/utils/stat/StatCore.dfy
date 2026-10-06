@@ -240,6 +240,21 @@ module StatCore {
         out == prefixOut + stepOut && errOut == prefixErrOut + stepErrOut
   }
 
+  lemma {:induction false} RunFilesSummarySnoc(
+    cmd: Schema.StatCmd, prefix: seq<BenchWorld.Path>, path: BenchWorld.Path,
+    fs: BenchWorld.FileSystem,
+    prefixError: bool, prefixOut: BenchWorld.Bytes, prefixErrOut: BenchWorld.Bytes,
+    stepError: bool, stepOut: BenchWorld.Bytes, stepErrOut: BenchWorld.Bytes
+  )
+    requires RunFilesSummaryFields(cmd, prefix, fs, prefixError, prefixOut, prefixErrOut)
+    requires FileStepSummaryFields(cmd, |prefix|, path, fs, stepError, stepOut, stepErrOut)
+    ensures RunFilesSummaryFields(cmd, prefix + [path], fs,
+      prefixError || stepError, prefixOut + stepOut, prefixErrOut + stepErrOut)
+  {
+    assert (prefix + [path])[..|prefix|] == prefix;
+    assert (prefix + [path])[|prefix|] == path;
+  }
+
   twostate predicate CoreSummary(raw: Schema.StatCmdRaw, io: BenchIO.IO, exit: int)
     reads io.fsRegion, io.statusObservationsRegion, io.stdoutRegion, io.stderrRegion
   {
@@ -282,19 +297,19 @@ module StatCore {
     );
 
     if cmd.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       return 0;
     }
     if cmd.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       return 0;
     }
     if cmd.mode == Schema.ModeMissingFormat {
-      var _, _ := io.WriteStderr(Spec.MissingFormatMessageSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.MissingFormatMessageSpec(), BenchWorld.ThrowOnError);
       return 1;
     }
     if cmd.mode == Schema.ModeMissingOperand {
-      var _, _ := io.WriteStderr(Spec.MissingOperandMessageSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.MissingOperandMessageSpec(), BenchWorld.ThrowOnError);
       return 1;
     }
 
@@ -320,7 +335,10 @@ module StatCore {
     {
       var path := cmd.files[index];
       ghost var statusIndex := index;
-      var ok, status, errno := io.GetFileStatus(path, cmd.followSymlink);
+      var getFileStatusResult := io.GetFileStatus(path, cmd.followSymlink);
+      var ok := getFileStatusResult.Ok?;
+      var status := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+      var errno := IOContract.ResultErrno(getFileStatusResult);
       var stepError := false;
       var stepOut: BenchWorld.Bytes := "";
       var stepErrOut: BenchWorld.Bytes := "";
@@ -354,51 +372,18 @@ module StatCore {
       errors := errors + stepErrOut;
       index := index + 1;
       assert cmd.files[..index] == prefixFiles + [path];
-      ghost var nextFiles := cmd.files[..index];
-      assert |nextFiles| > 0;
-      assert nextFiles[..|nextFiles| - 1] == prefixFiles;
-      assert nextFiles[|nextFiles| - 1] == path;
-      assert RunFilesSummaryFields(
-          summaryCmd, nextFiles, preFs, hadError, output, errors
-        ) by {
-        assert RunFilesSummaryFields(
-          summaryCmd, prefixFiles, preFs, prefixError, prefixOut, prefixErrOut
-        );
-        assert FileStepSummaryFields(
-          summaryCmd, statusIndex, path, preFs, stepError, stepOut, stepErrOut
-        );
-        assert exists priorError: bool,
-            priorOut: BenchWorld.Bytes,
-            priorErrOut: BenchWorld.Bytes,
-            finalError: bool,
-            finalOut: BenchWorld.Bytes,
-            finalErrOut: BenchWorld.Bytes
-            {:trigger RunFilesSummaryFields(
-              summaryCmd, prefixFiles, preFs, priorError, priorOut, priorErrOut
-            ), FileStepSummaryFields(
-              summaryCmd, statusIndex, path, preFs,
-              finalError, finalOut, finalErrOut
-            )} ::
-            RunFilesSummaryFields(
-              summaryCmd, prefixFiles, preFs, priorError, priorOut, priorErrOut
-            ) &&
-            FileStepSummaryFields(
-              summaryCmd, statusIndex, path, preFs,
-              finalError, finalOut, finalErrOut
-            ) &&
-            hadError == (priorError || finalError) &&
-            output == priorOut + finalOut && errors == priorErrOut + finalErrOut;
-      }
+      RunFilesSummarySnoc(summaryCmd, prefixFiles, path, preFs,
+        prefixError, prefixOut, prefixErrOut, stepError, stepOut, stepErrOut);
     }
 
     assert cmd.files[..|cmd.files|] == cmd.files;
     assert RunFilesSummaryFields(
       summaryCmd, cmd.files, preFs, hadError, output, errors
     );
-    var _, _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
+    var _ := io.WriteStdout(output, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr;
-    var _, _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
+    var _ := io.WriteStderr(errors, BenchWorld.ThrowOnError);
     assert io.stdout() == preStdout + output;
     assert io.stderr() == preStderr + errors;
     exit := if hadError then 1 else 0;

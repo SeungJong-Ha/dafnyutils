@@ -5,6 +5,7 @@ include "../../core/StringEscaping.dfy"
 include "TrSchema.dfy"
 
 module TrSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -34,7 +35,7 @@ module TrSpec {
     warnings: BenchWorld.Bytes
   )
 
-  datatype SetDecode = SetOk(bytes: BenchWorld.Bytes) | SetUnsupported(operand: string)
+  type SetDecode = Result.Result<BenchWorld.Bytes, string>
   datatype ReverseRange = NoReverseRange |
     FoundReverseRange(first: BenchWorld.RawByte, last: BenchWorld.RawByte)
 
@@ -451,7 +452,7 @@ module TrSpec {
     else
       exists first: BenchWorld.Bytes ::
         WarningBytesRelation(raw.operands[0], first) &&
-        (if |raw.operands| > 1 && decoded[0].SetOk? then
+        (if |raw.operands| > 1 && decoded[0].Ok? then
            exists second: BenchWorld.Bytes ::
              WarningBytesRelation(raw.operands[1], second) &&
              warnings == first + second
@@ -462,9 +463,9 @@ module TrSpec {
   {
     (exists bytes: BenchWorld.Bytes ::
        SetBytesRelation(text, bytes) &&
-       decoded == SetOk(bytes)) ||
+       decoded == Result.Ok(bytes)) ||
     ((forall bytes: BenchWorld.Bytes :: !SetBytesRelation(text, bytes)) &&
-     decoded == SetUnsupported(text))
+     decoded == Result.Err(text))
   }
 
   ghost predicate DecodedOperandsRelation(
@@ -480,8 +481,8 @@ module TrSpec {
   function DecodedBytes(decoded: SetDecode): BenchWorld.Bytes
   {
     match decoded
-    case SetOk(bytes) => bytes
-    case SetUnsupported(_) => []
+    case Ok(bytes) => bytes
+    case Err(_) => []
   }
 
   ghost predicate FirstUnsupportedOperandRelation(
@@ -493,9 +494,9 @@ module TrSpec {
     |decoded| == |operands| &&
     exists i ::
       0 <= i < |operands| &&
-      decoded[i] == SetUnsupported(operands[i]) &&
+      decoded[i] == Result.Err(operands[i]) &&
       operand == operands[i] &&
-      forall j :: 0 <= j < i ==> decoded[j].SetOk?
+      forall j :: 0 <= j < i ==> decoded[j].Ok?
   }
 
   ghost predicate CommandDecodedRelation(

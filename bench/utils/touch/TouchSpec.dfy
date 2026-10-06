@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -6,6 +7,7 @@ include "../../core/StringEscaping.dfy"
 include "TouchSchema.dfy"
 
 module TouchSpec {
+  import Errno = Errnos
   import Utf8 = Utf8Semantics
   import BenchIO
   import CliTypes
@@ -14,12 +16,6 @@ module TouchSpec {
   import Schema = TouchSchema
   import SE = StringEscaping
 
-  const EBADF: int := 9
-  const ENOENT: int := 2
-  const EEXIST: int := 17
-  const EISDIR: int := 21
-  const EINVAL: int := 22
-  const ENOSYS: int := 38
 
   function HelpTextSpec(): BenchWorld.Bytes
   {
@@ -523,8 +519,8 @@ module TouchSpec {
             errOut == (if okSet then [] else TouchErrorMessageSpec(path, setErr))
         else if noCreate then
           fs2 == preFs &&
-          hadError == (existsErr != ENOENT) &&
-          errOut == (if existsErr == ENOENT then [] else TouchErrorMessageSpec(path, existsErr))
+          hadError == (existsErr != Errno.ENOENT) &&
+          errOut == (if existsErr == Errno.ENOENT then [] else TouchErrorMessageSpec(path, existsErr))
         else if !followSymlink then
           fs2 == preFs &&
           hadError == true &&

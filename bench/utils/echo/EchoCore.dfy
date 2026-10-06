@@ -262,12 +262,12 @@ module EchoCore {
       assert "POSIXLY_CORRECT" in preEnv;
       var out := Output(raw, true);
       assert out == Output(raw, Spec.PosixlyCorrect(preEnv));
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
     case Err(_) =>
       assert !("POSIXLY_CORRECT" in preEnv);
       var out := Output(raw, false);
       assert out == Output(raw, Spec.PosixlyCorrect(preEnv));
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       assert io.stdout() == preStdout + Output(raw, Spec.PosixlyCorrect(preEnv));
   }
 }

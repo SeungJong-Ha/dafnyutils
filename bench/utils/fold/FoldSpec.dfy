@@ -6,6 +6,7 @@ include "FoldSchema.dfy"
 include "../../core/StringEscaping.dfy"
 
 module FoldSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -68,6 +69,11 @@ module FoldSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -420,12 +426,12 @@ module FoldSpec {
     preStdin: BenchWorld.Bytes,
     i: nat,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
-  ): BenchWorld.Result<BenchWorld.Bytes>
+  ): BenchWorld.IOResult<BenchWorld.Bytes>
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin =>
-      BenchWorld.Ok(if HasEarlierStdin(cmd, i) then [] else preStdin)
+      Result.Ok(if HasEarlierStdin(cmd, i) then [] else preStdin)
     case File(path) =>
       IOContract.ObservedReadFileResultFields(preFs, preStreams, path)
   }
@@ -441,7 +447,7 @@ module FoldSpec {
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
   {
-    exists results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    exists results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       stdoutFragments: seq<BenchWorld.Bytes>,
       stderrFragments: seq<BenchWorld.Bytes> ::
       InputPrefixTraceRelation(
@@ -466,7 +472,7 @@ module FoldSpec {
     preStdin: BenchWorld.Bytes,
     count: nat,
     postStdin: BenchWorld.Bytes,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>,
     hadError: bool,

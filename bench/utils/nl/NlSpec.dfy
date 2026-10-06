@@ -6,6 +6,7 @@ include "../../core/StringEscaping.dfy"
 include "NlSchema.dfy"
 
 module NlSpec {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import IOContract
@@ -248,6 +249,11 @@ module NlSpec {
     case PermissionDenied => "Permission denied"
     case InvalidPath => "Too many levels of symbolic links"
     case Other(msg) => msg
+    case ReadFailure(_, message, _, _) => message
+    case NativeFailure(_, message) => message
+    case WriteFailure(_, message, _, _) => message
+    case StreamFailure(_, message, _, _) => message
+    case TimeParseFailure(message, _, _) => message
   }
 
   function ErrorMessage(path: BenchWorld.Path, err: BenchWorld.IOError): BenchWorld.Bytes
@@ -274,7 +280,7 @@ module NlSpec {
     line == [(92 as char), ':', (92 as char), ':', (92 as char), ':']
   }
 
-  function ErrorPiece(input: NlSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): BenchWorld.Bytes
+  function ErrorPiece(input: NlSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): BenchWorld.Bytes
   {
     match input
     case Stdin => []
@@ -284,7 +290,7 @@ module NlSpec {
       case Err(err) => ErrorMessage(path, err)
   }
 
-  function HadErrorPiece(input: NlSchema.Input, result: BenchWorld.Result<BenchWorld.Bytes>): bool
+  function HadErrorPiece(input: NlSchema.Input, result: BenchWorld.IOResult<BenchWorld.Bytes>): bool
   {
     match input
     case Stdin => false
@@ -472,14 +478,14 @@ module NlSpec {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     i: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires i < |cmd.inputs|
   {
     match cmd.inputs[i]
     case Stdin =>
-      result == BenchWorld.Ok(
+      result == Result.Ok(
         if exists j :: 0 <= j < i && cmd.inputs[j] == NlSchema.Stdin
         then []
         else preStdin
@@ -492,7 +498,7 @@ module NlSpec {
     cmd: NlSchema.NlCmd,
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
-    readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     inputFragments: seq<BenchWorld.Bytes>,
     combined: BenchWorld.Bytes,
     inputCuts: seq<nat>,
@@ -560,7 +566,7 @@ module NlSpec {
       io.stderr() == old(io.stderr()) + ModeErrorMessage(cmd) &&
       exit == 1
     else
-      exists readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      exists readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
         inputFragments: seq<BenchWorld.Bytes>,
         combined: BenchWorld.Bytes,
         inputCuts: seq<nat>,

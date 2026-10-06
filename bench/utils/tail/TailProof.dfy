@@ -7,6 +7,7 @@ include "TailCore.dfy"
 include "TailSpec.dfy"
 
 module TailProof {
+  import Result = Results
   import BenchIO
   import BW = BenchWorld
   import Schema = TailSchema
@@ -299,7 +300,7 @@ module TailProof {
   lemma OutputPieceGivesRelation(
     cmd: Schema.TailCmd,
     input: Schema.Input,
-    result: BW.Result<BW.Bytes>,
+    result: BW.IOResult<BW.Bytes>,
                       printedHeaders: nat
   )
     ensures Spec.OutputFragmentRelation(

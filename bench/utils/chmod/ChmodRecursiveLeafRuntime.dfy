@@ -1,6 +1,7 @@
 include "ChmodRecursiveCore.dfy"
 
 module ChmodRecursiveLeafRuntime {
+  import IOContract
   import BenchWorld
   import BenchIO
   import Schema = ChmodSchema
@@ -21,12 +22,12 @@ module ChmodRecursiveLeafRuntime {
                          RecursiveAccessStderrCore(cmd, displayPath, err, failureKind)
   {
     if !cmd.silent {
-      var _, _ := io.WriteStderr(
+      var _ := io.WriteStderr(
         RecursiveAccessStderrCore(cmd, displayPath, err, failureKind)
       , BenchWorld.ThrowOnError);
     }
     if cmd.verbose {
-      var _, _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Base.AccessFailureMessageCore(displayPath), BenchWorld.ThrowOnError);
     }
   }
 
@@ -58,14 +59,17 @@ module ChmodRecursiveLeafRuntime {
     var isTopLevel := identity.isTopLevel;
     if isSymlink && !ChmodFollowCore(cmd, isTopLevel) {
       if cmd.verbose {
-        var _, _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
+        var _ := io.WriteStdout(NeitherChangedMessageCore(displayPath), BenchWorld.ThrowOnError);
       }
       ok := true;
       return;
     }
 
     ghost var beforeFs := io.fs();
-    var gotMode, rawModeStatus1, modeErr := io.GetFileStatus(accessPath, true);
+    var getFileStatusResult := io.GetFileStatus(accessPath, true);
+    var gotMode := getFileStatusResult.Ok?;
+    var rawModeStatus1 := IOContract.ResultValue(getFileStatusResult, BenchWorld.DEFAULT_FILE_STATUS);
+    var modeErr := IOContract.ResultErrno(getFileStatusResult);
     IOContract.FileStatusImpliesMode(io.fs(), accessPath, true, gotMode, rawModeStatus1, modeErr);
     var before := rawModeStatus1.mode;
     if !gotMode {
@@ -83,7 +87,9 @@ module ChmodRecursiveLeafRuntime {
     }
 
     var desired := Base.CorePlannedMode(plan, before, isDirectory);
-    var setOk, setErr := io.SetFileMode(accessPath, true, desired);
+    var setFileModeResult := io.SetFileMode(accessPath, true, desired);
+    var setOk := setFileModeResult.Ok?;
+    var setErr := IOContract.ResultErrno(setFileModeResult);
     SetFileModePreservesSegmentPaths(
       beforeFs,
       accessPath,
@@ -95,7 +101,7 @@ module ChmodRecursiveLeafRuntime {
     );
     if !setOk {
       if !cmd.silent {
-        var _, _ := io.WriteStderr(
+        var _ := io.WriteStderr(
           Base.ChangeErrorMessageCore(displayPath, Base.ErrnoTextCore(setErr))
         , BenchWorld.ThrowOnError);
       }

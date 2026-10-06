@@ -4,6 +4,7 @@ include "LognameSchema.dfy"
 include "LognameSpec.dfy"
 
 module LognameCore {
+  import Result = Results
   import BenchIO
   import Utf8 = Utf8Semantics
   import IOContract
@@ -37,7 +38,7 @@ module LognameCore {
 
   ghost predicate LoginNameResultFields(
     props: map<string, string>,
-    login: BenchWorld.Result<string>,
+    login: BenchWorld.IOResult<string>,
                              preStdout: BenchWorld.Bytes,
                              preStderr: BenchWorld.Bytes,
                              stdout: BenchWorld.Bytes,
@@ -74,7 +75,7 @@ module LognameCore {
       io.stderr() == old(io.stderr()) + Spec.ExtraOperandMessageSpec(cmd.operands[0]) &&
       exit == 1
     else
-      exists login: BenchWorld.Result<string> ::
+      exists login: BenchWorld.IOResult<string> ::
         LoginNameResultFields(
           old(io.props()),
           login,
@@ -98,7 +99,7 @@ module LognameCore {
     var cmd := Schema.Command(raw);
     if cmd.mode == Schema.ModeHelp {
       var out := GetHelpText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -106,7 +107,7 @@ module LognameCore {
 
     if cmd.mode == Schema.ModeVersion {
       var out := GetVersionText();
-      var _, _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(out, BenchWorld.ThrowOnError);
       exit := 0;
       assert CoreSummary(raw, io, exit);
       return;
@@ -114,7 +115,7 @@ module LognameCore {
 
     if |cmd.operands| > 0 {
       var err := GetExtraOperandMessage(cmd.operands[0]);
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert CoreSummary(raw, io, exit);
       return;
@@ -124,7 +125,7 @@ module LognameCore {
     assert IOContract.GetLoginNameContractFields(preProps, login);
     match login
     case Ok(name) =>
-      var _, _ := io.WriteStdout(Spec.LoginNameOutput(name), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.LoginNameOutput(name), BenchWorld.ThrowOnError);
       exit := 0;
       assert LoginNameResultFields(
           preProps,
@@ -138,7 +139,7 @@ module LognameCore {
       assert CoreSummary(raw, io, exit);
     case Err(_) =>
       var err := GetNoLoginNameMessage();
-      var _, _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(err, BenchWorld.ThrowOnError);
       exit := 1;
       assert LoginNameResultFields(
           preProps,

@@ -1,3 +1,4 @@
+include "../../core/Errno.dfy"
 include "../../core/World.dfy"
 include "../../core/IO.dfy"
 include "../../core/IOContract.dfy"
@@ -5,6 +6,7 @@ include "../../core/StringEscaping.dfy"
 include "LnSchema.dfy"
 
 module LnSpec {
+  import Errno = Errnos
   import BenchIO
   import IOContract
   import BenchWorld
@@ -17,21 +19,21 @@ module LnSpec {
 
   function ErrnoTextSpec(err: int): string
   {
-    if err == 2 then
+    if err == Errno.ENOENT then
       "No such file or directory"
-    else if err == 13 then
+    else if err == Errno.EACCES then
       "Permission denied"
-    else if err == 17 then
+    else if err == Errno.EEXIST then
       "File exists"
-    else if err == 20 then
+    else if err == Errno.ENOTDIR then
       "Not a directory"
-    else if err == 21 then
+    else if err == Errno.EISDIR then
       "Is a directory"
-    else if err == 22 then
+    else if err == Errno.EINVAL then
       "Invalid argument"
-    else if err == 36 then
+    else if err == Errno.ENAMETOOLONG then
       "File name too long"
-    else if err == 40 then
+    else if err == Errno.ELOOP then
       "Too many levels of symbolic links"
     else
       "unknown error"
@@ -97,9 +99,9 @@ module LnSpec {
   ): BenchWorld.Bytes
   {
     "ln: " +
-    (if err == 31 then
+    (if err == Errno.EMLINK then
        "failed to create hard link to " + SE.SpecQuoteAfBytes(Utf8.Encode(source))
-     else if err == 17 || err == 28 || err == 122 || err == 30 then
+     else if err == Errno.EEXIST || err == Errno.ENOSPC || err == Errno.EDQUOT || err == Errno.EROFS then
        "failed to create hard link " + SE.SpecQuoteAfBytes(Utf8.Encode(linkName))
      else
        "failed to create hard link " + SE.SpecQuoteAfBytes(Utf8.Encode(linkName)) +

@@ -4,6 +4,7 @@ include "ExpandCore.dfy"
 include "ExpandSpec.dfy"
 
 module ExpandProof {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import Schema = ExpandSchema
@@ -622,7 +623,7 @@ module ExpandProof {
     preFs: BenchWorld.FileSystem,
     stdinBefore: BenchWorld.Bytes,
     stdinAfter: BenchWorld.Bytes,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires Core.ReadStepSummary(
@@ -638,7 +639,7 @@ module ExpandProof {
 
   lemma InputPieceSummaryImpliesRelation(
     cmd: Schema.ExpandCmd,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               column: nat,
                               leading: bool,
                               output: BenchWorld.Bytes,
@@ -676,7 +677,7 @@ module ExpandProof {
 
   lemma ErrorPieceSummaryImpliesRelation(
     input: Schema.Input,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
                               output: BenchWorld.Bytes,
                               hadError: bool
   )
@@ -698,7 +699,7 @@ module ExpandProof {
     output: BenchWorld.Bytes,
     errorOutput: BenchWorld.Bytes,
     hadError: bool,
-    results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     outputPieces: seq<BenchWorld.Bytes>,
     errorPieces: seq<BenchWorld.Bytes>,
     errorFlags: seq<bool>,
@@ -778,7 +779,7 @@ module ExpandProof {
   {
     reveal Core.InputTraceSummary();
     ghost var
-      results: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      results: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
       outputPieces: seq<BenchWorld.Bytes>,
       errorPieces: seq<BenchWorld.Bytes>,
       errorFlags: seq<bool>,
@@ -806,7 +807,7 @@ module ExpandProof {
       );
     reveal Spec.InputTraceRelation();
     assert exists
-        traceResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+        traceResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
         traceOutputPieces: seq<BenchWorld.Bytes>,
         traceErrorPieces: seq<BenchWorld.Bytes>,
         traceErrorFlags: seq<bool>,

@@ -33,8 +33,11 @@ from evaluation.task.workspace import (
 from tests.evaluation.evaluation_test_support import utility_config
 
 SYSTEM_SUPPORT_MODELS = (
+    "Result",
+    "Errno",
     "SecurityModel",
     "WorldLookupProof",
+    "LookupFailureProof",
     "WorldInsertProof",
     "WorldRemoveProof",
     "WorldRenameProof",

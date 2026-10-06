@@ -4,6 +4,7 @@ include "CutCore.dfy"
 include "CutSpec.dfy"
 
 module CutProof {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import Schema = CutSchema
@@ -15,7 +16,7 @@ module CutProof {
     preFs: BenchWorld.FileSystem,
     preStdin: BenchWorld.Bytes,
     index: nat,
-    result: BenchWorld.Result<BenchWorld.Bytes>,
+    result: BenchWorld.IOResult<BenchWorld.Bytes>,
     preStreams: (BenchWorld.TrustedStreamRequest) -> BenchWorld.TrustedStreamResult
   )
     requires index < |command.inputs|
@@ -34,7 +35,7 @@ module CutProof {
 
   lemma OutputPieceRefines(
     command: Schema.CutCmdRaw,
-    result: BenchWorld.Result<BenchWorld.Bytes>
+    result: BenchWorld.IOResult<BenchWorld.Bytes>
   )
     ensures match result
             case Ok(data) =>
@@ -53,7 +54,7 @@ module CutProof {
   twostate lemma {:isolate_assertions} InputTraceCoreRefines(
     command: Schema.CutCmdRaw,
     io: BenchIO.IO,
-    readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+    readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>
   )
@@ -154,7 +155,7 @@ module CutProof {
     reveal Spec.Spec();
 
     if raw.mode == Schema.ModeRun {
-      ghost var readResults: seq<BenchWorld.Result<BenchWorld.Bytes>>,
+      ghost var readResults: seq<BenchWorld.IOResult<BenchWorld.Bytes>>,
                 stdoutFragments: seq<BenchWorld.Bytes>,
                 stderrFragments: seq<BenchWorld.Bytes> :|
         Core.InputTraceCore(

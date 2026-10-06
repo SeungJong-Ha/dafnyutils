@@ -4,6 +4,7 @@ include "ReadlinkCore.dfy"
 include "ReadlinkSpec.dfy"
 
 module ReadlinkProof {
+  import Result = Results
   import BenchIO
   import BenchWorld
   import Schema = ReadlinkSchema
@@ -96,7 +97,7 @@ module ReadlinkProof {
     files: seq<BenchWorld.Path>,
     fs: BenchWorld.FileSystem,
     cwd: BenchWorld.Path,
-    observations: seq<BenchWorld.Result<BenchWorld.Path>>,
+    observations: seq<BenchWorld.IOResult<BenchWorld.Path>>,
     stdoutFragments: seq<BenchWorld.Bytes>,
     stderrFragments: seq<BenchWorld.Bytes>,
     stdoutCuts: seq<nat>,
@@ -113,7 +114,7 @@ module ReadlinkProof {
   {
   }
 
-  lemma RunFilesSummaryImpliesRelation(
+  lemma {:induction false} RunFilesSummaryImpliesRelation(
     cmd: Schema.ReadlinkCmd,
     files: seq<BenchWorld.Path>,
     fs: BenchWorld.FileSystem,
@@ -137,6 +138,9 @@ module ReadlinkProof {
         cmd, files, fs, cwd, [], [], [], [0], [0], hadError, out, errOut
       );
     } else {
+      assert files == files[..|files| - 1] + [files[|files| - 1]] by {
+        assert files == files[..|files| - 1] + files[|files| - 1..];
+      }
       var prefixError: bool, prefixOut: BenchWorld.Bytes, prefixErrOut: BenchWorld.Bytes :|
         Core.RunFilesSummaryFields(
           cmd,
@@ -191,7 +195,7 @@ module ReadlinkProof {
         prefixOut,
         prefixErrOut
       );
-      var observations: seq<BenchWorld.Result<BenchWorld.Path>>,
+      var observations: seq<BenchWorld.IOResult<BenchWorld.Path>>,
           stdoutFragments: seq<BenchWorld.Bytes>,
           stderrFragments: seq<BenchWorld.Bytes>,
           stdoutCuts: seq<nat>,
@@ -220,7 +224,6 @@ module ReadlinkProof {
       assert stepError == observation.Err?;
       OutputFragmentCutsSnoc(stdoutFragments, prefixOut, stdoutCuts, stepOut);
       OutputFragmentCutsSnoc(stderrFragments, prefixErrOut, stderrCuts, stepErrOut);
-      assert files == files[..|files| - 1] + [path];
       assert forall i: nat | i < |files| ::
         Spec.ReadObservationRelation(fs, cwd, files[i], (observations + [observation])[i]) &&
         Spec.ReadFragmentRelation(cmd, files[i], (observations + [observation])[i],
