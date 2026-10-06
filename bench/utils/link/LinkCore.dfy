@@ -66,21 +66,21 @@ module LinkCore {
     ensures CoreSummary(raw, io, exit)
   {
     if raw.mode == Schema.ModeHelp {
-      var _, _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.HelpTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode == Schema.ModeVersion {
-      var _, _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStdout(Spec.VersionTextSpec(), BenchWorld.ThrowOnError);
       exit := 0;
     } else if raw.mode.ModeExtraOperand? {
       var quotedOperand := io.QuoteArgument(Utf8.Encode(raw.mode.operand));
-      var _, _ := io.WriteStderr(Spec.ExtraOperandText(quotedOperand), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.ExtraOperandText(quotedOperand), BenchWorld.ThrowOnError);
       exit := 1;
     } else if |raw.operands| == 0 {
-      var _, _ := io.WriteStderr(Spec.MissingOperandText(), BenchWorld.ThrowOnError);
+      var _ := io.WriteStderr(Spec.MissingOperandText(), BenchWorld.ThrowOnError);
       exit := 1;
     } else if |raw.operands| == 1 {
       var quotedSource := io.QuoteArgument(Utf8.Encode(raw.operands[0]));
-      var _, _ := io.WriteStderr(
+      var _ := io.WriteStderr(
         Spec.MissingOperandAfterText(quotedSource),
         BenchWorld.ThrowOnError
       );
@@ -88,7 +88,9 @@ module LinkCore {
     } else {
       var source := raw.operands[0];
       var target := raw.operands[1];
-      var ok, err := io.CreateHardLink(source, target);
+      var result := io.CreateHardLink(source, target);
+      var ok := result.Ok?;
+      var err := C.ResultErrno(result);
       assert Spec.LinkResult(io, source, target, ok, err);
 
       if ok {
@@ -97,7 +99,7 @@ module LinkCore {
         var reason := io.GetCLocaleErrnoText(err);
         var quotedTarget := io.QuoteafPath(target);
         var quotedSource := io.QuoteafPath(source);
-        var _, _ := io.WriteStderr(
+        var _ := io.WriteStderr(
           Spec.CannotCreateLinkText(quotedTarget, quotedSource, reason),
           BenchWorld.ThrowOnError
         );
