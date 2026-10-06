@@ -352,14 +352,6 @@ fn new_utility_scenarios_cover_seeded_shapes() {
     );
     assert_eq!(head_headers.stdin, b"stdin\n");
 
-    // Tac literal-separator mode is registered.
-    let tac = scenario_case("tac", 5).expect("tac separator scenario");
-    assert_eq!(
-        tac.argv,
-        vec!["-b".to_string(), "-s".to_string(), "--".to_string()]
-    );
-    assert_eq!(tac.stdin, b"a---b");
-
     // Tail zero-terminated mode is registered.
     let tail = scenario_case("tail", 0).expect("tail zero-terminated scenario");
     assert_eq!(

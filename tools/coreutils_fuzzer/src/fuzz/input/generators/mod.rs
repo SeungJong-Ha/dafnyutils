@@ -27,7 +27,6 @@ pub(crate) mod pwd;
 pub(crate) mod readlink;
 pub(crate) mod seq;
 pub(crate) mod stat;
-pub(crate) mod tac;
 pub(crate) mod tail;
 pub(crate) mod tee;
 pub(crate) mod touch;

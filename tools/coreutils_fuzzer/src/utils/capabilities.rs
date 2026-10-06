@@ -220,10 +220,6 @@ pub(crate) static UTILITY_CAPABILITIES: &[UtilityCapability] = &[
         ..capability!("stat", stat)
     },
     UtilityCapability {
-        stdin_policy: StdinPolicy::Stream,
-        ..capability!("tac", tac)
-    },
-    UtilityCapability {
         path_operand_policy: PathOperandPolicy::Tail,
         stdin_policy: StdinPolicy::Tail,
         option_value_flags: &["-c", "--bytes", "-n", "--lines"],
@@ -389,8 +385,8 @@ mod tests {
             patterned,
             BTreeSet::from([
                 "cat", "chmod", "comm", "csplit", "cut", "du", "expand", "head", "link", "ln",
-                "ls", "mv", "nl", "paste", "readlink", "stat", "tac", "tail", "touch", "uniq",
-                "unlink", "wc",
+                "ls", "mv", "nl", "paste", "readlink", "stat", "tail", "touch", "uniq", "unlink",
+                "wc",
             ])
         );
     }

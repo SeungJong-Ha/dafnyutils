@@ -86,7 +86,7 @@ candidate,stdbuf,process_and_environment,Process execution and environment behav
 candidate,stty,system_information,System terminal user and filesystem-information reporting,model_preparation,Reviewed blocker: see remaining_preparation,No public terminal-attribute query/set API; historical raw terminal support is not exported.
 candidate,sum,encoding_and_checksums,Default BSD checksum; -r and -s; ordered file/stdin operands.,open_for_contribution,Contribution guide: CONTRIBUTING.md#define-the-observable-behavior,
 candidate,sync,filesystem_and_paths,Global no-operand sync; --help/--version and invalid option combinations including -d without operands.,open_for_contribution,Contribution guide: CONTRIBUTING.md#define-the-observable-behavior,
-benchmark,tac,text_and_streams,GNU-compatible supported subset,released,Existing benchmark,
+candidate,tac,text_and_streams,Text and byte-stream processing,model_preparation,Reviewed blocker: see remaining_preparation,"GNU tac seeks to the end before reading (tac.c lseek SEEK_END); directory read errors depend on that offset (EISDIR vs EINVAL). Needs a general seek/offset-read observation; the tac-only ReadFile mode was removed."
 benchmark,tail,text_and_streams,GNU-compatible supported subset,released,Existing benchmark,
 benchmark,tee,text_and_streams,GNU-compatible supported subset,released,Existing benchmark,
 candidate,test,shell_and_control,"String -n/-z and =/!=; integer -eq/-ne/-lt/-le/-gt/-ge; !, parentheses, -a/-o and GNU argument-count precedence.",open_for_contribution,Contribution guide: CONTRIBUTING.md#define-the-observable-behavior,

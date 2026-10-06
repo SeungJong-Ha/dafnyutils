@@ -73,7 +73,6 @@ LEGACY_TASK_IDS = frozenset(
         "readlink",
         "seq",
         "stat",
-        "tac",
         "tail",
         "tee",
         "touch",
