@@ -16,7 +16,7 @@ from evaluation.task.workspace import TaskWorkspaceSpec, WorkspaceRoots
 from runtime.filesystem import path_within_root, safe_relative_path
 
 _WORKSPACE_WRITABLE_DIRS = (Path("_build"),)
-_WORKSPACE_METADATA_DIRS = (Path(".agents"), Path(".git"))
+_WORKSPACE_METADATA_DIRS = (Path(".agents"), Path(".git"), Path(".codex"))
 
 
 def candidate_container_plan(

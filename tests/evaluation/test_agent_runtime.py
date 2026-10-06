@@ -48,18 +48,21 @@ def _context(tmp_path: Path) -> AgentSandboxContext:
     )
 
 
-# Preparation forwards declared protected inputs without changing candidate mount modes.
+# Cold preparation reserves protected metadata before the adapter sees read-only mounts.
 def test_preparation_declares_protected_runtime_capabilities(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     release_directory = tmp_path / "release"
     publish_release(("true",), release_directory)
     release = prepare_release(release_directory, tmp_path / "workspace")
+    assert not (release.tasks["true"].workspace / ".codex").exists()
     run_directory = tmp_path / "case"
     run_directory.mkdir()
     preparations: list[AgentPreparationContext] = []
 
     def prepare_agent(context: AgentPreparationContext) -> AgentLaunchSpec:
+        for name in (".agents", ".git", ".codex"):
+            assert (context.workspace_directory / name).is_dir()
         preparations.append(context)
         launcher = context.staging_directory / "agent"
         launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
